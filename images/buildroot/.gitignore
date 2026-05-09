@@ -1,0 +1,5 @@
+# Buildroot download and build directory
+buildroot-*/
+
+# Build outputs (stored in ../output/)
+output/

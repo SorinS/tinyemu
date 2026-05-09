@@ -1,0 +1,18 @@
+# TinyEMU inittab - auto-login enabled for hvc0 console
+# Reference: docs/image-build-plan-1769311563.md
+
+::sysinit:/bin/mount -t proc proc /proc
+::sysinit:/bin/mount -o remount,rw /
+::sysinit:/bin/mkdir -p /dev/pts /dev/shm
+::sysinit:/bin/mount -a
+::sysinit:/bin/hostname -F /etc/hostname
+::sysinit:/etc/init.d/rcS
+
+# Auto-login on hvc0 only (VirtIO console)
+# Using 'respawn' ensures shell restarts if it exits
+# -n = no login prompt, -l = run /bin/sh as login shell
+hvc0::respawn:/sbin/getty -n -l /bin/sh hvc0 0 vt100
+
+::shutdown:/etc/init.d/rcK
+::shutdown:/sbin/swapoff -a
+::shutdown:/bin/umount -a -r

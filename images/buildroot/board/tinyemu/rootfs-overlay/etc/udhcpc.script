@@ -1,0 +1,89 @@
+#!/bin/sh
+#
+# udhcpc script for TinyEMU slirp networking
+# Called by udhcpc with DHCP lease information
+# Reference: docs/image-build-plan-1769311563.md
+#
+# Environment variables set by udhcpc:
+#   $1          - action (deconfig, bound, renew, nak)
+#   $interface  - network interface
+#   $ip         - IP address
+#   $subnet     - subnet mask (optional)
+#   $mask       - CIDR prefix length
+#   $router     - default gateway (space-separated if multiple)
+#   $dns        - DNS servers (space-separated)
+#   $domain     - domain name
+#   $hostname   - hostname
+#   $lease      - lease time in seconds
+
+[ -z "$1" ] && echo "Error: should be called from udhcpc" && exit 1
+
+RESOLV_CONF="/etc/resolv.conf"
+
+case "$1" in
+    deconfig)
+        # Called when udhcpc starts, before obtaining lease
+        # Remove all addresses from interface
+        ip addr flush dev "$interface"
+        ip link set "$interface" up
+        ;;
+
+    bound|renew)
+        # Called when lease is obtained or renewed
+        # Configure IP address
+        ip addr flush dev "$interface"
+
+        # Add IP with netmask (default to /24 if not provided)
+        if [ -n "$mask" ]; then
+            ip addr add "$ip/$mask" dev "$interface"
+        elif [ -n "$subnet" ]; then
+            # Convert subnet mask to CIDR
+            ip addr add "$ip/$subnet" dev "$interface"
+        else
+            ip addr add "$ip/24" dev "$interface"
+        fi
+
+        # Configure default route via gateway
+        if [ -n "$router" ]; then
+            # Remove existing default routes
+            while ip route del default 2>/dev/null; do :; done
+
+            # Add route via first router
+            for gw in $router; do
+                ip route add default via "$gw" dev "$interface"
+                break  # Only use first gateway
+            done
+        fi
+
+        # Configure DNS servers
+        if [ -n "$dns" ]; then
+            # Write new resolv.conf
+            : > "$RESOLV_CONF"
+
+            # Add search domain if provided
+            if [ -n "$domain" ]; then
+                echo "search $domain" >> "$RESOLV_CONF"
+            fi
+
+            # Add nameservers
+            for ns in $dns; do
+                echo "nameserver $ns" >> "$RESOLV_CONF"
+            done
+        fi
+
+        # Log success
+        logger -t udhcpc "Configured $interface: $ip via ${router%% *}"
+        ;;
+
+    nak)
+        # Lease request was NAK'd by server
+        logger -t udhcpc "Received NAK on $interface"
+        ;;
+
+    leasefail)
+        # Failed to obtain lease
+        logger -t udhcpc "Failed to obtain lease on $interface"
+        ;;
+esac
+
+exit 0

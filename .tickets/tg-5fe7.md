@@ -1,0 +1,77 @@
+---
+id: tg-5fe7
+status: closed
+deps: []
+links: []
+created: 2026-01-23T18:25:50Z
+type: task
+priority: 2
+assignee: JT Olio
+tags: [c-review, port-verification]
+---
+# Review batch 037: riscv_cpu.c (7 functions, 235 lines)
+
+Review C code batch 37 and ensure Go implementation matches exactly.
+
+## C Functions to Review
+
+- `glue` (tinyemu-2019-12-21/riscv_cpu.c:609-626, 18 lines)
+- `get_mstatus` (tinyemu-2019-12-21/riscv_cpu.c:651-662, 12 lines)
+- `get_base_from_xlen` (tinyemu-2019-12-21/riscv_cpu.c:664-672, 9 lines)
+- `set_mstatus` (tinyemu-2019-12-21/riscv_cpu.c:674-699, 26 lines)
+- `csr_read` (tinyemu-2019-12-21/riscv_cpu.c:703-857, 155 lines)
+- `set_frm` (tinyemu-2019-12-21/riscv_cpu.c:860-865, 6 lines)
+- `get_insn_rm` (tinyemu-2019-12-21/riscv_cpu.c:868-876, 9 lines)
+
+## Instructions
+
+1. **Read the C code carefully** for each function listed above
+2. If the C code is **only** for x86 emulation or /dev/kvm support, you can
+   skip that function and move on. We are also skipping graphics such as
+   framebuffer support. Everything else (including the network stack) we are
+   porting. Please ask if you have uncertainty or this seems unclear regarding
+   any function at all.
+3. **Find the corresponding Go code** in the appropriate package
+4. **If Go code doesn't exist:**
+   - Write the Go implementation matching C behavior exactly
+   - Write tests following docs/COMMIT_EXPECTATIONS.md
+   - Target 80%+ test coverage.
+5. **If Go code exists:**
+   - Compare line-by-line for exact behavioral match
+   - Add/update comments referencing C code: `// Reference: tinyemu-2019-12-21/riscv_cpu.c:609-876`
+   - Fix ANY deviations including error handling differences
+6. **Write tests** to confirm behavior matches C code
+
+## Critical Reminders
+
+- Match C behavior exactly - even "improved" error handling can break Linux boot
+- The C code works. Our Go code doesn't boot Linux. Any deviation is suspect.
+
+## Files
+
+- `tinyemu-2019-12-21/riscv_cpu.c`
+
+## Acceptance Criteria
+
+- [ ] All functions reviewed against C source
+- [ ] Go implementations exist for all functions (or documented as intentionally skipped)
+- [ ] Comments reference C code with file:line format
+- [ ] No behavioral deviations from C (especially error handling)
+- [ ] Tests written confirming C-matching behavior
+- [ ] `go test ./...` passes
+- [ ] `go vet ./...` passes
+
+## Last notes 
+
+Finally, once you are done, close the ticket with `tk` and commit any changes 
+you have made.
+
+
+## Acceptance Criteria
+
+- All functions reviewed against C source
+- Go implementations exist with C reference comments
+- No behavioral deviations from C
+- Tests confirm C-matching behavior
+- go test and go vet pass
+

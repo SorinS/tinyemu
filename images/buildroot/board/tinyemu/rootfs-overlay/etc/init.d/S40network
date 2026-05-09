@@ -1,0 +1,74 @@
+#!/bin/sh
+#
+# Start/stop network via DHCP
+# Reference: docs/image-build-plan-1769311563.md
+
+DAEMON="udhcpc"
+IFACE="eth0"
+PIDFILE="/var/run/udhcpc.$IFACE.pid"
+SCRIPT="/etc/udhcpc.script"
+
+start() {
+    printf "Starting network on %s: " "$IFACE"
+
+    # Bring up the interface
+    ip link set "$IFACE" up
+    if [ $? -ne 0 ]; then
+        echo "FAIL (link up)"
+        return 1
+    fi
+
+    # Run DHCP client
+    # -i: interface
+    # -s: script to run on events
+    # -p: pid file
+    # -q: quit after obtaining lease (don't background)
+    # -n: exit if lease not obtained
+    udhcpc -i "$IFACE" -s "$SCRIPT" -p "$PIDFILE" -q -n
+
+    if [ $? -eq 0 ]; then
+        echo "OK"
+    else
+        echo "FAIL (dhcp)"
+        return 1
+    fi
+}
+
+stop() {
+    printf "Stopping network on %s: " "$IFACE"
+
+    # Kill DHCP client if running
+    if [ -f "$PIDFILE" ]; then
+        kill "$(cat "$PIDFILE")" 2>/dev/null
+        rm -f "$PIDFILE"
+    fi
+
+    # Flush addresses and bring down interface
+    ip addr flush dev "$IFACE"
+    ip link set "$IFACE" down
+
+    echo "OK"
+}
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart|reload)
+        restart
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+esac
+
+exit $?

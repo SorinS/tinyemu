@@ -1,0 +1,78 @@
+package x86
+
+import (
+	"fmt"
+	"testing"
+)
+
+func TestPMDebug2(t *testing.T) {
+	c := newTestCPU(t)
+	c.SetCR(0, c.GetCR(0)&^CR0_PE)
+	c.SetSegAccess(CS, 0)
+
+	gdtAddr := uint32(0x2000)
+	for i := 0; i < 32; i++ {
+		c.writeMem8(gdtAddr+uint32(i), 0)
+	}
+	c.writeMem8(gdtAddr+0, 0x17)
+	c.writeMem8(gdtAddr+1, 0x00)
+	c.writeMem8(gdtAddr+2, 0x00)
+	c.writeMem8(gdtAddr+3, 0x20)
+	c.writeMem8(gdtAddr+4, 0x00)
+	c.writeMem8(gdtAddr+8, 0xFF)
+	c.writeMem8(gdtAddr+9, 0xFF)
+	c.writeMem8(gdtAddr+10, 0x00)
+	c.writeMem8(gdtAddr+11, 0x00)
+	c.writeMem8(gdtAddr+12, 0x00)
+	c.writeMem8(gdtAddr+13, 0x9A)
+	c.writeMem8(gdtAddr+14, 0xCF)
+	c.writeMem8(gdtAddr+15, 0x00)
+	c.writeMem8(gdtAddr+16, 0xFF)
+	c.writeMem8(gdtAddr+17, 0xFF)
+	c.writeMem8(gdtAddr+18, 0x00)
+	c.writeMem8(gdtAddr+19, 0x00)
+	c.writeMem8(gdtAddr+20, 0x00)
+	c.writeMem8(gdtAddr+21, 0x92)
+	c.writeMem8(gdtAddr+22, 0xCF)
+	c.writeMem8(gdtAddr+23, 0x00)
+
+	code := []byte{
+		0x0F, 0x01, 0x16, 0x00, 0x20,
+		0x0F, 0x20, 0xC0,
+		0x83, 0xC8, 0x01,
+		0x0F, 0x22, 0xC0,
+		0x66, 0xEA,
+	}
+	pmStart := uint32(0x1000 + len(code) + 6)
+	code = append(code, byte(pmStart), byte(pmStart>>8), byte(pmStart>>16), byte(pmStart>>24))
+	code = append(code, 0x08, 0x00)
+	code = append(code, 0xB8, 0xEF, 0xBE, 0xAD, 0xDE, 0xF4)
+
+	fmt.Printf("pmStart=%08X len=%d\n", pmStart, len(code))
+	for i := 0; i < len(code); i++ {
+		fmt.Printf("%04X: %02X\n", 0x1000+i, code[i])
+	}
+
+	c.SetSeg(CS, 0x0000)
+	c.SetSegBase(CS, 0x00000)
+	base := c.GetSegBase(CS)
+	for i, b := range code {
+		c.writeMem8(base+0x1000+uint32(i), b)
+	}
+	c.SetEIP(0x1000)
+
+	for i := 0; i < 10; i++ {
+		lip := c.GetLIP()
+		b, _ := c.memMap.Read8(uint64(lip))
+		fmt.Printf("Step %d: EIP=%08X LIP=%08X byte=%02X EAX=%08X PE=%v CS=%04X segBaseCS=%08X\n",
+			i, c.GetEIP(), lip, b, c.GetReg32(EAX), c.IsProtectedMode(), c.GetSeg(CS), c.GetSegBase(CS))
+		if err := c.Step(); err != nil {
+			fmt.Printf("ERROR: %v\n", err)
+			break
+		}
+		if c.IsPowerDown() {
+			fmt.Println("HLT")
+			break
+		}
+	}
+}

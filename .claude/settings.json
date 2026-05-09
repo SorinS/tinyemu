@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bd create:*)",
+      "Bash(bd dep add:*)",
+      "Bash(bd list:*)",
+      "Bash(bd ready:*)",
+      "WebSearch",
+      "WebFetch(domain:bellard.org)",
+      "Bash(bd update:*)",
+      "Bash(bd quickstart:*)",
+      "Bash(bd show:*)"
+    ]
+  }
+}

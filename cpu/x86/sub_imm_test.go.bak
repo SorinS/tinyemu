@@ -1,0 +1,15 @@
+package x86
+
+import (
+	"testing"
+)
+
+func TestSubAlImm8Debug(t *testing.T) {
+	c := newTestCPU(t)
+	c.SetReg8(AL, 0x50)
+	code := []byte{0x2C, 0x20, 0xF4}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("execution error: %v", err)
+	}
+	t.Logf("ZF=%v CF=%v SF=%v OF=%v", c.getZF(), c.getCF(), c.getSF(), c.getOF())
+}

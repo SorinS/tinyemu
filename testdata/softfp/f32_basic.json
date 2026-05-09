@@ -1,0 +1,361 @@
+{
+  "description": "F32 basic arithmetic test vectors",
+  "precision": "f32",
+  "vectors": [
+    {
+      "op": "fadd",
+      "comment": "1.0 + 2.0 = 3.0",
+      "a": "0x3f800000",
+      "b": "0x40000000",
+      "rm": 0,
+      "result": "0x40400000",
+      "flags": 0
+    },
+    {
+      "op": "fadd",
+      "comment": "1.5 + 2.5 = 4.0",
+      "a": "0x3fc00000",
+      "b": "0x40200000",
+      "rm": 0,
+      "result": "0x40800000",
+      "flags": 0
+    },
+    {
+      "op": "fadd",
+      "comment": "+Inf + 1.0 = +Inf",
+      "a": "0x7f800000",
+      "b": "0x3f800000",
+      "rm": 0,
+      "result": "0x7f800000",
+      "flags": 0
+    },
+    {
+      "op": "fadd",
+      "comment": "+Inf + -Inf = NaN (invalid)",
+      "a": "0x7f800000",
+      "b": "0xff800000",
+      "rm": 0,
+      "result": "0x7fc00000",
+      "flags": 16
+    },
+    {
+      "op": "fadd",
+      "comment": "NaN + 1.0 = NaN",
+      "a": "0x7fc00000",
+      "b": "0x3f800000",
+      "rm": 0,
+      "result": "0x7fc00000",
+      "flags": 0
+    },
+    {
+      "op": "fadd",
+      "comment": "0.0 + 0.0 = 0.0",
+      "a": "0x00000000",
+      "b": "0x00000000",
+      "rm": 0,
+      "result": "0x00000000",
+      "flags": 0
+    },
+    {
+      "op": "fadd",
+      "comment": "-0.0 + 0.0 = 0.0 (RNE)",
+      "a": "0x80000000",
+      "b": "0x00000000",
+      "rm": 0,
+      "result": "0x00000000",
+      "flags": 0
+    },
+    {
+      "op": "fsub",
+      "comment": "3.0 - 1.0 = 2.0",
+      "a": "0x40400000",
+      "b": "0x3f800000",
+      "rm": 0,
+      "result": "0x40000000",
+      "flags": 0
+    },
+    {
+      "op": "fsub",
+      "comment": "1.0 - 1.0 = 0.0",
+      "a": "0x3f800000",
+      "b": "0x3f800000",
+      "rm": 0,
+      "result": "0x00000000",
+      "flags": 0
+    },
+    {
+      "op": "fsub",
+      "comment": "+Inf - +Inf = NaN (invalid)",
+      "a": "0x7f800000",
+      "b": "0x7f800000",
+      "rm": 0,
+      "result": "0x7fc00000",
+      "flags": 16
+    },
+    {
+      "op": "fmul",
+      "comment": "2.0 * 3.0 = 6.0",
+      "a": "0x40000000",
+      "b": "0x40400000",
+      "rm": 0,
+      "result": "0x40c00000",
+      "flags": 0
+    },
+    {
+      "op": "fmul",
+      "comment": "-2.0 * 3.0 = -6.0",
+      "a": "0xc0000000",
+      "b": "0x40400000",
+      "rm": 0,
+      "result": "0xc0c00000",
+      "flags": 0
+    },
+    {
+      "op": "fmul",
+      "comment": "1.0 * 0.0 = 0.0",
+      "a": "0x3f800000",
+      "b": "0x00000000",
+      "rm": 0,
+      "result": "0x00000000",
+      "flags": 0
+    },
+    {
+      "op": "fmul",
+      "comment": "+Inf * 0.0 = NaN (invalid)",
+      "a": "0x7f800000",
+      "b": "0x00000000",
+      "rm": 0,
+      "result": "0x7fc00000",
+      "flags": 16
+    },
+    {
+      "op": "fmul",
+      "comment": "+Inf * 2.0 = +Inf",
+      "a": "0x7f800000",
+      "b": "0x40000000",
+      "rm": 0,
+      "result": "0x7f800000",
+      "flags": 0
+    },
+    {
+      "op": "fdiv",
+      "comment": "6.0 / 2.0 = 3.0",
+      "a": "0x40c00000",
+      "b": "0x40000000",
+      "rm": 0,
+      "result": "0x40400000",
+      "flags": 0
+    },
+    {
+      "op": "fdiv",
+      "comment": "1.0 / 3.0 (inexact)",
+      "a": "0x3f800000",
+      "b": "0x40400000",
+      "rm": 0,
+      "result": "0x3eaaaaab",
+      "flags": 1
+    },
+    {
+      "op": "fdiv",
+      "comment": "1.0 / 0.0 = +Inf (divbyzero)",
+      "a": "0x3f800000",
+      "b": "0x00000000",
+      "rm": 0,
+      "result": "0x7f800000",
+      "flags": 8
+    },
+    {
+      "op": "fdiv",
+      "comment": "-1.0 / 0.0 = -Inf (divbyzero)",
+      "a": "0xbf800000",
+      "b": "0x00000000",
+      "rm": 0,
+      "result": "0xff800000",
+      "flags": 8
+    },
+    {
+      "op": "fdiv",
+      "comment": "0.0 / 0.0 = NaN (invalid)",
+      "a": "0x00000000",
+      "b": "0x00000000",
+      "rm": 0,
+      "result": "0x7fc00000",
+      "flags": 16
+    },
+    {
+      "op": "fsqrt",
+      "comment": "sqrt(4.0) = 2.0",
+      "a": "0x40800000",
+      "rm": 0,
+      "result": "0x40000000",
+      "flags": 0
+    },
+    {
+      "op": "fsqrt",
+      "comment": "sqrt(2.0) (inexact)",
+      "a": "0x40000000",
+      "rm": 0,
+      "result": "0x3fb504f3",
+      "flags": 1
+    },
+    {
+      "op": "fsqrt",
+      "comment": "sqrt(-1.0) = NaN (invalid)",
+      "a": "0xbf800000",
+      "rm": 0,
+      "result": "0x7fc00000",
+      "flags": 16
+    },
+    {
+      "op": "fsqrt",
+      "comment": "sqrt(0.0) = 0.0",
+      "a": "0x00000000",
+      "rm": 0,
+      "result": "0x00000000",
+      "flags": 0
+    },
+    {
+      "op": "fsqrt",
+      "comment": "sqrt(+Inf) = +Inf",
+      "a": "0x7f800000",
+      "rm": 0,
+      "result": "0x7f800000",
+      "flags": 0
+    },
+    {
+      "op": "fmin",
+      "comment": "min(1.0, 2.0) = 1.0",
+      "a": "0x3f800000",
+      "b": "0x40000000",
+      "rm": 0,
+      "result": "0x3f800000",
+      "flags": 0
+    },
+    {
+      "op": "fmin",
+      "comment": "min(-1.0, 1.0) = -1.0",
+      "a": "0xbf800000",
+      "b": "0x3f800000",
+      "rm": 0,
+      "result": "0xbf800000",
+      "flags": 0
+    },
+    {
+      "op": "fmin",
+      "comment": "min(NaN, 1.0) = 1.0",
+      "a": "0x7fc00000",
+      "b": "0x3f800000",
+      "rm": 0,
+      "result": "0x3f800000",
+      "flags": 0
+    },
+    {
+      "op": "fmax",
+      "comment": "max(1.0, 2.0) = 2.0",
+      "a": "0x3f800000",
+      "b": "0x40000000",
+      "rm": 0,
+      "result": "0x40000000",
+      "flags": 0
+    },
+    {
+      "op": "fmax",
+      "comment": "max(-1.0, 1.0) = 1.0",
+      "a": "0xbf800000",
+      "b": "0x3f800000",
+      "rm": 0,
+      "result": "0x3f800000",
+      "flags": 0
+    },
+    {
+      "op": "fmax",
+      "comment": "max(NaN, 1.0) = 1.0",
+      "a": "0x7fc00000",
+      "b": "0x3f800000",
+      "rm": 0,
+      "result": "0x3f800000",
+      "flags": 0
+    },
+    {
+      "op": "feq",
+      "comment": "1.0 == 1.0 = true",
+      "a": "0x3f800000",
+      "b": "0x3f800000",
+      "rm": 0,
+      "result": "0x00000001",
+      "flags": 0
+    },
+    {
+      "op": "feq",
+      "comment": "1.0 == 2.0 = false",
+      "a": "0x3f800000",
+      "b": "0x40000000",
+      "rm": 0,
+      "result": "0x00000000",
+      "flags": 0
+    },
+    {
+      "op": "feq",
+      "comment": "NaN == NaN = false",
+      "a": "0x7fc00000",
+      "b": "0x7fc00000",
+      "rm": 0,
+      "result": "0x00000000",
+      "flags": 0
+    },
+    {
+      "op": "flt",
+      "comment": "1.0 < 2.0 = true",
+      "a": "0x3f800000",
+      "b": "0x40000000",
+      "rm": 0,
+      "result": "0x00000001",
+      "flags": 0
+    },
+    {
+      "op": "flt",
+      "comment": "2.0 < 1.0 = false",
+      "a": "0x40000000",
+      "b": "0x3f800000",
+      "rm": 0,
+      "result": "0x00000000",
+      "flags": 0
+    },
+    {
+      "op": "flt",
+      "comment": "1.0 < NaN = false (invalid)",
+      "a": "0x3f800000",
+      "b": "0x7fc00000",
+      "rm": 0,
+      "result": "0x00000000",
+      "flags": 16
+    },
+    {
+      "op": "fle",
+      "comment": "1.0 <= 1.0 = true",
+      "a": "0x3f800000",
+      "b": "0x3f800000",
+      "rm": 0,
+      "result": "0x00000001",
+      "flags": 0
+    },
+    {
+      "op": "fle",
+      "comment": "1.0 <= 2.0 = true",
+      "a": "0x3f800000",
+      "b": "0x40000000",
+      "rm": 0,
+      "result": "0x00000001",
+      "flags": 0
+    },
+    {
+      "op": "fle",
+      "comment": "2.0 <= 1.0 = false",
+      "a": "0x40000000",
+      "b": "0x3f800000",
+      "rm": 0,
+      "result": "0x00000000",
+      "flags": 0
+    }
+  ]
+}

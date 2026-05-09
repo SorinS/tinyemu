@@ -1,0 +1,18 @@
+# TinyEMU source (for reference only)
+tinyemu-*/
+
+# Build outputs
+*.exe
+/temu
+
+# IDE
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+
+# Other
+/tmp/
+bin/
+
