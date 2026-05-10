@@ -213,9 +213,67 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 	case 0x90:
 		// Do nothing
 
+	// PUSHA/PUSHAD
+	case 0x60:
+		if operandSize == 2 {
+			tmpSP := c.GetReg16(SP)
+			c.push16(c.GetReg16(AX))
+			c.push16(c.GetReg16(CX))
+			c.push16(c.GetReg16(DX))
+			c.push16(c.GetReg16(BX))
+			c.push16(tmpSP)
+			c.push16(c.GetReg16(BP))
+			c.push16(c.GetReg16(SI))
+			c.push16(c.GetReg16(DI))
+		} else {
+			tmpESP := c.GetReg32(ESP)
+			c.push32(c.GetReg32(EAX))
+			c.push32(c.GetReg32(ECX))
+			c.push32(c.GetReg32(EDX))
+			c.push32(c.GetReg32(EBX))
+			c.push32(tmpESP)
+			c.push32(c.GetReg32(EBP))
+			c.push32(c.GetReg32(ESI))
+			c.push32(c.GetReg32(EDI))
+		}
+
+	// POPA/POPAD
+	case 0x61:
+		if operandSize == 2 {
+			c.SetReg16(DI, c.pop16())
+			c.SetReg16(SI, c.pop16())
+			c.SetReg16(BP, c.pop16())
+			_ = c.pop16() // discard SP
+			c.SetReg16(BX, c.pop16())
+			c.SetReg16(DX, c.pop16())
+			c.SetReg16(CX, c.pop16())
+			c.SetReg16(AX, c.pop16())
+		} else {
+			c.SetReg32(EDI, c.pop32())
+			c.SetReg32(ESI, c.pop32())
+			c.SetReg32(EBP, c.pop32())
+			_ = c.pop32() // discard ESP
+			c.SetReg32(EBX, c.pop32())
+			c.SetReg32(EDX, c.pop32())
+			c.SetReg32(ECX, c.pop32())
+			c.SetReg32(EAX, c.pop32())
+		}
+
 	// HLT
 	case 0xF4:
 		c.powerDown = true
+
+	// CMC - Complement Carry Flag
+	case 0xF5:
+		c.eflags ^= EFLAGS_CF
+
+	// CLC - Clear Carry Flag
+	case 0xF8:
+		c.eflags &^= EFLAGS_CF
+
+	// STC - Set Carry Flag
+	case 0xF9:
+		c.eflags |= EFLAGS_CF
 
 	// CLI - Clear Interrupt Flag
 	case 0xFA:
@@ -296,6 +354,80 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			c.setOF(r != int64(int32(r)))
 			c.setCF(r != int64(int32(r)))
 		}
+
+	// INS B (IN SB)
+	case 0x6C:
+		c.executeString(repPrefix, 1, func() {
+			port := c.GetReg16(DX)
+			c.writeMem8(c.segBase[ES]+c.GetReg32(EDI), c.ioRead8(port))
+			if c.eflags&EFLAGS_DF != 0 {
+				c.SetReg32(EDI, c.GetReg32(EDI)-1)
+			} else {
+				c.SetReg32(EDI, c.GetReg32(EDI)+1)
+			}
+		}, false, false)
+
+	// INS W/D (INSW/INSD)
+	case 0x6D:
+		size := uint32(4)
+		if operandSize == 2 {
+			size = 2
+		}
+		c.executeString(repPrefix, size, func() {
+			port := c.GetReg16(DX)
+			addr := c.segBase[ES] + c.GetReg32(EDI)
+			if size == 2 {
+				c.writeMem16(addr, c.ioRead16(port))
+			} else {
+				c.writeMem32(addr, c.ioRead32(port))
+			}
+			if c.eflags&EFLAGS_DF != 0 {
+				c.SetReg32(EDI, c.GetReg32(EDI)-size)
+			} else {
+				c.SetReg32(EDI, c.GetReg32(EDI)+size)
+			}
+		}, false, false)
+
+	// OUTS B (OUTSB)
+	case 0x6E:
+		c.executeString(repPrefix, 1, func() {
+			port := c.GetReg16(DX)
+			seg := DS
+			if segOverride != -1 {
+				seg = segOverride
+			}
+			c.ioWrite8(port, c.readMem8(c.segBase[seg]+c.GetReg32(ESI)))
+			if c.eflags&EFLAGS_DF != 0 {
+				c.SetReg32(ESI, c.GetReg32(ESI)-1)
+			} else {
+				c.SetReg32(ESI, c.GetReg32(ESI)+1)
+			}
+		}, false, false)
+
+	// OUTS W/D (OUTSW/OUTSD)
+	case 0x6F:
+		size := uint32(4)
+		if operandSize == 2 {
+			size = 2
+		}
+		c.executeString(repPrefix, size, func() {
+			port := c.GetReg16(DX)
+			seg := DS
+			if segOverride != -1 {
+				seg = segOverride
+			}
+			addr := c.segBase[seg] + c.GetReg32(ESI)
+			if size == 2 {
+				c.ioWrite16(port, c.readMem16(addr))
+			} else {
+				c.ioWrite32(port, c.readMem32(addr))
+			}
+			if c.eflags&EFLAGS_DF != 0 {
+				c.SetReg32(ESI, c.GetReg32(ESI)-size)
+			} else {
+				c.SetReg32(ESI, c.GetReg32(ESI)+size)
+			}
+		}, false, false)
 
 	// IMUL r16/32, r/m16/32, imm8
 	case 0x6B:
@@ -466,30 +598,46 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 
 	// MOV AL, moffs8
 	case 0xA0:
-		addr := c.fetchMoffs()
-		c.SetReg8(AL, c.readMem8(addr))
+		off := c.fetchMoffs()
+		seg := DS
+		if segOverride != -1 {
+			seg = segOverride
+		}
+		c.SetReg8(AL, c.readMem8(c.segBase[seg]+off))
 
 	// MOV AX/EAX, moffs16/moffs32
 	case 0xA1:
-		addr := c.fetchMoffs()
+		off := c.fetchMoffs()
+		seg := DS
+		if segOverride != -1 {
+			seg = segOverride
+		}
 		if operandSize == 2 {
-			c.SetReg16(AX, c.readMem16(addr))
+			c.SetReg16(AX, c.readMem16(c.segBase[seg]+off))
 		} else {
-			c.SetReg32(EAX, c.readMem32(addr))
+			c.SetReg32(EAX, c.readMem32(c.segBase[seg]+off))
 		}
 
 	// MOV moffs8, AL
 	case 0xA2:
-		addr := c.fetchMoffs()
-		c.writeMem8(addr, c.GetReg8(AL))
+		off := c.fetchMoffs()
+		seg := DS
+		if segOverride != -1 {
+			seg = segOverride
+		}
+		c.writeMem8(c.segBase[seg]+off, c.GetReg8(AL))
 
 	// MOV moffs16/moffs32, AX/EAX
 	case 0xA3:
-		addr := c.fetchMoffs()
+		off := c.fetchMoffs()
+		seg := DS
+		if segOverride != -1 {
+			seg = segOverride
+		}
 		if operandSize == 2 {
-			c.writeMem16(addr, c.GetReg16(AX))
+			c.writeMem16(c.segBase[seg]+off, c.GetReg16(AX))
 		} else {
-			c.writeMem32(addr, c.GetReg32(EAX))
+			c.writeMem32(c.segBase[seg]+off, c.GetReg32(EAX))
 		}
 
 	// MOV r/m16/32, imm16/imm32 (C7 /0)
@@ -689,20 +837,37 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 	case 0x9D:
 		c.eflags = c.popOp(operandSize)
 
-	// CBW
+	// CBW/CWDE
 	case 0x98:
-		if int8(c.GetReg8(AL)) < 0 {
-			c.SetReg8(AH, 0xFF)
+		if operandSize == 2 {
+			if int8(c.GetReg8(AL)) < 0 {
+				c.SetReg8(AH, 0xFF)
+			} else {
+				c.SetReg8(AH, 0)
+			}
 		} else {
-			c.SetReg8(AH, 0)
+			ax := int16(c.GetReg16(AX))
+			if ax < 0 {
+				c.SetReg32(EAX, 0xFFFF0000|uint32(ax))
+			} else {
+				c.SetReg32(EAX, uint32(ax))
+			}
 		}
 
-	// CWD
+	// CWD/CDQ
 	case 0x99:
-		if c.GetReg16(AX)&0x8000 != 0 {
-			c.SetReg16(DX, 0xFFFF)
+		if operandSize == 2 {
+			if c.GetReg16(AX)&0x8000 != 0 {
+				c.SetReg16(DX, 0xFFFF)
+			} else {
+				c.SetReg16(DX, 0)
+			}
 		} else {
-			c.SetReg16(DX, 0)
+			if c.GetReg32(EAX)&0x80000000 != 0 {
+				c.SetReg32(EDX, 0xFFFFFFFF)
+			} else {
+				c.SetReg32(EDX, 0)
+			}
 		}
 
 	// SAHF
@@ -876,6 +1041,26 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			c.xchg32(EAX, EDI)
 		}
 
+	// POP r/m16/32 (8F /0)
+	case 0x8F:
+		mr := c.parseModRM()
+		if mr.reg != 0 {
+			return fmt.Errorf("8F /%d not implemented", mr.reg)
+		}
+		if operandSize == 2 {
+			if mr.isReg {
+				c.SetReg16(reg16FromModRM(int(mr.rm)), c.pop16())
+			} else {
+				c.writeMem16(c.segBase[DS]+mr.ea, c.pop16())
+			}
+		} else {
+			if mr.isReg {
+				c.SetReg32(int(mr.rm), c.pop32())
+			} else {
+				c.writeMem32(c.segBase[DS]+mr.ea, c.pop32())
+			}
+		}
+
 	// MOV r/m8, imm8 (C6 /0)
 	case 0xC6:
 		mr := c.parseModRM()
@@ -922,7 +1107,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			newCx := c.GetReg16(CX)
 			zf := c.getZF()
 			if eip := c.GetEIP(); eip >= 0x3F0 && eip <= 0x400 {
-				fmt.Printf("DEBUG LOOPZ16: EIP=%04X off=%d oldCX=%04X newCX=%04X ZF=%v => jump=%v\n", eip, off, cx, newCx, zf, newCx != 0 && zf)
+				// LOOPZ16 behavior documented
 			}
 			if newCx != 0 && zf {
 				c.eip = uint32(int32(c.eip) + int32(off))
@@ -933,7 +1118,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			newEcx := c.GetReg32(ECX)
 			zf := c.getZF()
 			if eip := c.GetEIP(); eip >= 0x3C0 && eip <= 0x3D0 {
-				fmt.Printf("DEBUG LOOPZ32: EIP=%04X off=%d oldECX=%08X newECX=%08X ZF=%v => jump=%v\n", eip, off, ecx, newEcx, zf, newEcx != 0 && zf)
+				// LOOPZ32 behavior documented
 			}
 			if newEcx != 0 && zf {
 				c.eip = uint32(int32(c.eip) + int32(off))
@@ -964,43 +1149,63 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 
 	// MOVS byte
 	case 0xA4:
-		c.executeString(repPrefix, 1, func() { c.movs(1) }, false, false)
+		c.executeString(repPrefix, 1, func() { c.movs(1, segOverride) }, false, false)
 
 	// MOVS word/dword
 	case 0xA5:
-		c.executeString(repPrefix, 4, func() { c.movs(4) }, false, false)
+		size := uint32(4)
+		if operandSize == 2 {
+			size = 2
+		}
+		c.executeString(repPrefix, size, func() { c.movs(size, segOverride) }, false, false)
 
 	// CMPS byte
 	case 0xA6:
-		c.executeString(repPrefix, 1, func() { c.cmps(1) }, repPrefix == 1, true)
+		c.executeString(repPrefix, 1, func() { c.cmps(1, segOverride) }, repPrefix != 0, repPrefix == 1)
 
 	// CMPS word/dword
 	case 0xA7:
-		c.executeString(repPrefix, 4, func() { c.cmps(4) }, repPrefix == 1, true)
+		size := uint32(4)
+		if operandSize == 2 {
+			size = 2
+		}
+		c.executeString(repPrefix, size, func() { c.cmps(size, segOverride) }, repPrefix != 0, repPrefix == 1)
 
 	// STOS byte
 	case 0xAA:
-		c.executeString(repPrefix, 1, func() { c.stos(1) }, false, false)
+		c.executeString(repPrefix, 1, func() { c.stos(1, segOverride) }, false, false)
 
 	// STOS word/dword
 	case 0xAB:
-		c.executeString(repPrefix, 4, func() { c.stos(4) }, false, false)
+		size := uint32(4)
+		if operandSize == 2 {
+			size = 2
+		}
+		c.executeString(repPrefix, size, func() { c.stos(size, segOverride) }, false, false)
 
 	// LODS byte
 	case 0xAC:
-		c.executeString(repPrefix, 1, func() { c.lods(1) }, false, false)
+		c.executeString(repPrefix, 1, func() { c.lods(1, segOverride) }, false, false)
 
 	// LODS word/dword
 	case 0xAD:
-		c.executeString(repPrefix, 4, func() { c.lods(4) }, false, false)
+		size := uint32(4)
+		if operandSize == 2 {
+			size = 2
+		}
+		c.executeString(repPrefix, size, func() { c.lods(size, segOverride) }, false, false)
 
 	// SCAS byte
 	case 0xAE:
-		c.executeString(repPrefix, 1, func() { c.scas(1) }, repPrefix == 1, true)
+		c.executeString(repPrefix, 1, func() { c.scas(1, segOverride) }, repPrefix != 0, repPrefix == 1)
 
 	// SCAS word/dword
 	case 0xAF:
-		c.executeString(repPrefix, 4, func() { c.scas(4) }, repPrefix == 1, true)
+		size := uint32(4)
+		if operandSize == 2 {
+			size = 2
+		}
+		c.executeString(repPrefix, size, func() { c.scas(size, segOverride) }, repPrefix != 0, repPrefix == 1)
 
 	// Group 2 shifts (C0 = imm8, C1 = imm8)
 	case 0xC0:
@@ -1324,6 +1529,218 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 		case 0xA2:
 			// CPUID
 			c.handleCPUID()
+		case 0xA4:
+			// SHLD r/m16/32, r16/32, imm8
+			mr := c.parseModRM()
+			count := c.fetch8() & 0x1F
+			if operandSize == 2 {
+				var dst uint16
+				if mr.isReg {
+					dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
+				} else {
+					dst = c.readMem16(c.segBase[DS] + mr.ea)
+				}
+				src := c.GetReg16(reg16FromModRM(int(mr.reg)))
+				if count != 0 {
+					result := (dst << count) | (src >> (16 - count))
+					cf := (dst >> (16 - count)) & 1
+					c.setCF(cf != 0)
+					if count == 1 {
+						c.setOF(((dst >> 15) & 1) != ((result >> 15) & 1))
+					}
+					c.setZF(result == 0)
+					c.setSF((result>>15)&1 != 0)
+					c.setPF(parity8(uint8(result)))
+					if mr.isReg {
+						c.SetReg16(reg16FromModRM(int(mr.rm)), result)
+					} else {
+						c.writeMem16(c.segBase[DS]+mr.ea, result)
+					}
+				}
+			} else {
+				var dst uint32
+				if mr.isReg {
+					dst = c.GetReg32(int(mr.rm))
+				} else {
+					dst = c.readMem32(c.segBase[DS] + mr.ea)
+				}
+				src := c.GetReg32(int(mr.reg))
+				if count != 0 {
+					result := (dst << count) | (src >> (32 - count))
+					cf := (dst >> (32 - count)) & 1
+					c.setCF(cf != 0)
+					if count == 1 {
+						c.setOF(((dst >> 31) & 1) != ((result >> 31) & 1))
+					}
+					c.setZF(result == 0)
+					c.setSF((result>>31)&1 != 0)
+					c.setPF(parity8(uint8(result)))
+					if mr.isReg {
+						c.SetReg32(int(mr.rm), result)
+					} else {
+						c.writeMem32(c.segBase[DS]+mr.ea, result)
+					}
+				}
+			}
+		case 0xA5:
+			// SHLD r/m16/32, r16/32, CL
+			mr := c.parseModRM()
+			count := c.GetReg8(CL) & 0x1F
+			if operandSize == 2 {
+				var dst uint16
+				if mr.isReg {
+					dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
+				} else {
+					dst = c.readMem16(c.segBase[DS] + mr.ea)
+				}
+				src := c.GetReg16(reg16FromModRM(int(mr.reg)))
+				if count != 0 {
+					result := (dst << count) | (src >> (16 - count))
+					cf := (dst >> (16 - count)) & 1
+					c.setCF(cf != 0)
+					if count == 1 {
+						c.setOF(((dst >> 15) & 1) != ((result >> 15) & 1))
+					}
+					c.setZF(result == 0)
+					c.setSF((result>>15)&1 != 0)
+					c.setPF(parity8(uint8(result)))
+					if mr.isReg {
+						c.SetReg16(reg16FromModRM(int(mr.rm)), result)
+					} else {
+						c.writeMem16(c.segBase[DS]+mr.ea, result)
+					}
+				}
+			} else {
+				var dst uint32
+				if mr.isReg {
+					dst = c.GetReg32(int(mr.rm))
+				} else {
+					dst = c.readMem32(c.segBase[DS] + mr.ea)
+				}
+				src := c.GetReg32(int(mr.reg))
+				if count != 0 {
+					result := (dst << count) | (src >> (32 - count))
+					cf := (dst >> (32 - count)) & 1
+					c.setCF(cf != 0)
+					if count == 1 {
+						c.setOF(((dst >> 31) & 1) != ((result >> 31) & 1))
+					}
+					c.setZF(result == 0)
+					c.setSF((result>>31)&1 != 0)
+					c.setPF(parity8(uint8(result)))
+					if mr.isReg {
+						c.SetReg32(int(mr.rm), result)
+					} else {
+						c.writeMem32(c.segBase[DS]+mr.ea, result)
+					}
+				}
+			}
+		case 0xAC:
+			// SHRD r/m16/32, r16/32, imm8
+			mr := c.parseModRM()
+			count := c.fetch8() & 0x1F
+			if operandSize == 2 {
+				var dst uint16
+				if mr.isReg {
+					dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
+				} else {
+					dst = c.readMem16(c.segBase[DS] + mr.ea)
+				}
+				src := c.GetReg16(reg16FromModRM(int(mr.reg)))
+				if count != 0 {
+					result := (dst >> count) | (src << (16 - count))
+					cf := (dst >> (count - 1)) & 1
+					c.setCF(cf != 0)
+					if count == 1 {
+						c.setOF(((dst >> 15) & 1) != ((result >> 15) & 1))
+					}
+					c.setZF(result == 0)
+					c.setSF((result>>15)&1 != 0)
+					c.setPF(parity8(uint8(result)))
+					if mr.isReg {
+						c.SetReg16(reg16FromModRM(int(mr.rm)), result)
+					} else {
+						c.writeMem16(c.segBase[DS]+mr.ea, result)
+					}
+				}
+			} else {
+				var dst uint32
+				if mr.isReg {
+					dst = c.GetReg32(int(mr.rm))
+				} else {
+					dst = c.readMem32(c.segBase[DS] + mr.ea)
+				}
+				src := c.GetReg32(int(mr.reg))
+				if count != 0 {
+					result := (dst >> count) | (src << (32 - count))
+					cf := (dst >> (count - 1)) & 1
+					c.setCF(cf != 0)
+					if count == 1 {
+						c.setOF(((dst >> 31) & 1) != ((result >> 31) & 1))
+					}
+					c.setZF(result == 0)
+					c.setSF((result>>31)&1 != 0)
+					c.setPF(parity8(uint8(result)))
+					if mr.isReg {
+						c.SetReg32(int(mr.rm), result)
+					} else {
+						c.writeMem32(c.segBase[DS]+mr.ea, result)
+					}
+				}
+			}
+		case 0xAD:
+			// SHRD r/m16/32, r16/32, CL
+			mr := c.parseModRM()
+			count := c.GetReg8(CL) & 0x1F
+			if operandSize == 2 {
+				var dst uint16
+				if mr.isReg {
+					dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
+				} else {
+					dst = c.readMem16(c.segBase[DS] + mr.ea)
+				}
+				src := c.GetReg16(reg16FromModRM(int(mr.reg)))
+				if count != 0 {
+					result := (dst >> count) | (src << (16 - count))
+					cf := (dst >> (count - 1)) & 1
+					c.setCF(cf != 0)
+					if count == 1 {
+						c.setOF(((dst >> 15) & 1) != ((result >> 15) & 1))
+					}
+					c.setZF(result == 0)
+					c.setSF((result>>15)&1 != 0)
+					c.setPF(parity8(uint8(result)))
+					if mr.isReg {
+						c.SetReg16(reg16FromModRM(int(mr.rm)), result)
+					} else {
+						c.writeMem16(c.segBase[DS]+mr.ea, result)
+					}
+				}
+			} else {
+				var dst uint32
+				if mr.isReg {
+					dst = c.GetReg32(int(mr.rm))
+				} else {
+					dst = c.readMem32(c.segBase[DS] + mr.ea)
+				}
+				src := c.GetReg32(int(mr.reg))
+				if count != 0 {
+					result := (dst >> count) | (src << (32 - count))
+					cf := (dst >> (count - 1)) & 1
+					c.setCF(cf != 0)
+					if count == 1 {
+						c.setOF(((dst >> 31) & 1) != ((result >> 31) & 1))
+					}
+					c.setZF(result == 0)
+					c.setSF((result>>31)&1 != 0)
+					c.setPF(parity8(uint8(result)))
+					if mr.isReg {
+						c.SetReg32(int(mr.rm), result)
+					} else {
+						c.writeMem32(c.segBase[DS]+mr.ea, result)
+					}
+				}
+			}
 		case 0x30:
 			// WRMSR — write MSR (stub: ignore)
 			// ECX = MSR number, EDX:EAX = value
@@ -1411,6 +1828,248 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				} else {
 					c.setZF(false)
 					c.SetReg32(EAX, dst)
+				}
+			}
+		case 0xA3:
+			// BT r/m16/32, r16/32
+			mr := c.parseModRM()
+			var bit, mask uint32
+			if operandSize == 2 {
+				if mr.isReg {
+					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
+					mask = 1 << bit
+					c.setZF((c.GetReg16(reg16FromModRM(int(mr.rm))) & uint16(mask)) == 0)
+				} else {
+					addr := c.segBase[DS] + mr.ea
+					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
+					mask = 1 << bit
+					c.setZF((c.readMem16(addr) & uint16(mask)) == 0)
+				}
+			} else {
+				if mr.isReg {
+					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
+					mask = 1 << bit
+					c.setZF((c.GetReg32(int(mr.rm)) & mask) == 0)
+				} else {
+					addr := c.segBase[DS] + mr.ea
+					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
+					mask = 1 << bit
+					c.setZF((c.readMem32(addr) & mask) == 0)
+				}
+			}
+		case 0xAB:
+			// BTS r/m16/32, r16/32
+			mr := c.parseModRM()
+			var bit, mask uint32
+			if operandSize == 2 {
+				if mr.isReg {
+					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
+					mask = 1 << bit
+					v := c.GetReg16(reg16FromModRM(int(mr.rm)))
+					c.setZF((v & uint16(mask)) == 0)
+					c.SetReg16(reg16FromModRM(int(mr.rm)), v|uint16(mask))
+				} else {
+					addr := c.segBase[DS] + mr.ea
+					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
+					mask = 1 << bit
+					v := c.readMem16(addr)
+					c.setZF((v & uint16(mask)) == 0)
+					c.writeMem16(addr, v|uint16(mask))
+				}
+			} else {
+				if mr.isReg {
+					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
+					mask = 1 << bit
+					v := c.GetReg32(int(mr.rm))
+					c.setZF((v & mask) == 0)
+					c.SetReg32(int(mr.rm), v|mask)
+				} else {
+					addr := c.segBase[DS] + mr.ea
+					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
+					mask = 1 << bit
+					v := c.readMem32(addr)
+					c.setZF((v & mask) == 0)
+					c.writeMem32(addr, v|mask)
+				}
+			}
+		case 0xB3:
+			// BTR r/m16/32, r16/32
+			mr := c.parseModRM()
+			var bit, mask uint32
+			if operandSize == 2 {
+				if mr.isReg {
+					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
+					mask = 1 << bit
+					v := c.GetReg16(reg16FromModRM(int(mr.rm)))
+					c.setZF((v & uint16(mask)) == 0)
+					c.SetReg16(reg16FromModRM(int(mr.rm)), v&^uint16(mask))
+				} else {
+					addr := c.segBase[DS] + mr.ea
+					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
+					mask = 1 << bit
+					v := c.readMem16(addr)
+					c.setZF((v & uint16(mask)) == 0)
+					c.writeMem16(addr, v&^uint16(mask))
+				}
+			} else {
+				if mr.isReg {
+					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
+					mask = 1 << bit
+					v := c.GetReg32(int(mr.rm))
+					c.setZF((v & mask) == 0)
+					c.SetReg32(int(mr.rm), v&^mask)
+				} else {
+					addr := c.segBase[DS] + mr.ea
+					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
+					mask = 1 << bit
+					v := c.readMem32(addr)
+					c.setZF((v & mask) == 0)
+					c.writeMem32(addr, v&^mask)
+				}
+			}
+		case 0xBA:
+			// BT/BTS/BTR/BTC r/m16/32, imm8
+			mr := c.parseModRM()
+			imm := uint32(c.fetch8())
+			switch mr.reg {
+			case 4: // BT
+				if operandSize == 2 {
+					bit := imm & 0xF
+					mask := uint16(1) << bit
+					if mr.isReg {
+						c.setZF((c.GetReg16(reg16FromModRM(int(mr.rm))) & mask) == 0)
+					} else {
+						c.setZF((c.readMem16(c.segBase[DS]+mr.ea) & mask) == 0)
+					}
+				} else {
+					bit := imm & 0x1F
+					mask := uint32(1) << bit
+					if mr.isReg {
+						c.setZF((c.GetReg32(int(mr.rm)) & mask) == 0)
+					} else {
+						c.setZF((c.readMem32(c.segBase[DS]+mr.ea) & mask) == 0)
+					}
+				}
+			case 5: // BTS
+				if operandSize == 2 {
+					bit := imm & 0xF
+					mask := uint16(1) << bit
+					if mr.isReg {
+						v := c.GetReg16(reg16FromModRM(int(mr.rm)))
+						c.setZF((v & mask) == 0)
+						c.SetReg16(reg16FromModRM(int(mr.rm)), v|mask)
+					} else {
+						addr := c.segBase[DS] + mr.ea
+						v := c.readMem16(addr)
+						c.setZF((v & mask) == 0)
+						c.writeMem16(addr, v|mask)
+					}
+				} else {
+					bit := imm & 0x1F
+					mask := uint32(1) << bit
+					if mr.isReg {
+						v := c.GetReg32(int(mr.rm))
+						c.setZF((v & mask) == 0)
+						c.SetReg32(int(mr.rm), v|mask)
+					} else {
+						addr := c.segBase[DS] + mr.ea
+						v := c.readMem32(addr)
+						c.setZF((v & mask) == 0)
+						c.writeMem32(addr, v|mask)
+					}
+				}
+			case 6: // BTR
+				if operandSize == 2 {
+					bit := imm & 0xF
+					mask := uint16(1) << bit
+					if mr.isReg {
+						v := c.GetReg16(reg16FromModRM(int(mr.rm)))
+						c.setZF((v & mask) == 0)
+						c.SetReg16(reg16FromModRM(int(mr.rm)), v&^mask)
+					} else {
+						addr := c.segBase[DS] + mr.ea
+						v := c.readMem16(addr)
+						c.setZF((v & mask) == 0)
+						c.writeMem16(addr, v&^mask)
+					}
+				} else {
+					bit := imm & 0x1F
+					mask := uint32(1) << bit
+					if mr.isReg {
+						v := c.GetReg32(int(mr.rm))
+						c.setZF((v & mask) == 0)
+						c.SetReg32(int(mr.rm), v&^mask)
+					} else {
+						addr := c.segBase[DS] + mr.ea
+						v := c.readMem32(addr)
+						c.setZF((v & mask) == 0)
+						c.writeMem32(addr, v&^mask)
+					}
+				}
+			case 7: // BTC
+				if operandSize == 2 {
+					bit := imm & 0xF
+					mask := uint16(1) << bit
+					if mr.isReg {
+						v := c.GetReg16(reg16FromModRM(int(mr.rm)))
+						c.setZF((v & mask) == 0)
+						c.SetReg16(reg16FromModRM(int(mr.rm)), v^mask)
+					} else {
+						addr := c.segBase[DS] + mr.ea
+						v := c.readMem16(addr)
+						c.setZF((v & mask) == 0)
+						c.writeMem16(addr, v^mask)
+					}
+				} else {
+					bit := imm & 0x1F
+					mask := uint32(1) << bit
+					if mr.isReg {
+						v := c.GetReg32(int(mr.rm))
+						c.setZF((v & mask) == 0)
+						c.SetReg32(int(mr.rm), v^mask)
+					} else {
+						addr := c.segBase[DS] + mr.ea
+						v := c.readMem32(addr)
+						c.setZF((v & mask) == 0)
+						c.writeMem32(addr, v^mask)
+					}
+				}
+			default:
+				return fmt.Errorf("0F BA /%d not implemented", mr.reg)
+			}
+		case 0xBB:
+			// BTC r/m16/32, r16/32
+			mr := c.parseModRM()
+			var bit, mask uint32
+			if operandSize == 2 {
+				if mr.isReg {
+					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
+					mask = 1 << bit
+					v := c.GetReg16(reg16FromModRM(int(mr.rm)))
+					c.setZF((v & uint16(mask)) == 0)
+					c.SetReg16(reg16FromModRM(int(mr.rm)), v^uint16(mask))
+				} else {
+					addr := c.segBase[DS] + mr.ea
+					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
+					mask = 1 << bit
+					v := c.readMem16(addr)
+					c.setZF((v & uint16(mask)) == 0)
+					c.writeMem16(addr, v^uint16(mask))
+				}
+			} else {
+				if mr.isReg {
+					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
+					mask = 1 << bit
+					v := c.GetReg32(int(mr.rm))
+					c.setZF((v & mask) == 0)
+					c.SetReg32(int(mr.rm), v^mask)
+				} else {
+					addr := c.segBase[DS] + mr.ea
+					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
+					mask = 1 << bit
+					v := c.readMem32(addr)
+					c.setZF((v & mask) == 0)
+					c.writeMem32(addr, v^mask)
 				}
 			}
 		case 0xB6:

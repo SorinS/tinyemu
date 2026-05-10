@@ -140,7 +140,7 @@ go test ./virtio -v
 go test ./cpu/... ./machine/...
 
 # Full suite with nasm in PATH — ALL PASS except cmd/temu (pre-existing)
-export PATH="/usr/local/go/bin:/opt/homebrew/Cellar/nasm/3.01/bin:$PATH"
+export PATH="/opt/homebrew/bin:$PATH"
 go test ./cpu/... ./machine/... ./mem/... ./devices/... ./slirp/... ./virtio/... ./test/x86
 ```
 
@@ -233,3 +233,8 @@ JSON config format (strict JSON — no comments, no trailing commas):
 ```
 
 Valid machine types: `riscv64`, `riscv32`, `x86`, `x86_64` (x86_64 currently aliases to x86 stub).
+
+## Development Environment
+
+- **Go**: 1.26.2 at `/opt/homebrew/bin/go` (also available via `go` when `/opt/homebrew/bin` is in PATH)
+- **nasm**: 3.x at `/opt/homebrew/bin/nasm` (required for `test/x86` assembly tests)

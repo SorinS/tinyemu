@@ -141,6 +141,18 @@ func (c *CPU) handleGroupO_00() error {
 func (c *CPU) handleGroupO_01() error {
 	mr := c.parseModRM()
 	switch mr.reg {
+	case 0: // SGDT
+		if !mr.isReg {
+			addr := c.segBase[DS] + mr.ea
+			c.writeMem16(addr, uint16(c.segLimit[GDTR]))
+			c.writeMem32(addr+2, c.segBase[GDTR])
+		}
+	case 1: // SIDT
+		if !mr.isReg {
+			addr := c.segBase[DS] + mr.ea
+			c.writeMem16(addr, uint16(c.segLimit[IDTR]))
+			c.writeMem32(addr+2, c.segBase[IDTR])
+		}
 	case 2: // LGDT
 		addr := c.segBase[DS] + mr.ea
 		limit := uint32(c.readMem16(addr))
@@ -153,6 +165,13 @@ func (c *CPU) handleGroupO_01() error {
 		base := uint32(c.readMem32(addr + 2))
 		c.segLimit[IDTR] = limit
 		c.segBase[IDTR] = base
+	case 4: // SMSW
+		val := uint16(c.cr[0])
+		if mr.isReg {
+			c.SetReg16(reg16FromModRM(int(mr.rm)), val)
+		} else {
+			c.writeMem16(c.segBase[DS]+mr.ea, val)
+		}
 	case 6: // LMSW
 		var val uint16
 		if mr.isReg {
@@ -161,6 +180,8 @@ func (c *CPU) handleGroupO_01() error {
 			val = c.readMem16(c.segBase[DS] + mr.ea)
 		}
 		c.cr[0] = (c.cr[0] & ^uint32(0xFFFF)) | uint32(val)
+	case 7: // INVLPG
+		// No TLB in this emulator, so this is a NOP.
 	default:
 		return fmt.Errorf("0F 01 /%d not implemented", mr.reg)
 	}

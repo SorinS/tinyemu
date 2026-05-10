@@ -2,8 +2,12 @@ package x86
 
 // movs implements MOVS (move string).
 // size is 1, 2, or 4 for byte, word, dword.
-func (c *CPU) movs(size uint32) {
-	src := c.segBase[DS] + c.GetReg32(ESI)
+func (c *CPU) movs(size uint32, segOverride int) {
+	seg := DS
+	if segOverride != -1 {
+		seg = segOverride
+	}
+	src := c.segBase[seg] + c.GetReg32(ESI)
 	dst := c.segBase[ES] + c.GetReg32(EDI)
 
 	switch size {
@@ -25,7 +29,9 @@ func (c *CPU) movs(size uint32) {
 }
 
 // stos implements STOS (store string).
-func (c *CPU) stos(size uint32) {
+func (c *CPU) stos(size uint32, segOverride int) {
+	_ = segOverride // STOS always uses ES for destination
+
 	dst := c.segBase[ES] + c.GetReg32(EDI)
 
 	switch size {
@@ -45,8 +51,12 @@ func (c *CPU) stos(size uint32) {
 }
 
 // lods implements LODS (load string).
-func (c *CPU) lods(size uint32) {
-	src := c.segBase[DS] + c.GetReg32(ESI)
+func (c *CPU) lods(size uint32, segOverride int) {
+	seg := DS
+	if segOverride != -1 {
+		seg = segOverride
+	}
+	src := c.segBase[seg] + c.GetReg32(ESI)
 
 	switch size {
 	case 1:
@@ -65,8 +75,12 @@ func (c *CPU) lods(size uint32) {
 }
 
 // cmps implements CMPS (compare string).
-func (c *CPU) cmps(size uint32) {
-	src := c.segBase[DS] + c.GetReg32(ESI)
+func (c *CPU) cmps(size uint32, segOverride int) {
+	seg := DS
+	if segOverride != -1 {
+		seg = segOverride
+	}
+	src := c.segBase[seg] + c.GetReg32(ESI)
 	dst := c.segBase[ES] + c.GetReg32(EDI)
 
 	switch size {
@@ -88,7 +102,9 @@ func (c *CPU) cmps(size uint32) {
 }
 
 // scas implements SCAS (scan string).
-func (c *CPU) scas(size uint32) {
+func (c *CPU) scas(size uint32, segOverride int) {
+	_ = segOverride // SCAS always uses ES for destination
+
 	dst := c.segBase[ES] + c.GetReg32(EDI)
 
 	switch size {

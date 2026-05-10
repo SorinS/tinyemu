@@ -17,6 +17,10 @@ func (c *CPU) handleGroup2_8() error {
 		r = c.rol8(r, count)
 	case 1:
 		r = c.ror8(r, count)
+	case 2:
+		r = c.rcl8(r, count)
+	case 3:
+		r = c.rcr8(r, count)
 	case 4:
 		r = c.shl8(r, count)
 	case 5:
@@ -49,6 +53,10 @@ func (c *CPU) handleGroup2_32() error {
 		r = c.rol32(r, count)
 	case 1:
 		r = c.ror32(r, count)
+	case 2:
+		r = c.rcl32(r, count)
+	case 3:
+		r = c.rcr32(r, count)
 	case 4:
 		r = c.shl32(r, count)
 	case 5:
@@ -80,6 +88,10 @@ func (c *CPU) handleGroup2_8Count(count uint8) error {
 		r = c.rol8(r, count)
 	case 1:
 		r = c.ror8(r, count)
+	case 2:
+		r = c.rcl8(r, count)
+	case 3:
+		r = c.rcr8(r, count)
 	case 4:
 		r = c.shl8(r, count)
 	case 5:
@@ -111,6 +123,10 @@ func (c *CPU) handleGroup2_32Count(count uint8) error {
 		r = c.rol32(r, count)
 	case 1:
 		r = c.ror32(r, count)
+	case 2:
+		r = c.rcl32(r, count)
+	case 3:
+		r = c.rcr32(r, count)
 	case 4:
 		r = c.shl32(r, count)
 	case 5:
@@ -143,6 +159,10 @@ func (c *CPU) handleGroup2_16() error {
 		r = c.rol16(r, count)
 	case 1:
 		r = c.ror16(r, count)
+	case 2:
+		r = c.rcl16(r, count)
+	case 3:
+		r = c.rcr16(r, count)
 	case 4:
 		r = c.shl16(r, count)
 	case 5:
@@ -174,6 +194,10 @@ func (c *CPU) handleGroup2_16Count(count uint8) error {
 		r = c.rol16(r, count)
 	case 1:
 		r = c.ror16(r, count)
+	case 2:
+		r = c.rcl16(r, count)
+	case 3:
+		r = c.rcr16(r, count)
 	case 4:
 		r = c.shl16(r, count)
 	case 5:
@@ -285,11 +309,43 @@ func (c *CPU) handleGroup5_16() error {
 		}
 		c.push16(uint16(c.eip))
 		c.eip = uint32(target)
+	case 3: // CALLF m16:16
+		if !mr.isReg {
+			addr := c.segBase[DS] + mr.ea
+			off := c.readMem16(addr)
+			cs := c.readMem16(addr + 2)
+			c.push16(c.seg[CS])
+			c.push16(uint16(c.eip))
+			if c.IsProtectedMode() {
+				if err := c.LoadSegmentProtected(CS, cs); err != nil {
+					return err
+				}
+			} else {
+				c.seg[CS] = cs
+				c.segBase[CS] = uint32(cs) << 4
+			}
+			c.eip = uint32(off)
+		}
 	case 4: // JMP r/m16
 		if mr.isReg {
 			c.eip = uint32(c.GetReg16(reg16FromModRM(int(mr.rm))))
 		} else {
 			c.eip = uint32(c.readMem16(c.segBase[DS] + mr.ea))
+		}
+	case 5: // JMPF m16:16
+		if !mr.isReg {
+			addr := c.segBase[DS] + mr.ea
+			off := c.readMem16(addr)
+			cs := c.readMem16(addr + 2)
+			if c.IsProtectedMode() {
+				if err := c.LoadSegmentProtected(CS, cs); err != nil {
+					return err
+				}
+			} else {
+				c.seg[CS] = cs
+				c.segBase[CS] = uint32(cs) << 4
+			}
+			c.eip = uint32(off)
 		}
 	case 6: // PUSH r/m16
 		if mr.isReg {
@@ -487,11 +543,43 @@ func (c *CPU) handleGroup5_32() error {
 		}
 		c.push32(c.eip)
 		c.eip = target
+	case 3: // CALLF m16:32
+		if !mr.isReg {
+			addr := c.segBase[DS] + mr.ea
+			off := c.readMem32(addr)
+			cs := c.readMem16(addr + 4)
+			c.push32(uint32(c.seg[CS]))
+			c.push32(c.eip)
+			if c.IsProtectedMode() {
+				if err := c.LoadSegmentProtected(CS, cs); err != nil {
+					return err
+				}
+			} else {
+				c.seg[CS] = cs
+				c.segBase[CS] = uint32(cs) << 4
+			}
+			c.eip = off
+		}
 	case 4: // JMP r/m32
 		if mr.isReg {
 			c.eip = c.GetReg32(int(mr.rm))
 		} else {
 			c.eip = c.readMem32(c.segBase[DS] + mr.ea)
+		}
+	case 5: // JMPF m16:32
+		if !mr.isReg {
+			addr := c.segBase[DS] + mr.ea
+			off := c.readMem32(addr)
+			cs := c.readMem16(addr + 4)
+			if c.IsProtectedMode() {
+				if err := c.LoadSegmentProtected(CS, cs); err != nil {
+					return err
+				}
+			} else {
+				c.seg[CS] = cs
+				c.segBase[CS] = uint32(cs) << 4
+			}
+			c.eip = off
 		}
 	case 6: // PUSH r/m32
 		if mr.isReg {

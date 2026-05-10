@@ -184,7 +184,12 @@ func (p *PC) LoadBIOS(biosData []byte, kernelData []byte, initrdData []byte, cmd
 		if err == nil {
 			return nil
 		}
-		// If bzImage parsing fails, fall through to raw kernel load
+		// If bzImage parsing fails, try vmlinux ELF direct boot
+		_, err = p.loadVMLinux(kernelData, initrdData, cmdLine)
+		if err == nil {
+			return nil
+		}
+		// If both fail, fall through to BIOS ROM load
 	}
 
 	// Copy BIOS to both low and high ROM regions

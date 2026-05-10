@@ -204,7 +204,6 @@ func TestRepMovsStack(t *testing.T) {
 
 // TestPushadPopad verifies PUSHAD/POPAD preserve all registers.
 func TestPushadPopad(t *testing.T) {
-	t.Skip("PUSHAD/POPAD not yet implemented")
 	c := newTestCPU(t)
 	c.SetReg32(ESP, 0x400)
 	c.SetReg32(EAX, 0x11111111)
