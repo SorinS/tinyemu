@@ -128,11 +128,15 @@ func (c *CPU) Step() (err error) {
 	origEIP := c.eip
 	defer func() {
 		if r := recover(); r != nil {
-			if pf, ok := r.(pageFaultError); ok {
+			switch ex := r.(type) {
+			case pageFaultError:
 				c.eip = origEIP
-				c.cr[2] = pf.addr
-				err = c.handleInterrupt(0x0E, true, pf.errorCode)
-			} else {
+				c.cr[2] = ex.addr
+				err = c.handleInterrupt(0x0E, true, ex.errorCode)
+			case stackFaultError:
+				c.eip = origEIP
+				err = c.handleInterrupt(0x0C, true, ex.errorCode)
+			default:
 				panic(r)
 			}
 		}
@@ -282,6 +286,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 	// STI - Set Interrupt Flag
 	case 0xFB:
 		c.eflags |= EFLAGS_IF
+		c.interruptsBlocked = true
 
 	// CLD - Clear Direction Flag
 	case 0xFC:
@@ -663,6 +668,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 	// POP SS
 	case 0x17:
 		c.seg[SS] = uint16(c.pop32())
+		c.interruptsBlocked = true
 
 	// PUSH DS
 	case 0x1E:
@@ -815,6 +821,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				c.segBase[CS] = uint32(cs) << 4
 			}
 			c.eflags = uint32(c.pop16())
+			c.eflags |= EFLAGS_RF
 		} else {
 			c.eip = c.pop32()
 			cs := c.pop32()
@@ -827,6 +834,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				c.segBase[CS] = uint32(cs) << 4
 			}
 			c.eflags = c.pop32()
+			c.eflags |= EFLAGS_RF
 		}
 
 	// PUSHF
@@ -1334,6 +1342,9 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 		} else {
 			c.seg[mr.reg] = segVal
 			c.segBase[mr.reg] = uint32(segVal) << 4
+		}
+		if mr.reg == SS {
+			c.interruptsBlocked = true
 		}
 
 	// LES r16/32, m16:16/32
@@ -2164,6 +2175,7 @@ func (c *CPU) fetchMoffs() uint32 {
 // push16 pushes a 16-bit value onto the stack.
 func (c *CPU) push16(v uint16) {
 	c.SetReg16(SP, c.GetReg16(SP)-2)
+	c.checkStackLimit(uint32(c.GetReg16(SP)), 2)
 	c.writeMem16(c.segBase[SS]+uint32(c.GetReg16(SP)), v)
 }
 
@@ -2177,6 +2189,7 @@ func (c *CPU) pop16() uint16 {
 // push32 pushes a 32-bit value onto the stack.
 func (c *CPU) push32(v uint32) {
 	c.SetReg32(ESP, c.GetReg32(ESP)-4)
+	c.checkStackLimit(c.GetReg32(ESP), 4)
 	c.writeMem32(c.segBase[SS]+c.GetReg32(ESP), v)
 }
 
@@ -2263,6 +2276,10 @@ func (c *CPU) handleInterrupt(vector uint8, isHardware bool, errorCode ...uint32
 	if selector == 0 {
 		return fmt.Errorf("interrupt gate null CS selector for vector %02X", vector)
 	}
+	oldCPL := c.cpl
+	oldCS := c.seg[CS]
+	oldEIP := c.eip
+	oldEFLAGS := c.eflags
 	if err := c.LoadSegmentProtected(CS, selector); err != nil {
 		return fmt.Errorf("interrupt gate load CS failed for vector %02X: %w", vector, err)
 	}
@@ -2274,8 +2291,15 @@ func (c *CPU) handleInterrupt(vector uint8, isHardware bool, errorCode ...uint32
 		return fmt.Errorf("interrupt gate CS is not code for vector %02X", vector)
 	}
 	csDPL := uint8((csAccess >> 5) & 3)
-	if csDPL > uint8(c.cpl) {
+	if csDPL > uint8(oldCPL) {
 		return fmt.Errorf("interrupt gate CS DPL > CPL for vector %02X", vector)
+	}
+
+	// For non-conforming code segments, CPL becomes the DPL of the code segment.
+	// For conforming segments, CPL does not change.
+	isConforming := (csType&0x04 != 0) // types 0xC-0xF with bit 2 set
+	if !isConforming {
+		c.cpl = int(csDPL)
 	}
 
 	// Determine operand size from gate type.
@@ -2286,20 +2310,59 @@ func (c *CPU) handleInterrupt(vector uint8, isHardware bool, errorCode ...uint32
 		gateSize = 4
 	}
 
-	// Push FLAGS, CS, EIP.
-	c.pushOp(c.eflags, gateSize)
-	c.pushOp(uint32(c.seg[CS]), gateSize)
-	c.pushOp(c.eip, gateSize)
+	// Stack switch if going to a more privileged ring (lower DPL number).
+	// Conforming segments do not change CPL, so no stack switch occurs.
+	if !isConforming && oldCPL > int(csDPL) {
+		// Read new SS:ESP from the TSS.
+		tssBase := c.segBase[TR]
+		tssLimit := c.segLimit[TR]
+		// TSS offsets: ESPn at 0x04 + n*8, SSn at 0x08 + n*8
+		espOffset := uint32(4 + csDPL*8)
+		ssOffset := uint32(8 + csDPL*8)
+		if ssOffset+1 > tssLimit {
+			return fmt.Errorf("TSS limit too small for stack switch to ring %d", csDPL)
+		}
+		newESP := c.readMem32(tssBase + espOffset)
+		newSS := c.readMem16(tssBase + ssOffset)
+
+		oldSS := c.seg[SS]
+		oldESP := c.GetReg32(ESP)
+
+		// Load new SS.
+		if err := c.LoadSegmentProtected(SS, newSS); err != nil {
+			return fmt.Errorf("stack switch load SS failed: %w", err)
+		}
+		// Set new ESP.
+		c.SetReg32(ESP, newESP)
+
+		// Push old SS and old ESP onto the new stack.
+		if gateSize == 2 {
+			c.push16(oldSS)
+			c.push16(uint16(oldESP))
+		} else {
+			c.push32(uint32(oldSS))
+			c.push32(oldESP)
+		}
+	}
+
+	// Push FLAGS, CS, EIP (using saved old values).
+	c.pushOp(oldEFLAGS, gateSize)
+	c.pushOp(uint32(oldCS), gateSize)
+	c.pushOp(oldEIP, gateSize)
 
 	// Push error code if provided (for exceptions like #PF).
+	// Error codes are always 32-bit in 32-bit protected mode, even for 16-bit gates.
 	if len(errorCode) > 0 {
-		c.pushOp(errorCode[0], gateSize)
+		c.push32(errorCode[0])
 	}
 
 	// Interrupt gate (but not trap gate) clears IF and TF.
 	if gateType == 0x06 || gateType == 0x0E {
 		c.eflags &^= EFLAGS_IF | EFLAGS_TF
 	}
+
+	// Set RF to suppress debug exceptions on the first instruction of the handler.
+	c.eflags |= EFLAGS_RF
 
 	// Jump to handler.
 	c.eip = offsetLow | offsetHigh<<16

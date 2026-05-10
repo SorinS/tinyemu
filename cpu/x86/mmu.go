@@ -1,5 +1,10 @@
 package x86
 
+import (
+	"fmt"
+	"os"
+)
+
 // pagingEnabled returns true if paging is enabled (CR0.PG = 1).
 func (c *CPU) pagingEnabled() bool {
 	return c.cr[0]&CR0_PG != 0
@@ -8,6 +13,11 @@ func (c *CPU) pagingEnabled() bool {
 // pageFaultError is used to signal a page fault from deep inside memory access.
 type pageFaultError struct {
 	addr      uint32
+	errorCode uint32
+}
+
+// stackFaultError is used to signal a stack segment fault (#SS).
+type stackFaultError struct {
 	errorCode uint32
 }
 
@@ -21,7 +31,44 @@ func (c *CPU) raisePageFault(addr uint32, write, user bool) {
 	if user {
 		code |= 0x04
 	}
+	// Debug: print page fault details
+	fmt.Fprintf(os.Stderr, "[PF] step=%d linear=%08X write=%v user=%v CR3=%08X CR0=%08X EIP=%08X ESP=%08X\n",
+		c.cycles, addr, write, user, c.cr[3], c.cr[0], c.eip, c.GetReg32(ESP))
 	panic(pageFaultError{addr: addr, errorCode: code})
+}
+
+// raiseStackFault panics with a stackFaultError so that Step() can catch it
+// and raise #SS (vector 0x0C).
+func (c *CPU) raiseStackFault(errorCode uint32) {
+	panic(stackFaultError{errorCode: errorCode})
+}
+
+// checkStackLimit verifies that a stack access of the given size at the given
+// offset is within the stack segment bounds. If not, it raises #SS.
+func (c *CPU) checkStackLimit(offset uint32, size uint32) {
+	limit := c.segLimit[SS]
+	access := c.segAccess[SS]
+	segType := access & 0x0F
+	isExpandDown := (segType&0x04 != 0) && (segType&0x08 == 0)
+	is32Bit := (access>>8)&0x04 != 0 // B-bit in flags
+
+	if isExpandDown {
+		var max uint32
+		if is32Bit {
+			max = 0xFFFFFFFF
+		} else {
+			max = 0xFFFF
+		}
+		// For expand-down, valid range is (limit+1) to max.
+		if offset <= limit || offset > max || offset+size-1 > max {
+			c.raiseStackFault(0)
+		}
+	} else {
+		// For expand-up, valid range is 0 to limit.
+		if offset > limit || offset+size-1 > limit {
+			c.raiseStackFault(0)
+		}
+	}
 }
 
 // translateAddress converts a linear address to a physical address using the
@@ -36,6 +83,7 @@ func (c *CPU) translateAddress(lin uint32, write, user bool) uint32 {
 	pde := c.readPhys32(pdeAddr)
 
 	if pde&1 == 0 {
+		fmt.Fprintf(os.Stderr, "[PF-DEBUG] lin=%08X PDE not present: pdeAddr=%08X pde=%08X\n", lin, pdeAddr, pde)
 		c.raisePageFault(lin, write, user)
 	}
 
@@ -49,6 +97,7 @@ func (c *CPU) translateAddress(lin uint32, write, user bool) uint32 {
 	pte := c.readPhys32(pteAddr)
 
 	if pte&1 == 0 {
+		fmt.Fprintf(os.Stderr, "[PF-DEBUG] lin=%08X PTE not present: pde=%08X pteAddr=%08X pte=%08X\n", lin, pde, pteAddr, pte)
 		c.raisePageFault(lin, write, user)
 	}
 

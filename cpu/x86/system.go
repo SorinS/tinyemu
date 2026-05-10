@@ -49,6 +49,11 @@ func (d SegmentDescriptor) Is32Bit() bool {
 	return d.Flags&0x04 != 0
 }
 
+// IsConforming returns true if this is a conforming code segment.
+func (d SegmentDescriptor) IsConforming() bool {
+	return d.IsCode() && d.Access&0x04 != 0
+}
+
 // LoadSegmentProtected loads a segment register from a selector in protected mode.
 func (c *CPU) LoadSegmentProtected(segReg int, selector uint16) error {
 	if selector == 0 && (segReg == CS || segReg == SS) {
@@ -98,7 +103,7 @@ func (c *CPU) LoadSegmentProtected(segReg int, selector uint16) error {
 	c.segLimit[segReg] = desc.Limit
 	c.segAccess[segReg] = uint32(desc.Access) | (uint32(desc.Flags) << 8)
 
-	if segReg == CS {
+	if segReg == CS && !desc.IsConforming() {
 		c.cpl = int(rpl)
 	}
 

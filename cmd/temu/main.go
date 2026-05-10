@@ -299,6 +299,7 @@ func run() int {
 	return runEmulator(m, console, ethDevs, sigCh)
 }
 
+
 // buildConfigFromCLI creates a VMConfig from command-line arguments.
 // Returns an error if required arguments are missing.
 // Note: This only creates the base config structure. The actual flag values
@@ -630,6 +631,9 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 		}
 
 		// Execute instructions
-		cpu.Run(maxExecCycle)
+		if err := cpu.Run(maxExecCycle); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR in Run: %v\n", err)
+			return 1
+		}
 	}
 }
