@@ -1,5 +1,13 @@
 package pc
 
+import (
+	"fmt"
+	"os"
+)
+
+// ioDebug controls trace logging of port I/O. Enabled with TINYEMU_X86_IO_DEBUG=1.
+var ioDebug = os.Getenv("TINYEMU_X86_IO_DEBUG") == "1"
+
 // IOReadFunc is called when an I/O port is read.
 type IOReadFunc func(port uint16) uint32
 
@@ -33,22 +41,33 @@ func (io *IOPortDispatcher) RegisterWrite(start, end uint16, fn IOWriteFunc) {
 
 // Read8 reads an 8-bit value from a port.
 func (io *IOPortDispatcher) Read8(port uint16) uint8 {
+	var val uint8 = 0xFF
 	if fn := io.readHandlers[port]; fn != nil {
-		return uint8(fn(port))
+		val = uint8(fn(port))
 	}
-	return 0xFF
+	if ioDebug {
+		fmt.Fprintf(os.Stderr, "[io] in  %04x => %02x\n", port, val)
+	}
+	return val
 }
 
 // Read16 reads a 16-bit value from a port.
 func (io *IOPortDispatcher) Read16(port uint16) uint16 {
+	var val uint16 = 0xFFFF
 	if fn := io.readHandlers[port]; fn != nil {
-		return uint16(fn(port))
+		val = uint16(fn(port))
 	}
-	return 0xFFFF
+	if ioDebug {
+		fmt.Fprintf(os.Stderr, "[io] inw %04x => %04x\n", port, val)
+	}
+	return val
 }
 
 // Write8 writes an 8-bit value to a port.
 func (io *IOPortDispatcher) Write8(port uint16, val uint8) {
+	if ioDebug {
+		fmt.Fprintf(os.Stderr, "[io] out %04x <= %02x\n", port, val)
+	}
 	if fn := io.writeHandlers[port]; fn != nil {
 		fn(port, uint32(val))
 	}
@@ -56,6 +75,9 @@ func (io *IOPortDispatcher) Write8(port uint16, val uint8) {
 
 // Write16 writes a 16-bit value to a port.
 func (io *IOPortDispatcher) Write16(port uint16, val uint16) {
+	if ioDebug {
+		fmt.Fprintf(os.Stderr, "[io] outw %04x <= %04x\n", port, val)
+	}
 	if fn := io.writeHandlers[port]; fn != nil {
 		fn(port, uint32(val))
 	}

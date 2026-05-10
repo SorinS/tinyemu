@@ -22,6 +22,7 @@ import (
 
 	"github.com/jtolio/tinyemu-go/devices"
 	"github.com/jtolio/tinyemu-go/machine"
+	"github.com/jtolio/tinyemu-go/machine/pc"
 	"github.com/jtolio/tinyemu-go/p9"
 	"github.com/jtolio/tinyemu-go/virtio"
 	"github.com/ulikunitz/xz"

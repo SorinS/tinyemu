@@ -52,6 +52,7 @@ func (p *PIC8259) writeCommand(val uint8) {
 		p.imr = 0
 		p.isr = 0
 		p.irr = 0
+		p.updateINTR()
 		return
 	}
 	if val&0x08 != 0 {
@@ -65,6 +66,7 @@ func (p *PIC8259) writeCommand(val uint8) {
 	if val&0x60 == 0 {
 		// Non-specific EOI
 		p.isr &^= p.isr & -p.isr // clear lowest set bit
+		p.updateINTR()
 	}
 }
 
@@ -90,6 +92,21 @@ func (p *PIC8259) writeData(val uint8) {
 	default:
 		// OCW1 - set IMR
 		p.imr = val
+		p.updateINTR()
+	}
+}
+
+// updateINTR asserts or clears the CPU INTR line based on whether any unmasked
+// IRQ is pending and not currently in service.
+func (p *PIC8259) updateINTR() {
+	if p.cpu == nil {
+		return
+	}
+	pending := p.irr &^ p.imr
+	if pending != 0 {
+		p.cpu.SetINTR(1)
+	} else {
+		p.cpu.SetINTR(0)
 	}
 }
 
@@ -97,6 +114,7 @@ func (p *PIC8259) writeData(val uint8) {
 func (p *PIC8259) RaiseIRQ(irq uint8) {
 	if irq < 8 {
 		p.irr |= 1 << irq
+		p.updateINTR()
 	}
 }
 
@@ -104,6 +122,7 @@ func (p *PIC8259) RaiseIRQ(irq uint8) {
 func (p *PIC8259) LowerIRQ(irq uint8) {
 	if irq < 8 {
 		p.irr &^= 1 << irq
+		p.updateINTR()
 	}
 }
 
@@ -144,5 +163,6 @@ func (p *PIC8259) DeliverInterrupt() int {
 	p.irr &^= 1 << irq
 	p.isr |= 1 << irq
 	vector := p.icw2 + irq
+	p.updateINTR()
 	return int(vector)
 }

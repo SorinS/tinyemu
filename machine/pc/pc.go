@@ -56,6 +56,8 @@ type PC struct {
 	virtioCount   int
 	nextVirtIOIRQ int
 
+	lastTickCycles uint64
+
 	shutdownRequested bool
 	shutdownExitCode  int
 }
@@ -104,6 +106,7 @@ func New(cfg Config) (*PC, error) {
 	p.pic.Register(p.io)
 
 	p.pit = NewPIT8254(p.pic)
+	p.pit.SetCyclesFunc(p.cpu.GetCycles)
 	p.pit.Register(p.io)
 
 	memSizeKB := uint32(cfg.RAMSize / 1024)
@@ -115,6 +118,20 @@ func New(cfg Config) (*PC, error) {
 
 	p.kbd = NewKeyboard8042()
 	p.kbd.Register(p.io)
+
+	// System Control Port B (0x61): bit 0 enables PIT channel 2 gate; bit 1
+	// is the speaker data line. Linux's quick_pit_calibrate masks this port,
+	// so we need it to read as 0 by default rather than 0xFF.
+	var port61 uint8
+	p.io.RegisterRead(0x61, 0x61, func(port uint16) uint32 {
+		// Toggle the refresh bit (bit 4) on each read so software that
+		// polls it for a delay doesn't spin forever.
+		port61 ^= 0x10
+		return uint32(port61)
+	})
+	p.io.RegisterWrite(0x61, 0x61, func(port uint16, val uint32) {
+		port61 = uint8(val)
+	})
 
 	// Wire CPU I/O to board I/O dispatcher
 	p.cpu.SetIOHandlers(
@@ -229,13 +246,10 @@ func (p *PC) GetShutdownExitCode() int {
 }
 
 func (p *PC) CheckTimer() {
-	p.pit.Tick()
-	// Update CPU interrupt line based on pending PIC interrupts
-	if p.pic.PeekInterrupt() >= 0 {
-		p.cpu.SetINTR(1)
-	} else {
-		p.cpu.SetINTR(0)
-	}
+	cycles := p.cpu.GetCycles()
+	delta := cycles - p.lastTickCycles
+	p.lastTickCycles = cycles
+	p.pit.Tick(delta)
 }
 
 func (p *PC) PollDevices() {
@@ -274,4 +288,10 @@ func (p *PC) AddVirtIODevice(dev *virtio.Device) (int, error) {
 
 func (p *PC) Console() *virtio.Console {
 	return p.consoleDev
+}
+
+// UART returns the COM1 device so external callers (e.g. cmd/temu) can push
+// stdin bytes into the receive FIFO.
+func (p *PC) UART() *UART16550 {
+	return p.uart
 }

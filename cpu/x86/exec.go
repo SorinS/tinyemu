@@ -4,6 +4,14 @@ import (
 	"fmt"
 )
 
+// detectDecJnzLoop returns true if the next two bytes after EIP form
+// `JNZ -3`, indicating a one-byte DEC reg followed by a backward jump to
+// itself. Used to fast-path Linux's __delay() busy loop.
+func (c *CPU) detectDecJnzLoop() bool {
+	lip := c.GetLIP()
+	return c.readMem8(lip) == 0x75 && c.readMem8(lip+1) == 0xFD
+}
+
 // readPhys8 reads a byte from the given physical address (no paging).
 func (c *CPU) readPhys8(addr uint32) uint8 {
 	v, _ := c.memMap.Read8(uint64(addr & c.a20Mask))
@@ -20,6 +28,20 @@ func (c *CPU) readPhys16(addr uint32) uint16 {
 func (c *CPU) readPhys32(addr uint32) uint32 {
 	v, _ := c.memMap.Read32(uint64(addr & c.a20Mask))
 	return v
+}
+
+// readPhys64 reads a qword from the given physical address (no paging). Used
+// by PAE paging-structure walks.
+func (c *CPU) readPhys64(addr uint32) uint64 {
+	lo := uint64(c.readPhys32(addr))
+	hi := uint64(c.readPhys32(addr + 4))
+	return lo | (hi << 32)
+}
+
+// writePhys64 writes a qword to the given physical address (no paging).
+func (c *CPU) writePhys64(addr uint32, val uint64) {
+	c.writePhys32(addr, uint32(val))
+	c.writePhys32(addr+4, uint32(val>>32))
 }
 
 // writePhys8 writes a byte to the given physical address (no paging).
@@ -39,32 +61,48 @@ func (c *CPU) writePhys32(addr uint32, val uint32) {
 
 // readMem8 reads a byte from the given linear address (with paging).
 func (c *CPU) readMem8(addr uint32) uint8 {
-	return c.readPhys8(c.translateAddress(addr, false, false))
+	return c.readPhys8(c.translateAddress(addr, false, false, false))
 }
 
 // readMem16 reads a word from the given linear address (with paging).
 func (c *CPU) readMem16(addr uint32) uint16 {
-	return c.readPhys16(c.translateAddress(addr, false, false))
+	return c.readPhys16(c.translateAddress(addr, false, false, false))
 }
 
 // readMem32 reads a dword from the given linear address (with paging).
 func (c *CPU) readMem32(addr uint32) uint32 {
-	return c.readPhys32(c.translateAddress(addr, false, false))
+	return c.readPhys32(c.translateAddress(addr, false, false, false))
 }
 
 // writeMem8 writes a byte to the given linear address (with paging).
 func (c *CPU) writeMem8(addr uint32, val uint8) {
-	c.writePhys8(c.translateAddress(addr, true, false), val)
+	c.writePhys8(c.translateAddress(addr, true, false, false), val)
 }
 
 // writeMem16 writes a word to the given linear address (with paging).
 func (c *CPU) writeMem16(addr uint32, val uint16) {
-	c.writePhys16(c.translateAddress(addr, true, false), val)
+	c.writePhys16(c.translateAddress(addr, true, false, false), val)
 }
 
 // writeMem32 writes a dword to the given linear address (with paging).
 func (c *CPU) writeMem32(addr uint32, val uint32) {
-	c.writePhys32(c.translateAddress(addr, true, false), val)
+	c.writePhys32(c.translateAddress(addr, true, false, false), val)
+}
+
+// fetchMem8 reads a code byte from the given linear address. Faults during
+// instruction fetch get bit 4 set in the #PF error code.
+func (c *CPU) fetchMem8(addr uint32) uint8 {
+	return c.readPhys8(c.translateAddress(addr, false, false, true))
+}
+
+// fetchMem16 reads a code word.
+func (c *CPU) fetchMem16(addr uint32) uint16 {
+	return c.readPhys16(c.translateAddress(addr, false, false, true))
+}
+
+// fetchMem32 reads a code dword.
+func (c *CPU) fetchMem32(addr uint32) uint32 {
+	return c.readPhys32(c.translateAddress(addr, false, false, true))
 }
 
 // Exported memory accessors for tests and loaders.
@@ -84,7 +122,7 @@ func (c *CPU) maskEIP() {
 // fetch8 reads the next byte from the code stream and advances EIP.
 func (c *CPU) fetch8() uint8 {
 	lip := c.GetLIP()
-	v := c.readMem8(lip)
+	v := c.fetchMem8(lip)
 	c.eip++
 	c.maskEIP()
 	return v
@@ -93,7 +131,7 @@ func (c *CPU) fetch8() uint8 {
 // fetch16 reads the next word from the code stream and advances EIP.
 func (c *CPU) fetch16() uint16 {
 	lip := c.GetLIP()
-	v := c.readMem16(lip)
+	v := c.fetchMem16(lip)
 	c.eip += 2
 	c.maskEIP()
 	return v
@@ -102,7 +140,7 @@ func (c *CPU) fetch16() uint16 {
 // fetch32 reads the next dword from the code stream and advances EIP.
 func (c *CPU) fetch32() uint32 {
 	lip := c.GetLIP()
-	v := c.readMem32(lip)
+	v := c.fetchMem32(lip)
 	c.eip += 4
 	c.maskEIP()
 	return v
@@ -219,6 +257,16 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 	// NOP
 	case 0x90:
 		// Do nothing
+
+	// WAIT/FWAIT — no FPU; treat as NOP.
+	case 0x9B:
+		// Do nothing.
+
+	// x87 family (D8-DF). With CPUID FPU=0 the kernel uses softfp and won't
+	// issue these on the fast path; we still need to consume the ModRM byte
+	// so the decoder doesn't desync if a stray FNINIT/FNCLEX appears.
+	case 0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF:
+		c.parseModRM()
 
 	// PUSHA/PUSHAD
 	case 0x60:
@@ -728,11 +776,26 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 	case 0x47:
 		c.SetReg32(EDI, c.inc32(c.GetReg32(EDI)))
 
-	// DEC r32
+	// DEC r32. Linux's __delay() is `dec eax; jnz -3` looping until EAX=0;
+	// our cycle-per-instruction emulation is far too slow to grind through
+	// the millions/billions of iterations the kernel passes in. When we
+	// detect the pattern, short-circuit to the loop's terminal state.
 	case 0x48:
-		c.SetReg32(EAX, c.dec32(c.GetReg32(EAX)))
+		eax := c.GetReg32(EAX)
+		if eax > 1 && c.detectDecJnzLoop() {
+			c.cycles += uint64(eax-1) * 2
+			c.SetReg32(EAX, c.dec32(1))
+			return nil
+		}
+		c.SetReg32(EAX, c.dec32(eax))
 	case 0x49:
-		c.SetReg32(ECX, c.dec32(c.GetReg32(ECX)))
+		ecx := c.GetReg32(ECX)
+		if ecx > 1 && c.detectDecJnzLoop() {
+			c.cycles += uint64(ecx-1) * 2
+			c.SetReg32(ECX, c.dec32(1))
+			return nil
+		}
+		c.SetReg32(ECX, c.dec32(ecx))
 	case 0x4A:
 		c.SetReg32(EDX, c.dec32(c.GetReg32(EDX)))
 	case 0x4B:
@@ -1551,9 +1614,15 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 		case 0x20:
 			// MOV r32, CR0-CR7
 			return c.handleMovCR(true)
+		case 0x21:
+			// MOV r32, DR0-DR7
+			return c.handleMovDR(true)
 		case 0x22:
 			// MOV CR0-CR7, r32
 			return c.handleMovCR(false)
+		case 0x23:
+			// MOV DR0-DR7, r32
+			return c.handleMovDR(false)
 		case 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
 			0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F:
 			return c.handleJccNear(opcode2, operandSize)
@@ -1788,15 +1857,14 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				}
 			}
 		case 0x30:
-			// WRMSR — write MSR (stub: ignore)
-			// ECX = MSR number, EDX:EAX = value
+			// WRMSR — ECX = MSR number, EDX:EAX = value
+			c.handleWRMSR()
 		case 0x31:
 			// RDTSC
 			c.handleRDTSC()
 		case 0x32:
-			// RDMSR — read MSR (stub: return 0)
-			c.SetReg32(EAX, 0)
-			c.SetReg32(EDX, 0)
+			// RDMSR — ECX = MSR number, return EDX:EAX
+			c.handleRDMSR()
 		case 0xAF:
 			// IMUL r32, r/m32
 			mr := c.parseModRM()
@@ -2163,8 +2231,201 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			r := opcode2 & 7
 			v := c.GetReg32(int(r))
 			c.SetReg32(int(r), (v>>24)|((v>>8)&0xFF00)|((v<<8)&0xFF0000)|(v<<24))
+
+		// CMOVcc r16/32, r/m16/32 (0F 40..4F).
+		case 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+			0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F:
+			return c.handleCMOVcc(opcode2, operandSize)
+
+		// Multi-byte NOP `0F 1F /n` and 0F 0D (prefetch hints; treat as NOP).
+		case 0x1F, 0x0D:
+			c.parseModRM()
+
+		// CLTS (clear CR0.TS).
+		case 0x06:
+			if c.IsProtectedMode() && c.cpl != 0 {
+				c.raiseGeneralProtectionFault(0)
+			}
+			c.cr[0] &^= CR0_TS
+
+		// INVD, WBINVD: ignore (no caches).
+		case 0x08, 0x09:
+			if c.IsProtectedMode() && c.cpl != 0 {
+				c.raiseGeneralProtectionFault(0)
+			}
+
+		// LSS r16/32, m16:32 — load SS:reg from memory.
+		case 0xB2:
+			return c.handleLoadFarPointer(SS, operandSize)
+		// LFS
+		case 0xB4:
+			return c.handleLoadFarPointer(FS, operandSize)
+		// LGS
+		case 0xB5:
+			return c.handleLoadFarPointer(GS, operandSize)
+
+		// XADD r/m8, r8
+		case 0xC0:
+			mr := c.parseModRM()
+			var dst uint8
+			if mr.isReg {
+				dst = c.GetReg8(reg8FromModRM(int(mr.rm)))
+			} else {
+				dst = c.readMem8(c.segBase[DS] + mr.ea)
+			}
+			src := c.GetReg8(reg8FromModRM(int(mr.reg)))
+			sum := c.add8(dst, src)
+			if mr.isReg {
+				c.SetReg8(reg8FromModRM(int(mr.rm)), sum)
+			} else {
+				c.writeMem8(c.segBase[DS]+mr.ea, sum)
+			}
+			c.SetReg8(reg8FromModRM(int(mr.reg)), dst)
+
+		// XADD r/m16/32, r16/32
+		case 0xC1:
+			mr := c.parseModRM()
+			if operandSize == 2 {
+				var dst uint16
+				if mr.isReg {
+					dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
+				} else {
+					dst = c.readMem16(c.segBase[DS] + mr.ea)
+				}
+				src := c.GetReg16(reg16FromModRM(int(mr.reg)))
+				sum := c.add16(dst, src)
+				if mr.isReg {
+					c.SetReg16(reg16FromModRM(int(mr.rm)), sum)
+				} else {
+					c.writeMem16(c.segBase[DS]+mr.ea, sum)
+				}
+				c.SetReg16(reg16FromModRM(int(mr.reg)), dst)
+			} else {
+				var dst uint32
+				if mr.isReg {
+					dst = c.GetReg32(int(mr.rm))
+				} else {
+					dst = c.readMem32(c.segBase[DS] + mr.ea)
+				}
+				src := c.GetReg32(int(mr.reg))
+				sum := c.add32(dst, src)
+				if mr.isReg {
+					c.SetReg32(int(mr.rm), sum)
+				} else {
+					c.writeMem32(c.segBase[DS]+mr.ea, sum)
+				}
+				c.SetReg32(int(mr.reg), dst)
+			}
+
+		// CMPXCHG8B m64 (group: 0F C7 /1)
+		case 0xC7:
+			mr := c.parseModRM()
+			if mr.reg != 1 || mr.isReg {
+				return fmt.Errorf("0F C7 /%d not implemented", mr.reg)
+			}
+			addr := c.segBase[DS] + mr.ea
+			memLo := c.readMem32(addr)
+			memHi := c.readMem32(addr + 4)
+			eax := c.GetReg32(EAX)
+			edx := c.GetReg32(EDX)
+			if memLo == eax && memHi == edx {
+				c.setZF(true)
+				c.writeMem32(addr, c.GetReg32(EBX))
+				c.writeMem32(addr+4, c.GetReg32(ECX))
+			} else {
+				c.setZF(false)
+				c.SetReg32(EAX, memLo)
+				c.SetReg32(EDX, memHi)
+			}
+
+		// BSF r16/32, r/m16/32
+		case 0xBC:
+			mr := c.parseModRM()
+			if operandSize == 2 {
+				var src uint16
+				if mr.isReg {
+					src = c.GetReg16(reg16FromModRM(int(mr.rm)))
+				} else {
+					src = c.readMem16(c.segBase[DS] + mr.ea)
+				}
+				if src == 0 {
+					c.setZF(true)
+				} else {
+					c.setZF(false)
+					var i uint16
+					for i = 0; i < 16; i++ {
+						if src&(1<<i) != 0 {
+							break
+						}
+					}
+					c.SetReg16(reg16FromModRM(int(mr.reg)), i)
+				}
+			} else {
+				var src uint32
+				if mr.isReg {
+					src = c.GetReg32(int(mr.rm))
+				} else {
+					src = c.readMem32(c.segBase[DS] + mr.ea)
+				}
+				if src == 0 {
+					c.setZF(true)
+				} else {
+					c.setZF(false)
+					var i uint32
+					for i = 0; i < 32; i++ {
+						if src&(1<<i) != 0 {
+							break
+						}
+					}
+					c.SetReg32(int(mr.reg), i)
+				}
+			}
+
+		// BSR r16/32, r/m16/32
+		case 0xBD:
+			mr := c.parseModRM()
+			if operandSize == 2 {
+				var src uint16
+				if mr.isReg {
+					src = c.GetReg16(reg16FromModRM(int(mr.rm)))
+				} else {
+					src = c.readMem16(c.segBase[DS] + mr.ea)
+				}
+				if src == 0 {
+					c.setZF(true)
+				} else {
+					c.setZF(false)
+					var i int = 15
+					for ; i >= 0; i-- {
+						if src&(1<<uint(i)) != 0 {
+							break
+						}
+					}
+					c.SetReg16(reg16FromModRM(int(mr.reg)), uint16(i))
+				}
+			} else {
+				var src uint32
+				if mr.isReg {
+					src = c.GetReg32(int(mr.rm))
+				} else {
+					src = c.readMem32(c.segBase[DS] + mr.ea)
+				}
+				if src == 0 {
+					c.setZF(true)
+				} else {
+					c.setZF(false)
+					var i int = 31
+					for ; i >= 0; i-- {
+						if src&(1<<uint(i)) != 0 {
+							break
+						}
+					}
+					c.SetReg32(int(mr.reg), uint32(i))
+				}
+			}
+
 		default:
-			return fmt.Errorf("unimplemented 0F opcode: %02X", opcode2)
+			return fmt.Errorf("unimplemented 0F opcode: %02X at EIP=%08X", opcode2, c.eip-2)
 		}
 
 	default:

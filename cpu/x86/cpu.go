@@ -184,6 +184,24 @@ type CPU struct {
 	// Current instruction sizes (set during Step/executeOpcode)
 	currentAddrSize uint8
 	currentOpSize   uint8
+
+	// Model-specific registers (allow-list).
+	msrSysenterCS  uint32
+	msrSysenterESP uint32
+	msrSysenterEIP uint32
+	msrFSBase      uint32
+	msrGSBase      uint32
+	msrKernelGSBase uint32
+	msrMiscEnable  uint64
+	efer           uint64
+	mtrrPhysBase   [16]uint64
+	mtrrPhysMask   [16]uint64
+	mtrrFixed      [11]uint64
+	mtrrDefType    uint64
+
+	// PAE state (set when CR4.PAE && CR0.PG).
+	pdpte      [4]uint64
+	paeActive  bool
 }
 
 // NewCPU creates a new x86 CPU instance.
@@ -358,6 +376,12 @@ func (c *CPU) SetINTR(level int) {
 	c.intrLineState = level
 }
 
+// GetINTR returns the current external interrupt line state (independent of
+// EFLAGS.IF). Useful for tests that wire PIC -> CPU.
+func (c *CPU) GetINTR() int {
+	return c.intrLineState
+}
+
 // SetInterruptAckHandler registers a callback that the CPU calls when it is
 // about to service a hardware interrupt. The callback should acknowledge the
 // interrupt with the PIC/APIC and return the vector number.
@@ -423,7 +447,13 @@ func (c *CPU) HasPendingInterrupt() bool {
 func (c *CPU) Run(maxCycles int) error {
 	for i := 0; i < maxCycles; i++ {
 		if c.powerDown {
-			return nil
+			// HLT idle: wake only if an enabled hardware interrupt is
+			// pending. Otherwise yield back to the host loop so it can
+			// advance the PIT and raise IRQs.
+			if !c.HasPendingInterrupt() {
+				return nil
+			}
+			c.powerDown = false
 		}
 		if err := c.Step(); err != nil {
 			return err

@@ -475,6 +475,110 @@ func (c *CPU) getZF() bool { return c.eflags&EFLAGS_ZF != 0 }
 func (c *CPU) getPF() bool { return c.eflags&EFLAGS_PF != 0 }
 func (c *CPU) getAF() bool { return c.eflags&EFLAGS_AF != 0 }
 
+// handleCMOVcc handles conditional 32/16-bit moves (0F 40..0F 4F).
+// The destination is updated with the source only if the condition holds.
+func (c *CPU) handleCMOVcc(opcode2 uint8, operandSize uint8) error {
+	mr := c.parseModRM()
+	cond := false
+	switch opcode2 {
+	case 0x40: // CMOVO
+		cond = c.getOF()
+	case 0x41: // CMOVNO
+		cond = !c.getOF()
+	case 0x42: // CMOVB/CMOVC/CMOVNAE
+		cond = c.getCF()
+	case 0x43: // CMOVNB/CMOVNC/CMOVAE
+		cond = !c.getCF()
+	case 0x44: // CMOVE/CMOVZ
+		cond = c.getZF()
+	case 0x45: // CMOVNE/CMOVNZ
+		cond = !c.getZF()
+	case 0x46: // CMOVBE/CMOVNA
+		cond = c.getCF() || c.getZF()
+	case 0x47: // CMOVNBE/CMOVA
+		cond = !c.getCF() && !c.getZF()
+	case 0x48: // CMOVS
+		cond = c.getSF()
+	case 0x49: // CMOVNS
+		cond = !c.getSF()
+	case 0x4A: // CMOVP/CMOVPE
+		cond = c.getPF()
+	case 0x4B: // CMOVNP/CMOVPO
+		cond = !c.getPF()
+	case 0x4C: // CMOVL/CMOVNGE
+		cond = c.getSF() != c.getOF()
+	case 0x4D: // CMOVNL/CMOVGE
+		cond = c.getSF() == c.getOF()
+	case 0x4E: // CMOVLE/CMOVNG
+		cond = c.getZF() || (c.getSF() != c.getOF())
+	case 0x4F: // CMOVNLE/CMOVG
+		cond = !c.getZF() && (c.getSF() == c.getOF())
+	}
+	if operandSize == 2 {
+		var src uint16
+		if mr.isReg {
+			src = c.GetReg16(reg16FromModRM(int(mr.rm)))
+		} else {
+			src = c.readMem16(c.segBase[DS] + mr.ea)
+		}
+		if cond {
+			c.SetReg16(reg16FromModRM(int(mr.reg)), src)
+		}
+	} else {
+		var src uint32
+		if mr.isReg {
+			src = c.GetReg32(int(mr.rm))
+		} else {
+			src = c.readMem32(c.segBase[DS] + mr.ea)
+		}
+		if cond {
+			c.SetReg32(int(mr.reg), src)
+		}
+	}
+	return nil
+}
+
+// handleLoadFarPointer implements LSS/LFS/LGS r16/32, m16:32 (and the older
+// LES/LDS via direct call). The instruction loads `seg:offset` from memory
+// into the named segment register and the destination GPR.
+func (c *CPU) handleLoadFarPointer(segReg int, operandSize uint8) error {
+	mr := c.parseModRM()
+	if mr.isReg {
+		// Source must be memory.
+		return fmt.Errorf("LSS/LFS/LGS with register source")
+	}
+	addr := c.segBase[DS] + mr.ea
+	if operandSize == 2 {
+		off := c.readMem16(addr)
+		sel := c.readMem16(addr + 2)
+		if c.IsProtectedMode() {
+			if err := c.LoadSegmentProtected(segReg, sel); err != nil {
+				return err
+			}
+		} else {
+			c.seg[segReg] = sel
+			c.segBase[segReg] = uint32(sel) << 4
+		}
+		c.SetReg16(reg16FromModRM(int(mr.reg)), off)
+	} else {
+		off := c.readMem32(addr)
+		sel := c.readMem16(addr + 4)
+		if c.IsProtectedMode() {
+			if err := c.LoadSegmentProtected(segReg, sel); err != nil {
+				return err
+			}
+		} else {
+			c.seg[segReg] = sel
+			c.segBase[segReg] = uint32(sel) << 4
+		}
+		c.SetReg32(int(mr.reg), off)
+	}
+	if segReg == SS {
+		c.interruptsBlocked = true
+	}
+	return nil
+}
+
 // handleSETcc handles SETcc r/m8 (0F 90-0F 9F).
 func (c *CPU) handleSETcc(opcode2 uint8) error {
 	mr := c.parseModRM()
