@@ -21,6 +21,11 @@ type stackFaultError struct {
 	errorCode uint32
 }
 
+// generalProtectionFaultError is used to signal a general protection fault (#GP).
+type generalProtectionFaultError struct {
+	errorCode uint32
+}
+
 // raisePageFault panics with a pageFaultError so that Step() can catch it and
 // raise #PF. The panic is the cleanest way to abort an instruction mid-execution.
 func (c *CPU) raisePageFault(addr uint32, write, user bool) {
@@ -32,8 +37,12 @@ func (c *CPU) raisePageFault(addr uint32, write, user bool) {
 		code |= 0x04
 	}
 	// Debug: print page fault details
-	fmt.Fprintf(os.Stderr, "[PF] step=%d linear=%08X write=%v user=%v CR3=%08X CR0=%08X EIP=%08X ESP=%08X\n",
-		c.cycles, addr, write, user, c.cr[3], c.cr[0], c.eip, c.GetReg32(ESP))
+	fmt.Fprintf(os.Stderr, "[PF] step=%d linear=%08X write=%v user=%v CR3=%08X CR0=%08X CR4=%08X EIP=%08X ESP=%08X\n",
+		c.cycles, addr, write, user, c.cr[3], c.cr[0], c.cr[4], c.eip, c.GetReg32(ESP))
+	// Check if PAE might be enabled (CR4.PAE = bit 5)
+	if c.cr[4]&CR4_PAE != 0 {
+		fmt.Fprintf(os.Stderr, "[PF] WARNING: PAE is enabled! Our translateAddress does not support PAE.\n")
+	}
 	panic(pageFaultError{addr: addr, errorCode: code})
 }
 
@@ -41,6 +50,12 @@ func (c *CPU) raisePageFault(addr uint32, write, user bool) {
 // and raise #SS (vector 0x0C).
 func (c *CPU) raiseStackFault(errorCode uint32) {
 	panic(stackFaultError{errorCode: errorCode})
+}
+
+// raiseGeneralProtectionFault panics with a generalProtectionFaultError so that
+// Step() can catch it and raise #GP (vector 0x0D).
+func (c *CPU) raiseGeneralProtectionFault(errorCode uint32) {
+	panic(generalProtectionFaultError{errorCode: errorCode})
 }
 
 // checkStackLimit verifies that a stack access of the given size at the given

@@ -136,6 +136,9 @@ func (c *CPU) Step() (err error) {
 			case stackFaultError:
 				c.eip = origEIP
 				err = c.handleInterrupt(0x0C, true, ex.errorCode)
+			case generalProtectionFaultError:
+				c.eip = origEIP
+				err = c.handleInterrupt(0x0D, true, ex.errorCode)
 			default:
 				panic(r)
 			}
@@ -281,10 +284,12 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 
 	// CLI - Clear Interrupt Flag
 	case 0xFA:
+		c.checkIOPL()
 		c.eflags &^= EFLAGS_IF
 
 	// STI - Set Interrupt Flag
 	case 0xFB:
+		c.checkIOPL()
 		c.eflags |= EFLAGS_IF
 		c.interruptsBlocked = true
 
@@ -807,35 +812,57 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			return c.handleInterrupt(0x04, false)
 		}
 
-	// IRET
-	case 0xCF:
-		if operandSize == 2 {
-			c.eip = uint32(c.pop16())
-			cs := c.pop16()
-			if c.IsProtectedMode() {
-				if err := c.LoadSegmentProtected(CS, cs); err != nil {
-					return err
+		// IRET
+		case 0xCF:
+			if operandSize == 2 {
+				oldCPL := c.cpl
+				c.eip = uint32(c.pop16())
+				cs := c.pop16()
+				if c.IsProtectedMode() {
+					if err := c.LoadSegmentProtected(CS, cs); err != nil {
+						return err
+					}
+				} else {
+					c.seg[CS] = cs
+					c.segBase[CS] = uint32(cs) << 4
+				}
+				c.eflags = uint32(c.pop16())
+				c.eflags |= EFLAGS_RF
+				if c.IsProtectedMode() && c.cpl > oldCPL {
+					newSP := c.pop16()
+					newSS := c.pop16()
+					if err := c.LoadSegmentProtected(SS, newSS); err != nil {
+						return err
+					}
+					c.SetReg16(SP, newSP)
 				}
 			} else {
-				c.seg[CS] = cs
-				c.segBase[CS] = uint32(cs) << 4
-			}
-			c.eflags = uint32(c.pop16())
-			c.eflags |= EFLAGS_RF
-		} else {
-			c.eip = c.pop32()
-			cs := c.pop32()
-			if c.IsProtectedMode() {
-				if err := c.LoadSegmentProtected(CS, uint16(cs)); err != nil {
-					return err
+				oldCPL := c.cpl
+				c.eip = c.pop32()
+				cs := c.pop32()
+				if c.IsProtectedMode() {
+					if err := c.LoadSegmentProtected(CS, uint16(cs)); err != nil {
+						return err
+					}
+				} else {
+					c.seg[CS] = uint16(cs)
+					c.segBase[CS] = uint32(cs) << 4
 				}
-			} else {
-				c.seg[CS] = uint16(cs)
-				c.segBase[CS] = uint32(cs) << 4
+				c.eflags = c.pop32()
+				c.eflags |= EFLAGS_RF
+				// Restore VM bit if CPL=0 and popped EFLAGS has it.
+				if c.IsProtectedMode() && c.cpl == 0 && (c.eflags&EFLAGS_VM) != 0 {
+					// TODO: pop ES, DS, FS, GS for full v8086 mode entry
+				}
+				if c.IsProtectedMode() && c.cpl > oldCPL {
+					newESP := c.pop32()
+					newSS := c.pop32()
+					if err := c.LoadSegmentProtected(SS, uint16(newSS)); err != nil {
+						return err
+					}
+					c.SetReg32(ESP, newESP)
+				}
 			}
-			c.eflags = c.pop32()
-			c.eflags |= EFLAGS_RF
-		}
 
 	// PUSHF
 	case 0x9C:
@@ -936,11 +963,13 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 
 	// IN AL, imm8
 	case 0xE4:
+		c.checkIOPL()
 		port := uint16(c.fetch8())
 		c.SetReg8(AL, c.ioRead8(port))
 
 	// IN AX/EAX, imm8
 	case 0xE5:
+		c.checkIOPL()
 		port := uint16(c.fetch8())
 		if operandSize == 2 {
 			c.SetReg16(AX, c.ioRead16(port))
@@ -950,11 +979,13 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 
 	// OUT imm8, AL
 	case 0xE6:
+		c.checkIOPL()
 		port := uint16(c.fetch8())
 		c.ioWrite8(port, c.GetReg8(AL))
 
 	// OUT imm8, AX/EAX
 	case 0xE7:
+		c.checkIOPL()
 		port := uint16(c.fetch8())
 		if operandSize == 2 {
 			c.ioWrite16(port, c.GetReg16(AX))
@@ -964,10 +995,12 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 
 	// IN AL, DX
 	case 0xEC:
+		c.checkIOPL()
 		c.SetReg8(AL, c.ioRead8(c.GetReg16(DX)))
 
 	// IN AX/EAX, DX
 	case 0xED:
+		c.checkIOPL()
 		if operandSize == 2 {
 			c.SetReg16(AX, c.ioRead16(c.GetReg16(DX)))
 		} else {
@@ -976,10 +1009,12 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 
 	// OUT DX, AL
 	case 0xEE:
+		c.checkIOPL()
 		c.ioWrite8(c.GetReg16(DX), c.GetReg8(AL))
 
 	// OUT DX, AX/EAX
 	case 0xEF:
+		c.checkIOPL()
 		if operandSize == 2 {
 			c.ioWrite16(c.GetReg16(DX), c.GetReg16(AX))
 		} else {
@@ -2201,6 +2236,16 @@ func (c *CPU) pop32() uint32 {
 }
 
 // pushOp pushes a value of the given operand size (2 or 4).
+// checkIOPL raises #GP if the current CPL is greater than the IOPL.
+func (c *CPU) checkIOPL() {
+	if c.IsProtectedMode() {
+		iopl := (c.eflags & EFLAGS_IOPL) >> 12
+		if c.cpl > int(iopl) {
+			c.raiseGeneralProtectionFault(0)
+		}
+	}
+}
+
 func (c *CPU) pushOp(v uint32, size uint8) {
 	if size == 2 {
 		c.push16(uint16(v))
@@ -2355,6 +2400,9 @@ func (c *CPU) handleInterrupt(vector uint8, isHardware bool, errorCode ...uint32
 	if len(errorCode) > 0 {
 		c.push32(errorCode[0])
 	}
+
+	// Clear VM bit when entering handler from v8086 mode.
+	c.eflags &^= EFLAGS_VM
 
 	// Interrupt gate (but not trap gate) clears IF and TF.
 	if gateType == 0x06 || gateType == 0x0E {

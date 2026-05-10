@@ -116,23 +116,91 @@ func (c *CPU) handleGroupO_00() error {
 	mr := c.parseModRM()
 	switch mr.reg {
 	case 0: // SLDT r/m16
-		val := uint16(0)
+		val := c.seg[LDTR]
 		if mr.isReg {
 			c.SetReg16(reg16FromModRM(int(mr.rm)), val)
 		} else {
 			c.writeMem16(c.segBase[DS]+mr.ea, val)
 		}
 	case 1: // STR r/m16
-		val := uint16(0)
+		val := c.seg[TR]
 		if mr.isReg {
 			c.SetReg16(reg16FromModRM(int(mr.rm)), val)
 		} else {
 			c.writeMem16(c.segBase[DS]+mr.ea, val)
 		}
 	case 2: // LLDT r/m16
-		// No-op for now; we don't track LDT state.
+		var selector uint16
+		if mr.isReg {
+			selector = c.GetReg16(reg16FromModRM(int(mr.rm)))
+		} else {
+			selector = c.readMem16(c.segBase[DS] + mr.ea)
+		}
+		if selector == 0 {
+			c.seg[LDTR] = 0
+			c.segBase[LDTR] = 0
+			c.segLimit[LDTR] = 0
+			c.segAccess[LDTR] = 0
+		} else {
+			index := (selector >> 3) & 0x1FFF
+			gdtBase := c.segBase[GDTR]
+			gdtLimit := c.segLimit[GDTR]
+			if uint32(index)*8+7 > gdtLimit {
+				return fmt.Errorf("LLDT: selector out of bounds")
+			}
+			addr := gdtBase + uint32(index)*8
+			var descBytes [8]byte
+			for i := 0; i < 8; i++ {
+				descBytes[i] = c.readMem8(addr + uint32(i))
+			}
+			desc := ParseDescriptor(descBytes)
+			if !desc.Present {
+				return fmt.Errorf("LLDT: segment not present")
+			}
+			segType := desc.Access & 0x0F
+			if segType != 0x02 {
+				return fmt.Errorf("LLDT: not an LDT descriptor")
+			}
+			c.seg[LDTR] = selector
+			c.segBase[LDTR] = desc.Base
+			c.segLimit[LDTR] = desc.Limit
+			c.segAccess[LDTR] = uint32(desc.Access) | (uint32(desc.Flags) << 8)
+		}
 	case 3: // LTR r/m16
-		// No-op for now; we don't track task register state.
+		var selector uint16
+		if mr.isReg {
+			selector = c.GetReg16(reg16FromModRM(int(mr.rm)))
+		} else {
+			selector = c.readMem16(c.segBase[DS] + mr.ea)
+		}
+		if selector == 0 {
+			return fmt.Errorf("LTR: cannot load null selector")
+		}
+		index := (selector >> 3) & 0x1FFF
+		gdtBase := c.segBase[GDTR]
+		gdtLimit := c.segLimit[GDTR]
+		if uint32(index)*8+7 > gdtLimit {
+			return fmt.Errorf("LTR: selector out of bounds")
+		}
+		addr := gdtBase + uint32(index)*8
+		var descBytes [8]byte
+		for i := 0; i < 8; i++ {
+			descBytes[i] = c.readMem8(addr + uint32(i))
+		}
+		desc := ParseDescriptor(descBytes)
+		if !desc.Present {
+			return fmt.Errorf("LTR: segment not present")
+		}
+		segType := desc.Access & 0x0F
+		if segType != 0x09 && segType != 0x0B {
+			return fmt.Errorf("LTR: not a TSS descriptor")
+		}
+		c.seg[TR] = selector
+		c.segBase[TR] = desc.Base
+		c.segLimit[TR] = desc.Limit
+		c.segAccess[TR] = uint32(desc.Access) | (uint32(desc.Flags) << 8)
+		// Mark TSS as busy (type 0x0B).
+		c.writeMem8(addr+5, desc.Access|0x02)
 	case 4: // VERR r/m16
 		c.setZF(false)
 	case 5: // VERW r/m16

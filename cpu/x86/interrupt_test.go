@@ -1067,3 +1067,290 @@ func TestHandleInterruptStackSwitch(t *testing.T) {
 		t.Errorf("IF still set after interrupt gate")
 	}
 }
+
+// TestIRET32PrivilegeDowngrade validates that IRET restores SS:ESP when
+// returning to a less privileged ring (CPL=0 -> CPL=3).
+func TestIRET32PrivilegeDowngrade(t *testing.T) {
+	c := newTestCPU(t)
+	c.SetCR(0, c.GetCR(0)&^CR0_PE)
+	c.SetSegAccess(CS, 0)
+
+	gdtBase := uint32(0x2000)
+	buildFlatGDT(t, c, gdtBase)
+
+	// Ring 3 code at offset 24 (selector 0x18, use 0x1B): flat, 32-bit, execute/read, DPL=3.
+	c.writeMem8(gdtBase+24, 0xFF)
+	c.writeMem8(gdtBase+25, 0xFF)
+	c.writeMem8(gdtBase+26, 0x00)
+	c.writeMem8(gdtBase+27, 0x00)
+	c.writeMem8(gdtBase+28, 0x00)
+	c.writeMem8(gdtBase+29, 0xFA) // P=1, DPL=3, S=1, type=0xA
+	c.writeMem8(gdtBase+30, 0xCF)
+	c.writeMem8(gdtBase+31, 0x00)
+
+	// Ring 3 data at offset 32 (selector 0x20, use 0x23): flat, read/write, DPL=3.
+	c.writeMem8(gdtBase+32, 0xFF)
+	c.writeMem8(gdtBase+33, 0xFF)
+	c.writeMem8(gdtBase+34, 0x00)
+	c.writeMem8(gdtBase+35, 0x00)
+	c.writeMem8(gdtBase+36, 0x00)
+	c.writeMem8(gdtBase+37, 0xF2) // P=1, DPL=3, S=1, type=0x2
+	c.writeMem8(gdtBase+38, 0xCF)
+	c.writeMem8(gdtBase+39, 0x00)
+
+	// Enter protected mode at ring 0.
+	enterProtectedMode(t, c, gdtBase, 0x3000, 0x0F*8+7, 0x5000)
+	// Expand GDT limit to include ring-3 descriptors at offsets 24 and 32.
+	c.segLimit[GDTR] = 0x0027 // 5 entries * 8 - 1 = 39
+
+	// Set up ring-0 stack with an IRET frame for returning to ring 3.
+	// Stack layout for 32-bit IRET with privilege downgrade:
+	//   [ESP+16] old SS  (0x23)
+	//   [ESP+12] old ESP (0x8000)
+	//   [ESP+8]  EFLAGS
+	//   [ESP+4]  CS     (0x1B)
+	//   [ESP+0]  EIP    (0x6000)
+	c.SetReg32(ESP, 0x9000)
+	c.push32(0x0023)            // SS
+	c.push32(0x00008000)        // ESP
+	c.push32(0x00000200)        // EFLAGS
+	c.push32(0x0000001B)        // CS (ring 3)
+	c.push32(0x00006000)        // EIP
+
+	// Set CPL=0 (ring 0).
+	c.cpl = 0
+
+	// Code: IRET
+	c.writeMem8(0x5000, 0xCF)
+	c.SetEIP(0x5000)
+
+	if err := c.Step(); err != nil {
+		t.Fatalf("IRET step error: %v", err)
+	}
+
+	// Verify EIP restored.
+	if c.GetEIP() != 0x6000 {
+		t.Errorf("EIP = 0x%08X, want 0x00006000", c.GetEIP())
+	}
+
+	// Verify CS restored to ring 3.
+	if c.GetSeg(CS) != 0x001B {
+		t.Errorf("CS = 0x%04X, want 0x001B", c.GetSeg(CS))
+	}
+
+	// Verify CPL downgraded to 3.
+	if c.cpl != 3 {
+		t.Errorf("CPL = %d, want 3", c.cpl)
+	}
+
+	// Verify SS restored to ring 3.
+	if c.GetSeg(SS) != 0x0023 {
+		t.Errorf("SS = 0x%04X, want 0x0023", c.GetSeg(SS))
+	}
+
+	// Verify ESP restored.
+	if c.GetReg32(ESP) != 0x8000 {
+		t.Errorf("ESP = 0x%08X, want 0x00008000", c.GetReg32(ESP))
+	}
+}
+
+// TestCLIIOPLViolation validates that CLI raises #GP when CPL > IOPL.
+func TestCLIIOPLViolation(t *testing.T) {
+	c := newTestCPU(t)
+	c.SetCR(0, c.GetCR(0)&^CR0_PE)
+	c.SetSegAccess(CS, 0)
+
+	gdtBase := uint32(0x2000)
+	idtBase := uint32(0x3000)
+	buildFlatGDT(t, c, gdtBase)
+	writeIDTGate(c, idtBase, 0x0D, 0x00006000, 0x0008, 0x0E, 0)
+	enterProtectedMode(t, c, gdtBase, idtBase, 0x0D*8+7, 0x5000)
+
+	// Set up minimal TSS so stack switch on #GP works.
+	tssBase := uint32(0x4000)
+	for i := 0; i < 104; i++ {
+		c.writeMem8(tssBase+uint32(i), 0)
+	}
+	c.writeMem32(tssBase+4, 0x9000) // ESP0
+	c.writeMem16(tssBase+8, 0x0010) // SS0
+	c.SetSeg(TR, 0x0000)
+	c.SetSegBase(TR, tssBase)
+	c.SetSegLimit(TR, 0x0067)
+
+	// Set CPL=3, IOPL=0.
+	c.cpl = 3
+	c.eflags &^= EFLAGS_IOPL
+	c.eflags |= EFLAGS_IF
+
+	// Code: CLI
+	c.writeMem8(0x5000, 0xFA)
+	c.SetEIP(0x5000)
+
+	if err := c.Step(); err != nil {
+		t.Fatalf("CLI step error: %v", err)
+	}
+
+	// Should have taken #GP handler.
+	if c.GetEIP() != 0x6000 {
+		t.Errorf("EIP = 0x%08X, want 0x00006000 (#GP handler)", c.GetEIP())
+	}
+	// IF is cleared by the interrupt gate, not by CLI.
+	if c.eflags&EFLAGS_IF != 0 {
+		t.Errorf("IF still set after #GP through interrupt gate")
+	}
+}
+
+// TestSTIIOPLViolation validates that STI raises #GP when CPL > IOPL.
+func TestSTIIOPLViolation(t *testing.T) {
+	c := newTestCPU(t)
+	c.SetCR(0, c.GetCR(0)&^CR0_PE)
+	c.SetSegAccess(CS, 0)
+
+	gdtBase := uint32(0x2000)
+	idtBase := uint32(0x3000)
+	buildFlatGDT(t, c, gdtBase)
+	writeIDTGate(c, idtBase, 0x0D, 0x00006000, 0x0008, 0x0E, 0)
+	enterProtectedMode(t, c, gdtBase, idtBase, 0x0D*8+7, 0x5000)
+
+	// Set up minimal TSS so stack switch on #GP works.
+	tssBase := uint32(0x4000)
+	for i := 0; i < 104; i++ {
+		c.writeMem8(tssBase+uint32(i), 0)
+	}
+	c.writeMem32(tssBase+4, 0x9000) // ESP0
+	c.writeMem16(tssBase+8, 0x0010) // SS0
+	c.SetSeg(TR, 0x0000)
+	c.SetSegBase(TR, tssBase)
+	c.SetSegLimit(TR, 0x0067)
+
+	// Set CPL=3, IOPL=0.
+	c.cpl = 3
+	c.eflags &^= EFLAGS_IOPL
+	c.eflags &^= EFLAGS_IF
+
+	// Code: STI
+	c.writeMem8(0x5000, 0xFB)
+	c.SetEIP(0x5000)
+
+	if err := c.Step(); err != nil {
+		t.Fatalf("STI step error: %v", err)
+	}
+
+	if c.GetEIP() != 0x6000 {
+		t.Errorf("EIP = 0x%08X, want 0x00006000 (#GP handler)", c.GetEIP())
+	}
+	// IF should still be clear (STI was blocked).
+	if c.eflags&EFLAGS_IF != 0 {
+		t.Errorf("IF set despite #GP")
+	}
+}
+
+// TestINIOPLViolation validates that IN raises #GP when CPL > IOPL.
+func TestINIOPLViolation(t *testing.T) {
+	c := newTestCPU(t)
+	c.SetCR(0, c.GetCR(0)&^CR0_PE)
+	c.SetSegAccess(CS, 0)
+
+	gdtBase := uint32(0x2000)
+	idtBase := uint32(0x3000)
+	buildFlatGDT(t, c, gdtBase)
+	writeIDTGate(c, idtBase, 0x0D, 0x00006000, 0x0008, 0x0E, 0)
+	enterProtectedMode(t, c, gdtBase, idtBase, 0x0D*8+7, 0x5000)
+
+	// Set up minimal TSS so stack switch on #GP works.
+	tssBase := uint32(0x4000)
+	for i := 0; i < 104; i++ {
+		c.writeMem8(tssBase+uint32(i), 0)
+	}
+	c.writeMem32(tssBase+4, 0x9000) // ESP0
+	c.writeMem16(tssBase+8, 0x0010) // SS0
+	c.SetSeg(TR, 0x0000)
+	c.SetSegBase(TR, tssBase)
+	c.SetSegLimit(TR, 0x0067)
+
+	// Set CPL=3, IOPL=0.
+	c.cpl = 3
+	c.eflags &^= EFLAGS_IOPL
+
+	// Code: IN AL, 0x80
+	c.writeMem8(0x5000, 0xE4)
+	c.writeMem8(0x5001, 0x80)
+	c.SetEIP(0x5000)
+
+	if err := c.Step(); err != nil {
+		t.Fatalf("IN step error: %v", err)
+	}
+
+	if c.GetEIP() != 0x6000 {
+		t.Errorf("EIP = 0x%08X, want 0x00006000 (#GP handler)", c.GetEIP())
+	}
+}
+
+// TestCLIIOPLOK validates that CLI succeeds when CPL <= IOPL.
+func TestCLIIOPLOK(t *testing.T) {
+	c := newTestCPU(t)
+	c.SetCR(0, c.GetCR(0)&^CR0_PE)
+	c.SetSegAccess(CS, 0)
+
+	gdtBase := uint32(0x2000)
+	idtBase := uint32(0x3000)
+	buildFlatGDT(t, c, gdtBase)
+	writeIDTGate(c, idtBase, 0x0D, 0x00006000, 0x0008, 0x0E, 0)
+	enterProtectedMode(t, c, gdtBase, idtBase, 0x0D*8+7, 0x5000)
+
+	// Set CPL=0, IOPL=0 (CPL <= IOPL).
+	c.cpl = 0
+	c.eflags &^= EFLAGS_IOPL
+	c.eflags |= EFLAGS_IF
+
+	// Code: CLI; HLT
+	c.writeMem8(0x5000, 0xFA)
+	c.writeMem8(0x5001, 0xF4)
+	c.SetEIP(0x5000)
+
+	if err := c.Step(); err != nil {
+		t.Fatalf("CLI step error: %v", err)
+	}
+
+	// Should NOT have taken #GP handler.
+	if c.GetEIP() != 0x5001 {
+		t.Errorf("EIP = 0x%08X, want 0x00005001", c.GetEIP())
+	}
+	// IF should be clear.
+	if c.eflags&EFLAGS_IF != 0 {
+		t.Errorf("IF still set after CLI")
+	}
+}
+
+// TestHandleInterruptClearsVMFlag validates that interrupt delivery from
+// v8086 mode clears the VM bit in EFLAGS.
+func TestHandleInterruptClearsVMFlag(t *testing.T) {
+	c := newTestCPU(t)
+	c.SetCR(0, c.GetCR(0)&^CR0_PE)
+	c.SetSegAccess(CS, 0)
+
+	gdtBase := uint32(0x2000)
+	idtBase := uint32(0x3000)
+	buildFlatGDT(t, c, gdtBase)
+	writeIDTGate(c, idtBase, 0x20, 0x00004000, 0x0008, 0x0E, 0)
+	enterProtectedMode(t, c, gdtBase, idtBase, 0x20*8+7, 0x5000)
+
+	c.SetEIP(0x5000)
+	c.SetReg32(ESP, 0x8000)
+	c.eflags = EFLAGS_IF | EFLAGS_VM
+
+	if err := c.handleInterrupt(0x20, true); err != nil {
+		t.Fatalf("handleInterrupt error: %v", err)
+	}
+
+	if c.eflags&EFLAGS_VM != 0 {
+		t.Errorf("VM bit still set after interrupt delivery")
+	}
+	if c.eflags&EFLAGS_IF != 0 {
+		t.Errorf("IF still set after interrupt gate")
+	}
+	// RF should be set.
+	if c.eflags&EFLAGS_RF == 0 {
+		t.Errorf("RF not set after interrupt delivery")
+	}
+}

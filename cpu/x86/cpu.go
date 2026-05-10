@@ -370,6 +370,11 @@ func (c *CPU) IsProtectedMode() bool {
 	return c.cr[0]&CR0_PE != 0
 }
 
+// IsVirtual8086Mode returns true if CR0.PE is set and EFLAGS.VM is set.
+func (c *CPU) IsVirtual8086Mode() bool {
+	return c.IsProtectedMode() && (c.eflags&EFLAGS_VM) != 0
+}
+
 // DefaultOperandSize returns the default operand size (2 or 4) based on mode.
 // In real mode: 16-bit. In protected mode: uses CS descriptor D-bit.
 func (c *CPU) DefaultOperandSize() uint8 {
