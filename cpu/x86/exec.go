@@ -205,16 +205,29 @@ func (c *CPU) fetchS32() int32 {
 func (c *CPU) Step() (err error) {
 	origEIP := c.eip
 	// EIP-breakpoint diagnostics: set TINYEMU_X86_EIPBP=hex (single addr) or
-	// TINYEMU_X86_EIPBPS=hex,hex,... (multiple) to dump register state when
-	// EIP lands on any of those addresses. Used while reverse-engineering
-	// failures against a known vmlinux.
+	// TINYEMU_X86_EIPBPS=hex,hex,... (multiple) to dump register state and
+	// a 6-frame return-address chain when EIP lands on any of those
+	// addresses. Used while reverse-engineering failures against a known
+	// vmlinux.
 	if (eipBreakpoint != 0 && c.eip == eipBreakpoint) || eipBreakpoints[c.eip] {
+		var frames [6]uint32
+		ebp := c.GetReg32(EBP)
+		for i := 0; i < 6 && ebp >= 0x1000; i++ {
+			func() {
+				defer func() { _ = recover() }()
+				frames[i] = c.readMem32(ebp + 4)
+			}()
+			func() {
+				defer func() { _ = recover() }()
+				ebp = c.readMem32(ebp)
+			}()
+		}
 		fmt.Fprintf(os.Stderr,
-			"[bp] EIP=0x%08X cycles=%d EAX=0x%08X EBX=0x%08X ECX=0x%08X EDX=0x%08X ESI=0x%08X EDI=0x%08X ESP=0x%08X EBP=0x%08X eflags=0x%08X\n",
+			"[bp] EIP=0x%08X cycles=%d EAX=0x%08X EBX=0x%08X ECX=0x%08X EDX=0x%08X ESI=0x%08X EDI=0x%08X ESP=0x%08X EBP=0x%08X eflags=0x%08X stack:[0x%X,0x%X,0x%X,0x%X,0x%X,0x%X]\n",
 			c.eip, c.cycles,
 			c.GetReg32(EAX), c.GetReg32(EBX), c.GetReg32(ECX), c.GetReg32(EDX),
 			c.GetReg32(ESI), c.GetReg32(EDI), c.GetReg32(ESP), c.GetReg32(EBP),
-			c.eflags)
+			c.eflags, frames[0], frames[1], frames[2], frames[3], frames[4], frames[5])
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -229,6 +242,25 @@ func (c *CPU) Step() (err error) {
 			case generalProtectionFaultError:
 				c.eip = origEIP
 				err = c.handleInterrupt(0x0D, true, ex.errorCode)
+			case invalidOpcodeError:
+				_ = ex
+				c.eip = origEIP
+				if ud2LogAlways || ud2SkipAndLog {
+					ud2Log(c, origEIP)
+				}
+				if ud2SkipAndLog {
+					// Skip UD2 (2 bytes) and continue. This is purely
+					// diagnostic: it lets the kernel run past WARN_ON
+					// sites so we can capture later symptoms.
+					c.eip += 2
+					err = nil
+				} else {
+					err = c.handleInterrupt(0x06, false)
+				}
+			case divideError:
+				_ = ex
+				c.eip = origEIP
+				err = c.handleInterrupt(0x00, false)
 			default:
 				panic(r)
 			}
@@ -305,6 +337,7 @@ func (c *CPU) Step() (err error) {
 func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, operandSize, addressSize uint8) error {
 	c.currentOpSize = operandSize
 	c.currentAddrSize = addressSize
+	c.currentSegOverride = segOverride
 	switch opcode {
 	// NOP
 	case 0x90:
@@ -443,9 +476,9 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			}
 		} else {
 			if operandSize == 2 {
-				src = int64(int16(c.readMem16(c.segBase[DS] + mr.ea)))
+				src = int64(int16(c.readMem16(c.segBaseForModRM(mr) + mr.ea)))
 			} else {
-				src = int64(int32(c.readMem32(c.segBase[DS] + mr.ea)))
+				src = int64(int32(c.readMem32(c.segBaseForModRM(mr) + mr.ea)))
 			}
 		}
 		var imm int64
@@ -551,9 +584,9 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			}
 		} else {
 			if operandSize == 2 {
-				src = int64(int16(c.readMem16(c.segBase[DS] + mr.ea)))
+				src = int64(int16(c.readMem16(c.segBaseForModRM(mr) + mr.ea)))
 			} else {
-				src = int64(int32(c.readMem32(c.segBase[DS] + mr.ea)))
+				src = int64(int32(c.readMem32(c.segBaseForModRM(mr) + mr.ea)))
 			}
 		}
 		imm := int64(int32(int8(c.fetch8())))
@@ -662,7 +695,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			c.SetReg8(reg8FromModRM(int(mr.rm)), c.GetReg8(reg8FromModRM(int(mr.reg))))
 			c.SetReg8(reg8FromModRM(int(mr.reg)), tmp)
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			tmp := c.readMem8(addr)
 			c.writeMem8(addr, c.GetReg8(reg8FromModRM(int(mr.reg))))
 			c.SetReg8(reg8FromModRM(int(mr.reg)), tmp)
@@ -677,7 +710,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				c.SetReg16(reg16FromModRM(int(mr.rm)), c.GetReg16(reg16FromModRM(int(mr.reg))))
 				c.SetReg16(reg16FromModRM(int(mr.reg)), tmp)
 			} else {
-				addr := c.segBase[DS] + mr.ea
+				addr := c.segBaseForModRM(mr) + mr.ea
 				tmp := c.readMem16(addr)
 				c.writeMem16(addr, c.GetReg16(reg16FromModRM(int(mr.reg))))
 				c.SetReg16(reg16FromModRM(int(mr.reg)), tmp)
@@ -688,7 +721,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				c.SetReg32(int(mr.rm), c.GetReg32(int(mr.reg)))
 				c.SetReg32(int(mr.reg), tmp)
 			} else {
-				addr := c.segBase[DS] + mr.ea
+				addr := c.segBaseForModRM(mr) + mr.ea
 				tmp := c.readMem32(addr)
 				c.writeMem32(addr, c.GetReg32(int(mr.reg)))
 				c.SetReg32(int(mr.reg), tmp)
@@ -812,56 +845,54 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 	case 0x83:
 		return c.handleGroup1_8x(operandSize)
 
-	// INC r32
-	case 0x40:
-		c.SetReg32(EAX, c.inc32(c.GetReg32(EAX)))
-	case 0x41:
-		c.SetReg32(ECX, c.inc32(c.GetReg32(ECX)))
-	case 0x42:
-		c.SetReg32(EDX, c.inc32(c.GetReg32(EDX)))
-	case 0x43:
-		c.SetReg32(EBX, c.inc32(c.GetReg32(EBX)))
-	case 0x44:
-		c.SetReg32(ESP, c.inc32(c.GetReg32(ESP)))
-	case 0x45:
-		c.SetReg32(EBP, c.inc32(c.GetReg32(EBP)))
-	case 0x46:
-		c.SetReg32(ESI, c.inc32(c.GetReg32(ESI)))
-	case 0x47:
-		c.SetReg32(EDI, c.inc32(c.GetReg32(EDI)))
+	// INC r16/r32 (0x40-0x47). Operand size honored: under a 0x66 prefix or
+	// 16-bit code segment, INC AX uses inc16 semantics (low 16 bits modified,
+	// high 16 preserved).
+	case 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47:
+		reg := int(opcode - 0x40)
+		if operandSize == 2 {
+			c.SetReg16(reg16FromModRM(reg), c.inc16(c.GetReg16(reg16FromModRM(reg))))
+		} else {
+			c.SetReg32(reg, c.inc32(c.GetReg32(reg)))
+		}
 
-	// DEC r32. Linux's __delay() is `dec eax; jnz -3` looping until EAX=0;
-	// our cycle-per-instruction emulation is far too slow to grind through
-	// the millions/billions of iterations the kernel passes in. When we
-	// detect the pattern, short-circuit to the loop's terminal state.
+	// DEC r16/r32 (0x48-0x4F). Linux's __delay() is `dec eax; jnz -3` looping
+	// until EAX=0; our cycle-per-instruction emulation is far too slow to
+	// grind through the millions/billions of iterations the kernel passes
+	// in. When we detect the pattern, short-circuit to the loop's terminal
+	// state. (Fastpath only used for the 32-bit EAX/ECX paths since that's
+	// what Linux's __delay emits.)
 	case 0x48:
-		eax := c.GetReg32(EAX)
-		if eax > 1 && c.detectDecJnzLoop() {
-			c.cycles += uint64(eax-1) * 2
-			c.SetReg32(EAX, c.dec32(1))
-			return nil
+		if operandSize == 4 {
+			eax := c.GetReg32(EAX)
+			if eax > 1 && c.detectDecJnzLoop() {
+				c.cycles += uint64(eax-1) * 2
+				c.SetReg32(EAX, c.dec32(1))
+				return nil
+			}
+			c.SetReg32(EAX, c.dec32(eax))
+		} else {
+			c.SetReg16(AX, c.dec16(c.GetReg16(AX)))
 		}
-		c.SetReg32(EAX, c.dec32(eax))
 	case 0x49:
-		ecx := c.GetReg32(ECX)
-		if ecx > 1 && c.detectDecJnzLoop() {
-			c.cycles += uint64(ecx-1) * 2
-			c.SetReg32(ECX, c.dec32(1))
-			return nil
+		if operandSize == 4 {
+			ecx := c.GetReg32(ECX)
+			if ecx > 1 && c.detectDecJnzLoop() {
+				c.cycles += uint64(ecx-1) * 2
+				c.SetReg32(ECX, c.dec32(1))
+				return nil
+			}
+			c.SetReg32(ECX, c.dec32(ecx))
+		} else {
+			c.SetReg16(CX, c.dec16(c.GetReg16(CX)))
 		}
-		c.SetReg32(ECX, c.dec32(ecx))
-	case 0x4A:
-		c.SetReg32(EDX, c.dec32(c.GetReg32(EDX)))
-	case 0x4B:
-		c.SetReg32(EBX, c.dec32(c.GetReg32(EBX)))
-	case 0x4C:
-		c.SetReg32(ESP, c.dec32(c.GetReg32(ESP)))
-	case 0x4D:
-		c.SetReg32(EBP, c.dec32(c.GetReg32(EBP)))
-	case 0x4E:
-		c.SetReg32(ESI, c.dec32(c.GetReg32(ESI)))
-	case 0x4F:
-		c.SetReg32(EDI, c.dec32(c.GetReg32(EDI)))
+	case 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F:
+		reg := int(opcode - 0x48)
+		if operandSize == 2 {
+			c.SetReg16(reg16FromModRM(reg), c.dec16(c.GetReg16(reg16FromModRM(reg))))
+		} else {
+			c.SetReg32(reg, c.dec32(c.GetReg32(reg)))
+		}
 
 	// JMP rel8
 	case 0xEB:
@@ -1211,13 +1242,13 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			if mr.isReg {
 				c.SetReg16(reg16FromModRM(int(mr.rm)), c.pop16())
 			} else {
-				c.writeMem16(c.segBase[DS]+mr.ea, c.pop16())
+				c.writeMem16(c.segBaseForModRM(mr) + mr.ea, c.pop16())
 			}
 		} else {
 			if mr.isReg {
 				c.SetReg32(int(mr.rm), c.pop32())
 			} else {
-				c.writeMem32(c.segBase[DS]+mr.ea, c.pop32())
+				c.writeMem32(c.segBaseForModRM(mr) + mr.ea, c.pop32())
 			}
 		}
 
@@ -1231,7 +1262,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 		if mr.isReg {
 			c.SetReg8(reg8FromModRM(int(mr.rm)), imm)
 		} else {
-			c.writeMem8(c.segBase[DS]+mr.ea, imm)
+			c.writeMem8(c.segBaseForModRM(mr) + mr.ea, imm)
 		}
 
 	// LEA r16/32, m
@@ -1475,7 +1506,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 		if mr.isReg {
 			c.SetReg16(reg16FromModRM(int(mr.rm)), segVal)
 		} else {
-			c.writeMem16(c.segBase[DS]+mr.ea, segVal)
+			c.writeMem16(c.segBaseForModRM(mr) + mr.ea, segVal)
 		}
 
 	// MOV Sreg, r/m16 (8E)
@@ -1485,7 +1516,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 		if mr.isReg {
 			segVal = c.GetReg16(reg16FromModRM(int(mr.rm)))
 		} else {
-			segVal = c.readMem16(c.segBase[DS] + mr.ea)
+			segVal = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 		}
 		if c.IsProtectedMode() {
 			if err := c.LoadSegmentProtected(int(mr.reg), segVal); err != nil {
@@ -1503,7 +1534,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 	case 0xC4:
 		mr := c.parseModRM()
 		if !mr.isReg {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			if operandSize == 2 {
 				c.SetReg16(reg16FromModRM(int(mr.reg)), c.readMem16(addr))
 			} else {
@@ -1524,7 +1555,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 	case 0xC5:
 		mr := c.parseModRM()
 		if !mr.isReg {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			if operandSize == 2 {
 				c.SetReg16(reg16FromModRM(int(mr.reg)), c.readMem16(addr))
 			} else {
@@ -1711,7 +1742,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
 				} else {
-					dst = c.readMem16(c.segBase[DS] + mr.ea)
+					dst = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 				}
 				src := c.GetReg16(reg16FromModRM(int(mr.reg)))
 				if count != 0 {
@@ -1727,7 +1758,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					if mr.isReg {
 						c.SetReg16(reg16FromModRM(int(mr.rm)), result)
 					} else {
-						c.writeMem16(c.segBase[DS]+mr.ea, result)
+						c.writeMem16(c.segBaseForModRM(mr) + mr.ea, result)
 					}
 				}
 			} else {
@@ -1735,7 +1766,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					dst = c.GetReg32(int(mr.rm))
 				} else {
-					dst = c.readMem32(c.segBase[DS] + mr.ea)
+					dst = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 				}
 				src := c.GetReg32(int(mr.reg))
 				if count != 0 {
@@ -1751,7 +1782,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					if mr.isReg {
 						c.SetReg32(int(mr.rm), result)
 					} else {
-						c.writeMem32(c.segBase[DS]+mr.ea, result)
+						c.writeMem32(c.segBaseForModRM(mr) + mr.ea, result)
 					}
 				}
 			}
@@ -1764,7 +1795,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
 				} else {
-					dst = c.readMem16(c.segBase[DS] + mr.ea)
+					dst = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 				}
 				src := c.GetReg16(reg16FromModRM(int(mr.reg)))
 				if count != 0 {
@@ -1780,7 +1811,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					if mr.isReg {
 						c.SetReg16(reg16FromModRM(int(mr.rm)), result)
 					} else {
-						c.writeMem16(c.segBase[DS]+mr.ea, result)
+						c.writeMem16(c.segBaseForModRM(mr) + mr.ea, result)
 					}
 				}
 			} else {
@@ -1788,7 +1819,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					dst = c.GetReg32(int(mr.rm))
 				} else {
-					dst = c.readMem32(c.segBase[DS] + mr.ea)
+					dst = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 				}
 				src := c.GetReg32(int(mr.reg))
 				if count != 0 {
@@ -1804,7 +1835,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					if mr.isReg {
 						c.SetReg32(int(mr.rm), result)
 					} else {
-						c.writeMem32(c.segBase[DS]+mr.ea, result)
+						c.writeMem32(c.segBaseForModRM(mr) + mr.ea, result)
 					}
 				}
 			}
@@ -1817,7 +1848,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
 				} else {
-					dst = c.readMem16(c.segBase[DS] + mr.ea)
+					dst = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 				}
 				src := c.GetReg16(reg16FromModRM(int(mr.reg)))
 				if count != 0 {
@@ -1833,7 +1864,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					if mr.isReg {
 						c.SetReg16(reg16FromModRM(int(mr.rm)), result)
 					} else {
-						c.writeMem16(c.segBase[DS]+mr.ea, result)
+						c.writeMem16(c.segBaseForModRM(mr) + mr.ea, result)
 					}
 				}
 			} else {
@@ -1841,7 +1872,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					dst = c.GetReg32(int(mr.rm))
 				} else {
-					dst = c.readMem32(c.segBase[DS] + mr.ea)
+					dst = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 				}
 				src := c.GetReg32(int(mr.reg))
 				if count != 0 {
@@ -1857,7 +1888,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					if mr.isReg {
 						c.SetReg32(int(mr.rm), result)
 					} else {
-						c.writeMem32(c.segBase[DS]+mr.ea, result)
+						c.writeMem32(c.segBaseForModRM(mr) + mr.ea, result)
 					}
 				}
 			}
@@ -1870,7 +1901,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
 				} else {
-					dst = c.readMem16(c.segBase[DS] + mr.ea)
+					dst = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 				}
 				src := c.GetReg16(reg16FromModRM(int(mr.reg)))
 				if count != 0 {
@@ -1886,7 +1917,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					if mr.isReg {
 						c.SetReg16(reg16FromModRM(int(mr.rm)), result)
 					} else {
-						c.writeMem16(c.segBase[DS]+mr.ea, result)
+						c.writeMem16(c.segBaseForModRM(mr) + mr.ea, result)
 					}
 				}
 			} else {
@@ -1894,7 +1925,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					dst = c.GetReg32(int(mr.rm))
 				} else {
-					dst = c.readMem32(c.segBase[DS] + mr.ea)
+					dst = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 				}
 				src := c.GetReg32(int(mr.reg))
 				if count != 0 {
@@ -1910,7 +1941,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					if mr.isReg {
 						c.SetReg32(int(mr.rm), result)
 					} else {
-						c.writeMem32(c.segBase[DS]+mr.ea, result)
+						c.writeMem32(c.segBaseForModRM(mr) + mr.ea, result)
 					}
 				}
 			}
@@ -1930,7 +1961,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			if mr.isReg {
 				v = int32(c.GetReg32(int(mr.rm)))
 			} else {
-				v = int32(c.readMem32(c.segBase[DS] + mr.ea))
+				v = int32(c.readMem32(c.segBaseForModRM(mr) + mr.ea))
 			}
 			r := int64(int32(c.GetReg32(int(mr.reg)))) * int64(v)
 			c.SetReg32(int(mr.reg), uint32(r))
@@ -1938,47 +1969,49 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			c.setCF(r != int64(int32(r)))
 		case 0xB0:
 			// CMPXCHG r/m8, r8
+			// SDM: CF, OF, SF, ZF, AF, PF are all set as if `CMP acc, dst`
+			// had been performed (i.e. the SUB without writeback). The
+			// ZF=1 case writes src→dst; ZF=0 case loads dst→AL.
 			mr := c.parseModRM()
 			var dst uint8
 			if mr.isReg {
 				dst = c.GetReg8(reg8FromModRM(int(mr.rm)))
 			} else {
-				dst = c.readMem8(c.segBase[DS] + mr.ea)
+				dst = c.readMem8(c.segBaseForModRM(mr) + mr.ea)
 			}
 			acc := c.GetReg8(AL)
 			src := c.GetReg8(reg8FromModRM(int(mr.reg)))
+			c.sub8(acc, dst) // sets all CMP flags
 			if acc == dst {
-				c.setZF(true)
 				if mr.isReg {
 					c.SetReg8(reg8FromModRM(int(mr.rm)), src)
 				} else {
-					c.writeMem8(c.segBase[DS]+mr.ea, src)
+					c.writeMem8(c.segBaseForModRM(mr) + mr.ea, src)
 				}
 			} else {
-				c.setZF(false)
 				c.SetReg8(AL, dst)
 			}
 		case 0xB1:
 			// CMPXCHG r/m16/32, r16/32
+			// SDM: full CMP flag set (CF/OF/SF/ZF/AF/PF) is applied.
 			mr := c.parseModRM()
 			if operandSize == 2 {
 				var dst uint16
 				if mr.isReg {
 					dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
 				} else {
-					dst = c.readMem16(c.segBase[DS] + mr.ea)
+					dst = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 				}
 				acc := c.GetReg16(AX)
 				src := c.GetReg16(reg16FromModRM(int(mr.reg)))
+				c.sub16(acc, dst)
 				if acc == dst {
-					c.setZF(true)
 					if mr.isReg {
 						c.SetReg16(reg16FromModRM(int(mr.rm)), src)
 					} else {
-						c.writeMem16(c.segBase[DS]+mr.ea, src)
+						c.writeMem16(c.segBaseForModRM(mr) + mr.ea, src)
 					}
 				} else {
-					c.setZF(false)
 					c.SetReg16(AX, dst)
 				}
 			} else {
@@ -1986,19 +2019,18 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					dst = c.GetReg32(int(mr.rm))
 				} else {
-					dst = c.readMem32(c.segBase[DS] + mr.ea)
+					dst = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 				}
 				acc := c.GetReg32(EAX)
 				src := c.GetReg32(int(mr.reg))
+				c.sub32(acc, dst)
 				if acc == dst {
-					c.setZF(true)
 					if mr.isReg {
 						c.SetReg32(int(mr.rm), src)
 					} else {
-						c.writeMem32(c.segBase[DS]+mr.ea, src)
+						c.writeMem32(c.segBaseForModRM(mr) + mr.ea, src)
 					}
 				} else {
-					c.setZF(false)
 					c.SetReg32(EAX, dst)
 				}
 			}
@@ -2010,23 +2042,23 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
 					mask = 1 << bit
-					c.setZF((c.GetReg16(reg16FromModRM(int(mr.rm))) & uint16(mask)) == 0)
+					c.setCF((c.GetReg16(reg16FromModRM(int(mr.rm))) & uint16(mask)) != 0)
 				} else {
-					addr := c.segBase[DS] + mr.ea
+					addr := c.segBaseForModRM(mr) + mr.ea
 					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
 					mask = 1 << bit
-					c.setZF((c.readMem16(addr) & uint16(mask)) == 0)
+					c.setCF((c.readMem16(addr) & uint16(mask)) != 0)
 				}
 			} else {
 				if mr.isReg {
 					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
 					mask = 1 << bit
-					c.setZF((c.GetReg32(int(mr.rm)) & mask) == 0)
+					c.setCF((c.GetReg32(int(mr.rm)) & mask) != 0)
 				} else {
-					addr := c.segBase[DS] + mr.ea
+					addr := c.segBaseForModRM(mr) + mr.ea
 					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
 					mask = 1 << bit
-					c.setZF((c.readMem32(addr) & mask) == 0)
+					c.setCF((c.readMem32(addr) & mask) != 0)
 				}
 			}
 		case 0xAB:
@@ -2038,14 +2070,14 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
 					mask = 1 << bit
 					v := c.GetReg16(reg16FromModRM(int(mr.rm)))
-					c.setZF((v & uint16(mask)) == 0)
+					c.setCF((v & uint16(mask)) != 0)
 					c.SetReg16(reg16FromModRM(int(mr.rm)), v|uint16(mask))
 				} else {
-					addr := c.segBase[DS] + mr.ea
+					addr := c.segBaseForModRM(mr) + mr.ea
 					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
 					mask = 1 << bit
 					v := c.readMem16(addr)
-					c.setZF((v & uint16(mask)) == 0)
+					c.setCF((v & uint16(mask)) != 0)
 					c.writeMem16(addr, v|uint16(mask))
 				}
 			} else {
@@ -2053,14 +2085,14 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
 					mask = 1 << bit
 					v := c.GetReg32(int(mr.rm))
-					c.setZF((v & mask) == 0)
+					c.setCF((v & mask) != 0)
 					c.SetReg32(int(mr.rm), v|mask)
 				} else {
-					addr := c.segBase[DS] + mr.ea
+					addr := c.segBaseForModRM(mr) + mr.ea
 					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
 					mask = 1 << bit
 					v := c.readMem32(addr)
-					c.setZF((v & mask) == 0)
+					c.setCF((v & mask) != 0)
 					c.writeMem32(addr, v|mask)
 				}
 			}
@@ -2073,14 +2105,14 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
 					mask = 1 << bit
 					v := c.GetReg16(reg16FromModRM(int(mr.rm)))
-					c.setZF((v & uint16(mask)) == 0)
+					c.setCF((v & uint16(mask)) != 0)
 					c.SetReg16(reg16FromModRM(int(mr.rm)), v&^uint16(mask))
 				} else {
-					addr := c.segBase[DS] + mr.ea
+					addr := c.segBaseForModRM(mr) + mr.ea
 					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
 					mask = 1 << bit
 					v := c.readMem16(addr)
-					c.setZF((v & uint16(mask)) == 0)
+					c.setCF((v & uint16(mask)) != 0)
 					c.writeMem16(addr, v&^uint16(mask))
 				}
 			} else {
@@ -2088,14 +2120,14 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
 					mask = 1 << bit
 					v := c.GetReg32(int(mr.rm))
-					c.setZF((v & mask) == 0)
+					c.setCF((v & mask) != 0)
 					c.SetReg32(int(mr.rm), v&^mask)
 				} else {
-					addr := c.segBase[DS] + mr.ea
+					addr := c.segBaseForModRM(mr) + mr.ea
 					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
 					mask = 1 << bit
 					v := c.readMem32(addr)
-					c.setZF((v & mask) == 0)
+					c.setCF((v & mask) != 0)
 					c.writeMem32(addr, v&^mask)
 				}
 			}
@@ -2109,17 +2141,17 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					bit := imm & 0xF
 					mask := uint16(1) << bit
 					if mr.isReg {
-						c.setZF((c.GetReg16(reg16FromModRM(int(mr.rm))) & mask) == 0)
+						c.setCF((c.GetReg16(reg16FromModRM(int(mr.rm))) & mask) != 0)
 					} else {
-						c.setZF((c.readMem16(c.segBase[DS]+mr.ea) & mask) == 0)
+						c.setCF((c.readMem16(c.segBaseForModRM(mr) + mr.ea) & mask) != 0)
 					}
 				} else {
 					bit := imm & 0x1F
 					mask := uint32(1) << bit
 					if mr.isReg {
-						c.setZF((c.GetReg32(int(mr.rm)) & mask) == 0)
+						c.setCF((c.GetReg32(int(mr.rm)) & mask) != 0)
 					} else {
-						c.setZF((c.readMem32(c.segBase[DS]+mr.ea) & mask) == 0)
+						c.setCF((c.readMem32(c.segBaseForModRM(mr) + mr.ea) & mask) != 0)
 					}
 				}
 			case 5: // BTS
@@ -2128,12 +2160,12 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					mask := uint16(1) << bit
 					if mr.isReg {
 						v := c.GetReg16(reg16FromModRM(int(mr.rm)))
-						c.setZF((v & mask) == 0)
+						c.setCF((v & mask) != 0)
 						c.SetReg16(reg16FromModRM(int(mr.rm)), v|mask)
 					} else {
-						addr := c.segBase[DS] + mr.ea
+						addr := c.segBaseForModRM(mr) + mr.ea
 						v := c.readMem16(addr)
-						c.setZF((v & mask) == 0)
+						c.setCF((v & mask) != 0)
 						c.writeMem16(addr, v|mask)
 					}
 				} else {
@@ -2141,12 +2173,12 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					mask := uint32(1) << bit
 					if mr.isReg {
 						v := c.GetReg32(int(mr.rm))
-						c.setZF((v & mask) == 0)
+						c.setCF((v & mask) != 0)
 						c.SetReg32(int(mr.rm), v|mask)
 					} else {
-						addr := c.segBase[DS] + mr.ea
+						addr := c.segBaseForModRM(mr) + mr.ea
 						v := c.readMem32(addr)
-						c.setZF((v & mask) == 0)
+						c.setCF((v & mask) != 0)
 						c.writeMem32(addr, v|mask)
 					}
 				}
@@ -2156,12 +2188,12 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					mask := uint16(1) << bit
 					if mr.isReg {
 						v := c.GetReg16(reg16FromModRM(int(mr.rm)))
-						c.setZF((v & mask) == 0)
+						c.setCF((v & mask) != 0)
 						c.SetReg16(reg16FromModRM(int(mr.rm)), v&^mask)
 					} else {
-						addr := c.segBase[DS] + mr.ea
+						addr := c.segBaseForModRM(mr) + mr.ea
 						v := c.readMem16(addr)
-						c.setZF((v & mask) == 0)
+						c.setCF((v & mask) != 0)
 						c.writeMem16(addr, v&^mask)
 					}
 				} else {
@@ -2169,12 +2201,12 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					mask := uint32(1) << bit
 					if mr.isReg {
 						v := c.GetReg32(int(mr.rm))
-						c.setZF((v & mask) == 0)
+						c.setCF((v & mask) != 0)
 						c.SetReg32(int(mr.rm), v&^mask)
 					} else {
-						addr := c.segBase[DS] + mr.ea
+						addr := c.segBaseForModRM(mr) + mr.ea
 						v := c.readMem32(addr)
-						c.setZF((v & mask) == 0)
+						c.setCF((v & mask) != 0)
 						c.writeMem32(addr, v&^mask)
 					}
 				}
@@ -2184,12 +2216,12 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					mask := uint16(1) << bit
 					if mr.isReg {
 						v := c.GetReg16(reg16FromModRM(int(mr.rm)))
-						c.setZF((v & mask) == 0)
+						c.setCF((v & mask) != 0)
 						c.SetReg16(reg16FromModRM(int(mr.rm)), v^mask)
 					} else {
-						addr := c.segBase[DS] + mr.ea
+						addr := c.segBaseForModRM(mr) + mr.ea
 						v := c.readMem16(addr)
-						c.setZF((v & mask) == 0)
+						c.setCF((v & mask) != 0)
 						c.writeMem16(addr, v^mask)
 					}
 				} else {
@@ -2197,12 +2229,12 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					mask := uint32(1) << bit
 					if mr.isReg {
 						v := c.GetReg32(int(mr.rm))
-						c.setZF((v & mask) == 0)
+						c.setCF((v & mask) != 0)
 						c.SetReg32(int(mr.rm), v^mask)
 					} else {
-						addr := c.segBase[DS] + mr.ea
+						addr := c.segBaseForModRM(mr) + mr.ea
 						v := c.readMem32(addr)
-						c.setZF((v & mask) == 0)
+						c.setCF((v & mask) != 0)
 						c.writeMem32(addr, v^mask)
 					}
 				}
@@ -2218,14 +2250,14 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
 					mask = 1 << bit
 					v := c.GetReg16(reg16FromModRM(int(mr.rm)))
-					c.setZF((v & uint16(mask)) == 0)
+					c.setCF((v & uint16(mask)) != 0)
 					c.SetReg16(reg16FromModRM(int(mr.rm)), v^uint16(mask))
 				} else {
-					addr := c.segBase[DS] + mr.ea
+					addr := c.segBaseForModRM(mr) + mr.ea
 					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
 					mask = 1 << bit
 					v := c.readMem16(addr)
-					c.setZF((v & uint16(mask)) == 0)
+					c.setCF((v & uint16(mask)) != 0)
 					c.writeMem16(addr, v^uint16(mask))
 				}
 			} else {
@@ -2233,14 +2265,14 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
 					mask = 1 << bit
 					v := c.GetReg32(int(mr.rm))
-					c.setZF((v & mask) == 0)
+					c.setCF((v & mask) != 0)
 					c.SetReg32(int(mr.rm), v^mask)
 				} else {
-					addr := c.segBase[DS] + mr.ea
+					addr := c.segBaseForModRM(mr) + mr.ea
 					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
 					mask = 1 << bit
 					v := c.readMem32(addr)
-					c.setZF((v & mask) == 0)
+					c.setCF((v & mask) != 0)
 					c.writeMem32(addr, v^mask)
 				}
 			}
@@ -2251,7 +2283,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			if mr.isReg {
 				v = uint32(c.GetReg8(reg8FromModRM(int(mr.rm))))
 			} else {
-				v = uint32(c.readMem8(c.segBase[DS] + mr.ea))
+				v = uint32(c.readMem8(c.segBaseForModRM(mr) + mr.ea))
 			}
 			c.SetReg32(int(mr.reg), v)
 		case 0xB7:
@@ -2261,7 +2293,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			if mr.isReg {
 				v = uint32(c.GetReg16(reg16FromModRM(int(mr.rm))))
 			} else {
-				v = uint32(c.readMem16(c.segBase[DS] + mr.ea))
+				v = uint32(c.readMem16(c.segBaseForModRM(mr) + mr.ea))
 			}
 			c.SetReg32(int(mr.reg), v)
 		case 0xBE:
@@ -2271,7 +2303,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			if mr.isReg {
 				v = int32(int8(c.GetReg8(reg8FromModRM(int(mr.rm)))))
 			} else {
-				v = int32(int8(c.readMem8(c.segBase[DS] + mr.ea)))
+				v = int32(int8(c.readMem8(c.segBaseForModRM(mr) + mr.ea)))
 			}
 			c.SetReg32(int(mr.reg), uint32(v))
 		case 0xBF:
@@ -2281,7 +2313,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			if mr.isReg {
 				v = int32(int16(c.GetReg16(reg16FromModRM(int(mr.rm)))))
 			} else {
-				v = int32(int16(c.readMem16(c.segBase[DS] + mr.ea)))
+				v = int32(int16(c.readMem16(c.segBaseForModRM(mr) + mr.ea)))
 			}
 			c.SetReg32(int(mr.reg), uint32(v))
 		case 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF:
@@ -2319,6 +2351,12 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				c.raiseGeneralProtectionFault(0)
 			}
 
+		// UD2 — always raises #UD. Linux uses 0F 0B as the implementation
+		// of BUG(), with the kernel #UD handler decoding the trailing bug
+		// report. We must deliver #UD so that handler runs.
+		case 0x0B:
+			panic(invalidOpcodeError{})
+
 		// LSS r16/32, m16:32 — load SS:reg from memory.
 		case 0xB2:
 			return c.handleLoadFarPointer(SS, operandSize)
@@ -2336,14 +2374,14 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			if mr.isReg {
 				dst = c.GetReg8(reg8FromModRM(int(mr.rm)))
 			} else {
-				dst = c.readMem8(c.segBase[DS] + mr.ea)
+				dst = c.readMem8(c.segBaseForModRM(mr) + mr.ea)
 			}
 			src := c.GetReg8(reg8FromModRM(int(mr.reg)))
 			sum := c.add8(dst, src)
 			if mr.isReg {
 				c.SetReg8(reg8FromModRM(int(mr.rm)), sum)
 			} else {
-				c.writeMem8(c.segBase[DS]+mr.ea, sum)
+				c.writeMem8(c.segBaseForModRM(mr) + mr.ea, sum)
 			}
 			c.SetReg8(reg8FromModRM(int(mr.reg)), dst)
 
@@ -2355,14 +2393,14 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
 				} else {
-					dst = c.readMem16(c.segBase[DS] + mr.ea)
+					dst = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 				}
 				src := c.GetReg16(reg16FromModRM(int(mr.reg)))
 				sum := c.add16(dst, src)
 				if mr.isReg {
 					c.SetReg16(reg16FromModRM(int(mr.rm)), sum)
 				} else {
-					c.writeMem16(c.segBase[DS]+mr.ea, sum)
+					c.writeMem16(c.segBaseForModRM(mr) + mr.ea, sum)
 				}
 				c.SetReg16(reg16FromModRM(int(mr.reg)), dst)
 			} else {
@@ -2370,14 +2408,14 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					dst = c.GetReg32(int(mr.rm))
 				} else {
-					dst = c.readMem32(c.segBase[DS] + mr.ea)
+					dst = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 				}
 				src := c.GetReg32(int(mr.reg))
 				sum := c.add32(dst, src)
 				if mr.isReg {
 					c.SetReg32(int(mr.rm), sum)
 				} else {
-					c.writeMem32(c.segBase[DS]+mr.ea, sum)
+					c.writeMem32(c.segBaseForModRM(mr) + mr.ea, sum)
 				}
 				c.SetReg32(int(mr.reg), dst)
 			}
@@ -2388,7 +2426,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			if mr.reg != 1 || mr.isReg {
 				return fmt.Errorf("0F C7 /%d not implemented", mr.reg)
 			}
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			memLo := c.readMem32(addr)
 			memHi := c.readMem32(addr + 4)
 			eax := c.GetReg32(EAX)
@@ -2411,7 +2449,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					src = c.GetReg16(reg16FromModRM(int(mr.rm)))
 				} else {
-					src = c.readMem16(c.segBase[DS] + mr.ea)
+					src = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 				}
 				if src == 0 {
 					c.setZF(true)
@@ -2430,7 +2468,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					src = c.GetReg32(int(mr.rm))
 				} else {
-					src = c.readMem32(c.segBase[DS] + mr.ea)
+					src = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 				}
 				if src == 0 {
 					c.setZF(true)
@@ -2454,7 +2492,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					src = c.GetReg16(reg16FromModRM(int(mr.rm)))
 				} else {
-					src = c.readMem16(c.segBase[DS] + mr.ea)
+					src = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 				}
 				if src == 0 {
 					c.setZF(true)
@@ -2473,7 +2511,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				if mr.isReg {
 					src = c.GetReg32(int(mr.rm))
 				} else {
-					src = c.readMem32(c.segBase[DS] + mr.ea)
+					src = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 				}
 				if src == 0 {
 					c.setZF(true)

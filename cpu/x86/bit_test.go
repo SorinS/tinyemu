@@ -2,6 +2,12 @@ package x86
 
 import "testing"
 
+// Intel SDM: BT/BTS/BTR/BTC set CF (carry flag) based on the original bit
+// value. ZF, SF, OF, AF, PF are undefined. Older revisions of this code
+// incorrectly set ZF; that bug would silently break Linux's bitmap-based
+// subsystems (test_bit, set_bit, clear_bit) and was the root cause of an
+// early-boot kernel crash. These tests pin down the CF semantics.
+
 // 0F A3 BT r/m32, r32
 func TestBTRegReg32(t *testing.T) {
 	c := newTestCPU(t)
@@ -11,8 +17,8 @@ func TestBTRegReg32(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if c.getZF() {
-		t.Error("expected ZF=0 for BT of set bit")
+	if !c.getCF() {
+		t.Error("expected CF=1 for BT of set bit")
 	}
 
 	c = newTestCPU(t)
@@ -22,8 +28,8 @@ func TestBTRegReg32(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if !c.getZF() {
-		t.Error("expected ZF=1 for BT of clear bit")
+	if c.getCF() {
+		t.Error("expected CF=0 for BT of clear bit")
 	}
 }
 
@@ -36,8 +42,8 @@ func TestBTSRegReg32(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if !c.getZF() {
-		t.Error("expected ZF=1")
+	if c.getCF() {
+		t.Error("expected CF=0 (bit was clear before BTS)")
 	}
 	if c.GetReg32(EBX) != 0x20 {
 		t.Errorf("expected EBX=0x20, got %08X", c.GetReg32(EBX))
@@ -53,8 +59,8 @@ func TestBTSAlreadySet32(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if c.getZF() {
-		t.Error("expected ZF=0 after BTS of already-set bit")
+	if !c.getCF() {
+		t.Error("expected CF=1 (bit was set before BTS)")
 	}
 	if c.GetReg32(EBX) != 0x20 {
 		t.Errorf("expected EBX=0x20, got %08X", c.GetReg32(EBX))
@@ -70,8 +76,8 @@ func TestBTRRegReg32(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if c.getZF() {
-		t.Error("expected ZF=0")
+	if !c.getCF() {
+		t.Error("expected CF=1 (bit was set before BTR)")
 	}
 	if c.GetReg32(EBX) != 0xFFFFFF7F {
 		t.Errorf("expected EBX=0xFFFFFF7F, got %08X", c.GetReg32(EBX))
@@ -87,8 +93,8 @@ func TestBTCRegReg32(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if c.getZF() {
-		t.Error("expected ZF=0")
+	if !c.getCF() {
+		t.Error("expected CF=1 (bit was set before BTC)")
 	}
 	if c.GetReg32(EBX) != 0 {
 		t.Errorf("expected EBX=0, got %08X", c.GetReg32(EBX))
@@ -104,8 +110,8 @@ func TestBTCToggleBack32(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if !c.getZF() {
-		t.Error("expected ZF=1")
+	if c.getCF() {
+		t.Error("expected CF=0 (bit was clear before BTC)")
 	}
 	if c.GetReg32(EBX) != 1 {
 		t.Errorf("expected EBX=1, got %08X", c.GetReg32(EBX))
@@ -120,8 +126,8 @@ func TestBTRegImm32(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if c.getZF() {
-		t.Error("expected ZF=0")
+	if !c.getCF() {
+		t.Error("expected CF=1 (bit 8 is set)")
 	}
 }
 
@@ -133,8 +139,8 @@ func TestBTSRegImm32(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if !c.getZF() {
-		t.Error("expected ZF=1")
+	if c.getCF() {
+		t.Error("expected CF=0 (bit was clear)")
 	}
 	if c.GetReg32(EBX) != 8 {
 		t.Errorf("expected EBX=8, got %08X", c.GetReg32(EBX))
@@ -162,8 +168,8 @@ func TestBTCRegImm32(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if c.getZF() {
-		t.Error("expected ZF=0")
+	if !c.getCF() {
+		t.Error("expected CF=1 (bit was set)")
 	}
 	if c.GetReg32(EBX) != 0 {
 		t.Errorf("expected EBX=0, got %08X", c.GetReg32(EBX))
@@ -181,8 +187,8 @@ func TestBTMemReg32(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if c.getZF() {
-		t.Error("expected ZF=0 for BT mem of set bit")
+	if !c.getCF() {
+		t.Error("expected CF=1 (bit was set)")
 	}
 }
 
@@ -234,8 +240,8 @@ func TestBTRegReg16(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if c.getZF() {
-		t.Error("expected ZF=0")
+	if !c.getCF() {
+		t.Error("expected CF=1 (bit set)")
 	}
 }
 
@@ -247,8 +253,8 @@ func TestBTSRegReg16(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if !c.getZF() {
-		t.Error("expected ZF=1")
+	if c.getCF() {
+		t.Error("expected CF=0 (bit was clear)")
 	}
 	if c.GetReg16(BX) != 0x20 {
 		t.Errorf("expected BX=0x20, got %04X", c.GetReg16(BX))
@@ -318,7 +324,10 @@ func TestBTCRegImm16(t *testing.T) {
 	}
 }
 
-// Test bit indexing mask (bit index modulo operand size)
+// Test bit indexing mask (bit index modulo operand size — register form).
+// Per Intel SDM, for REGISTER destination the bit offset is taken modulo the
+// operand size. (For MEMORY destination the offset extends the address; not
+// covered here.)
 func TestBTBitIndexWrap32(t *testing.T) {
 	c := newTestCPU(t)
 	c.SetReg32(EBX, 0x00000001)
@@ -327,8 +336,8 @@ func TestBTBitIndexWrap32(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if !c.getZF() {
-		t.Error("expected ZF=1 (bit 1 is clear)")
+	if c.getCF() {
+		t.Error("expected CF=0 (bit 1 is clear after wrap)")
 	}
 }
 
@@ -340,7 +349,7 @@ func TestBTBitIndexWrap16(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)
 	}
-	if !c.getZF() {
-		t.Error("expected ZF=1 (bit 1 is clear)")
+	if c.getCF() {
+		t.Error("expected CF=0 (bit 1 is clear after wrap)")
 	}
 }

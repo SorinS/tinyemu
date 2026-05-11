@@ -16,6 +16,12 @@ type modRMResult struct {
 	disp  uint32
 	isReg bool
 	ea    uint32 // effective address for memory operands
+	// defaultSeg is the segment register implied by the encoding when no
+	// override prefix is present. For most encodings this is DS, but for
+	// addressing modes that use EBP/ESP as a base it is SS. Callers should
+	// use c.segBaseForModRM(mr) so that segment-override prefixes (CS/SS/
+	// DS/ES/FS/GS) are honored.
+	defaultSeg int
 }
 
 // parseModRM32 parses a ModR/M byte for 32-bit addressing.
@@ -27,10 +33,11 @@ func (c *CPU) parseModRM32() modRMResult {
 	rm := modrm & 7
 
 	res := modRMResult{
-		mod:   mod,
-		reg:   reg,
-		rm:    rm,
-		isReg: mod == 3,
+		mod:        mod,
+		reg:        reg,
+		rm:         rm,
+		isReg:      mod == 3,
+		defaultSeg: DS,
 	}
 
 	if mod == 3 {
@@ -52,6 +59,11 @@ func (c *CPU) parseModRM32() modRMResult {
 			ea = c.fetch32()
 		} else {
 			ea = c.GetReg32(int(base))
+			// Per Intel SDM: when SIB base is ESP (4) or EBP (5, mod != 0),
+			// the default segment is SS, not DS.
+			if base == 4 || base == 5 {
+				res.defaultSeg = SS
+			}
 		}
 		if index != 4 {
 			ea += c.GetReg32(int(index)) * scale
@@ -62,6 +74,10 @@ func (c *CPU) parseModRM32() modRMResult {
 		disp = c.fetch32()
 	} else {
 		disp = c.GetReg32(int(rm))
+		// rm == 5 with mod != 0 means [EBP+disp]: default segment is SS.
+		if rm == 5 {
+			res.defaultSeg = SS
+		}
 	}
 
 	if mod == 1 {
@@ -83,10 +99,11 @@ func (c *CPU) parseModRM16() modRMResult {
 	rm := modrm & 7
 
 	res := modRMResult{
-		mod:   mod,
-		reg:   reg,
-		rm:    rm,
-		isReg: mod == 3,
+		mod:        mod,
+		reg:        reg,
+		rm:         rm,
+		isReg:      mod == 3,
+		defaultSeg: DS,
 	}
 
 	if mod == 3 {
@@ -102,8 +119,10 @@ func (c *CPU) parseModRM16() modRMResult {
 		ea = uint32(c.GetReg16(BX) + c.GetReg16(DI))
 	case 2:
 		ea = uint32(c.GetReg16(BP) + c.GetReg16(SI))
+		res.defaultSeg = SS
 	case 3:
 		ea = uint32(c.GetReg16(BP) + c.GetReg16(DI))
+		res.defaultSeg = SS
 	case 4:
 		ea = uint32(c.GetReg16(SI))
 	case 5:
@@ -113,6 +132,7 @@ func (c *CPU) parseModRM16() modRMResult {
 			ea = uint32(c.fetch16())
 		} else {
 			ea = uint32(c.GetReg16(BP))
+			res.defaultSeg = SS
 		}
 	case 7:
 		ea = uint32(c.GetReg16(BX))
@@ -137,6 +157,18 @@ func (c *CPU) parseModRM() modRMResult {
 	return c.parseModRM16()
 }
 
+// segBaseForModRM returns the segment base that should be used for the memory
+// operand described by mr. If a segment-override prefix is active for the
+// current instruction (currentSegOverride != -1) that wins; otherwise the
+// instruction's encoded default segment (DS for most cases, SS for EBP/ESP-
+// based addressing modes) is used.
+func (c *CPU) segBaseForModRM(mr modRMResult) uint32 {
+	if c.currentSegOverride >= 0 {
+		return c.segBase[c.currentSegOverride]
+	}
+	return c.segBase[mr.defaultSeg]
+}
+
 // handleModRM32 handles MOV r/m32, r32 (0x89) and MOV r32, r/m32 (0x8B).
 func (c *CPU) handleModRM32(opcode uint8) error {
 	mr := c.parseModRM()
@@ -147,7 +179,7 @@ func (c *CPU) handleModRM32(opcode uint8) error {
 			c.SetReg32(int(mr.reg), c.GetReg32(int(mr.rm)))
 		}
 	} else {
-		addr := c.segBase[DS] + mr.ea
+		addr := c.segBaseForModRM(mr) + mr.ea
 		if opcode == 0x89 {
 			c.writeMem32(addr, c.GetReg32(int(mr.reg)))
 		} else {
@@ -167,7 +199,7 @@ func (c *CPU) handleModRM16(opcode uint8) error {
 			c.SetReg16(reg16FromModRM(int(mr.reg)), c.GetReg16(reg16FromModRM(int(mr.rm))))
 		}
 	} else {
-		addr := c.segBase[DS] + mr.ea
+		addr := c.segBaseForModRM(mr) + mr.ea
 		if opcode == 0x89 {
 			c.writeMem16(addr, c.GetReg16(reg16FromModRM(int(mr.reg))))
 		} else {
@@ -187,7 +219,7 @@ func (c *CPU) handleModRM8(opcode uint8) error {
 			c.SetReg8(reg8FromModRM(int(mr.reg)), c.GetReg8(reg8FromModRM(int(mr.rm))))
 		}
 	} else {
-		addr := c.segBase[DS] + mr.ea
+		addr := c.segBaseForModRM(mr) + mr.ea
 		if opcode == 0x88 {
 			c.writeMem8(addr, c.GetReg8(reg8FromModRM(int(mr.reg))))
 		} else {
@@ -209,14 +241,14 @@ func (c *CPU) handleMovImm(operandSize uint8) error {
 		if mr.isReg {
 			c.SetReg16(reg16FromModRM(int(mr.rm)), imm)
 		} else {
-			c.writeMem16(c.segBase[DS]+mr.ea, imm)
+			c.writeMem16(c.segBaseForModRM(mr) + mr.ea, imm)
 		}
 	} else {
 		imm := c.fetch32()
 		if mr.isReg {
 			c.SetReg32(int(mr.rm), imm)
 		} else {
-			c.writeMem32(c.segBase[DS]+mr.ea, imm)
+			c.writeMem32(c.segBaseForModRM(mr) + mr.ea, imm)
 		}
 	}
 	return nil
@@ -250,7 +282,7 @@ func (c *CPU) handleGroup1_8() error {
 		}
 		c.SetReg8(reg8FromModRM(int(mr.rm)), res)
 	} else {
-		addr := c.segBase[DS] + mr.ea
+		addr := c.segBaseForModRM(mr) + mr.ea
 		dst := c.readMem8(addr)
 		switch mr.reg {
 		case 0: // ADD
@@ -305,7 +337,7 @@ func (c *CPU) handleGroup1Op16(mr modRMResult, imm uint16) error {
 	if mr.isReg {
 		dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
 	} else {
-		dst = c.readMem16(c.segBase[DS] + mr.ea)
+		dst = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 	}
 	var res uint16
 	switch mr.reg {
@@ -332,7 +364,7 @@ func (c *CPU) handleGroup1Op16(mr modRMResult, imm uint16) error {
 	if mr.isReg {
 		c.SetReg16(reg16FromModRM(int(mr.rm)), res)
 	} else {
-		c.writeMem16(c.segBase[DS]+mr.ea, res)
+		c.writeMem16(c.segBaseForModRM(mr) + mr.ea, res)
 	}
 	return nil
 }
@@ -342,7 +374,7 @@ func (c *CPU) handleGroup1Op32(mr modRMResult, imm uint32) error {
 	if mr.isReg {
 		dst = c.GetReg32(int(mr.rm))
 	} else {
-		dst = c.readMem32(c.segBase[DS] + mr.ea)
+		dst = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 	}
 	var res uint32
 	switch mr.reg {
@@ -369,7 +401,7 @@ func (c *CPU) handleGroup1Op32(mr modRMResult, imm uint32) error {
 	if mr.isReg {
 		c.SetReg32(int(mr.rm), res)
 	} else {
-		c.writeMem32(c.segBase[DS]+mr.ea, res)
+		c.writeMem32(c.segBaseForModRM(mr) + mr.ea, res)
 	}
 	return nil
 }
@@ -519,7 +551,7 @@ func (c *CPU) handleCMOVcc(opcode2 uint8, operandSize uint8) error {
 		if mr.isReg {
 			src = c.GetReg16(reg16FromModRM(int(mr.rm)))
 		} else {
-			src = c.readMem16(c.segBase[DS] + mr.ea)
+			src = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 		}
 		if cond {
 			c.SetReg16(reg16FromModRM(int(mr.reg)), src)
@@ -529,7 +561,7 @@ func (c *CPU) handleCMOVcc(opcode2 uint8, operandSize uint8) error {
 		if mr.isReg {
 			src = c.GetReg32(int(mr.rm))
 		} else {
-			src = c.readMem32(c.segBase[DS] + mr.ea)
+			src = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 		}
 		if cond {
 			c.SetReg32(int(mr.reg), src)
@@ -547,7 +579,7 @@ func (c *CPU) handleLoadFarPointer(segReg int, operandSize uint8) error {
 		// Source must be memory.
 		return fmt.Errorf("LSS/LFS/LGS with register source")
 	}
-	addr := c.segBase[DS] + mr.ea
+	addr := c.segBaseForModRM(mr) + mr.ea
 	if operandSize == 2 {
 		off := c.readMem16(addr)
 		sel := c.readMem16(addr + 2)
@@ -624,7 +656,7 @@ func (c *CPU) handleSETcc(opcode2 uint8) error {
 	if mr.isReg {
 		c.SetReg8(reg8FromModRM(int(mr.rm)), val)
 	} else {
-		c.writeMem8(c.segBase[DS]+mr.ea, val)
+		c.writeMem8(c.segBaseForModRM(mr) + mr.ea, val)
 	}
 	return nil
 }

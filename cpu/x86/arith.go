@@ -49,9 +49,15 @@ func (c *CPU) sub32(a, b uint32) uint32 {
 }
 
 // inc8 increments an 8-bit value with EFLAGS update (does not affect CF).
+// inc8 increments an 8-bit value with EFLAGS update (does not affect CF).
+// Signed overflow happens iff v transitions from the largest positive value
+// (0x7F → 0x80, i.e. +127 → -128), so OF = (MSB was 0) && (MSB is now 1).
+// Prior to this fix the condition was inverted (matching DEC), causing
+// `INC EAX` of 0x7FFFFFFF to leave OF=0 and `INC EAX` of 0xFFFFFFFF to
+// leave OF=1 — exactly backwards.
 func (c *CPU) inc8(v uint8) uint8 {
 	r := v + 1
-	of := (v&0x80) != 0 && (r&0x80) == 0
+	of := (v&0x80) == 0 && (r&0x80) != 0
 	c.setOF(of)
 	c.setSF((r & 0x80) != 0)
 	c.setZF(r == 0)
@@ -61,9 +67,10 @@ func (c *CPU) inc8(v uint8) uint8 {
 }
 
 // dec8 decrements an 8-bit value with EFLAGS update (does not affect CF).
+// Signed overflow when v = 0x80 (-128) → r = 0x7F (+127): MSB 1→0.
 func (c *CPU) dec8(v uint8) uint8 {
 	r := v - 1
-	of := (v&0x80) == 0 && (r&0x80) != 0
+	of := (v&0x80) != 0 && (r&0x80) == 0
 	c.setOF(of)
 	c.setSF((r & 0x80) != 0)
 	c.setZF(r == 0)
@@ -75,7 +82,7 @@ func (c *CPU) dec8(v uint8) uint8 {
 // inc32 increments a 32-bit value with EFLAGS update (does not affect CF).
 func (c *CPU) inc32(v uint32) uint32 {
 	r := v + 1
-	of := (v&0x80000000) != 0 && (r&0x80000000) == 0
+	of := (v&0x80000000) == 0 && (r&0x80000000) != 0
 	c.setOF(of)
 	c.setSF((r & 0x80000000) != 0)
 	c.setZF(r == 0)
@@ -87,7 +94,7 @@ func (c *CPU) inc32(v uint32) uint32 {
 // dec32 decrements a 32-bit value with EFLAGS update (does not affect CF).
 func (c *CPU) dec32(v uint32) uint32 {
 	r := v - 1
-	of := (v&0x80000000) == 0 && (r&0x80000000) != 0
+	of := (v&0x80000000) != 0 && (r&0x80000000) == 0
 	c.setOF(of)
 	c.setSF((r & 0x80000000) != 0)
 	c.setZF(r == 0)
@@ -455,32 +462,45 @@ func (c *CPU) not32(v uint32) uint32 {
 	return ^v
 }
 
-// inc16 performs 16-bit increment.
+// inc16 performs 16-bit increment. INC must NOT modify CF — use the same
+// flag pattern as inc8/inc32, computed inline to avoid clobbering CF via
+// the generic ADD helper.
 func (c *CPU) inc16(v uint16) uint16 {
 	r := v + 1
-	c.updateArithFlags16(r, v, 1, true)
+	c.setOF((v&0x8000) == 0 && (r&0x8000) != 0)
+	c.setSF((r & 0x8000) != 0)
+	c.setZF(r == 0)
+	c.setAF((v & 0x0F) == 0x0F)
+	c.setPF(parity8(uint8(r)))
 	return r
 }
 
-// dec16 performs 16-bit decrement.
+// dec16 performs 16-bit decrement. DEC must NOT modify CF.
 func (c *CPU) dec16(v uint16) uint16 {
 	r := v - 1
-	c.updateArithFlags16(r, v, 1, false)
+	c.setOF((v&0x8000) != 0 && (r&0x8000) == 0)
+	c.setSF((r & 0x8000) != 0)
+	c.setZF(r == 0)
+	c.setAF((v & 0x0F) == 0)
+	c.setPF(parity8(uint8(r)))
 	return r
 }
 
 // div8 performs unsigned 8-bit division: AX / divisor.
+// div8/16/32 and idiv8/16/32 — per Intel SDM, if the divisor is zero OR the
+// quotient overflows the destination's width, the CPU raises #DE (divide-
+// error fault). Prior to this fix we silently returned on either condition,
+// leaving the destination registers unchanged and bypassing the kernel's
+// fault handler.
 func (c *CPU) div8(divisor uint8) {
 	if divisor == 0 {
-		// TODO: #DE exception
-		return
+		panic(divideError{})
 	}
 	dividend := c.GetReg16(AX)
 	q := dividend / uint16(divisor)
 	r := dividend % uint16(divisor)
 	if q > 0xFF {
-		// TODO: #DE exception
-		return
+		panic(divideError{})
 	}
 	c.SetReg8(AL, uint8(q))
 	c.SetReg8(AH, uint8(r))
@@ -489,41 +509,43 @@ func (c *CPU) div8(divisor uint8) {
 // div16 performs unsigned 16-bit division: DX:AX / divisor.
 func (c *CPU) div16(divisor uint16) {
 	if divisor == 0 {
-		// TODO: #DE exception
-		return
+		panic(divideError{})
 	}
 	dividend := (uint32(c.GetReg16(DX)) << 16) | uint32(c.GetReg16(AX))
-	q := uint16(dividend / uint32(divisor))
+	q := dividend / uint32(divisor)
+	if q > 0xFFFF {
+		panic(divideError{})
+	}
 	r := uint16(dividend % uint32(divisor))
-	c.SetReg16(AX, q)
+	c.SetReg16(AX, uint16(q))
 	c.SetReg16(DX, r)
 }
 
 // div32 performs unsigned 32-bit division: EDX:EAX / divisor.
 func (c *CPU) div32(divisor uint32) {
 	if divisor == 0 {
-		// TODO: #DE exception
-		return
+		panic(divideError{})
 	}
 	dividend := (uint64(c.GetReg32(EDX)) << 32) | uint64(c.GetReg32(EAX))
-	q := uint32(dividend / uint64(divisor))
+	q := dividend / uint64(divisor)
+	if q > 0xFFFFFFFF {
+		panic(divideError{})
+	}
 	r := uint32(dividend % uint64(divisor))
-	c.SetReg32(EAX, q)
+	c.SetReg32(EAX, uint32(q))
 	c.SetReg32(EDX, r)
 }
 
 // idiv8 performs signed 8-bit division: AX / divisor.
 func (c *CPU) idiv8(divisor int8) {
 	if divisor == 0 {
-		// TODO: #DE exception
-		return
+		panic(divideError{})
 	}
 	dividend := int16(c.GetReg16(AX))
 	q := dividend / int16(divisor)
 	r := dividend % int16(divisor)
 	if q < -128 || q > 127 {
-		// TODO: #DE exception
-		return
+		panic(divideError{})
 	}
 	c.SetReg8(AL, uint8(q))
 	c.SetReg8(AH, uint8(r))
@@ -532,11 +554,13 @@ func (c *CPU) idiv8(divisor int8) {
 // idiv16 performs signed 16-bit division: DX:AX / divisor.
 func (c *CPU) idiv16(divisor int16) {
 	if divisor == 0 {
-		// TODO: #DE exception
-		return
+		panic(divideError{})
 	}
 	dividend := (int32(c.GetReg16(DX)) << 16) | int32(c.GetReg16(AX))
-	q := int16(dividend / int32(divisor))
+	q := dividend / int32(divisor)
+	if q < -32768 || q > 32767 {
+		panic(divideError{})
+	}
 	r := int16(dividend % int32(divisor))
 	c.SetReg16(AX, uint16(q))
 	c.SetReg16(DX, uint16(r))
@@ -545,11 +569,13 @@ func (c *CPU) idiv16(divisor int16) {
 // idiv32 performs signed 32-bit division: EDX:EAX / divisor.
 func (c *CPU) idiv32(divisor int32) {
 	if divisor == 0 {
-		// TODO: #DE exception
-		return
+		panic(divideError{})
 	}
 	dividend := (int64(c.GetReg32(EDX)) << 32) | int64(c.GetReg32(EAX))
-	q := int32(dividend / int64(divisor))
+	q := dividend / int64(divisor)
+	if q < -(1<<31) || q > (1<<31)-1 {
+		panic(divideError{})
+	}
 	r := int32(dividend % int64(divisor))
 	c.SetReg32(EAX, uint32(q))
 	c.SetReg32(EDX, uint32(r))

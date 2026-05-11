@@ -178,21 +178,21 @@ func (c *CPU) handleGroupO_00() error {
 		if mr.isReg {
 			c.SetReg16(reg16FromModRM(int(mr.rm)), val)
 		} else {
-			c.writeMem16(c.segBase[DS]+mr.ea, val)
+			c.writeMem16(c.segBaseForModRM(mr) + mr.ea, val)
 		}
 	case 1: // STR r/m16
 		val := c.seg[TR]
 		if mr.isReg {
 			c.SetReg16(reg16FromModRM(int(mr.rm)), val)
 		} else {
-			c.writeMem16(c.segBase[DS]+mr.ea, val)
+			c.writeMem16(c.segBaseForModRM(mr) + mr.ea, val)
 		}
 	case 2: // LLDT r/m16
 		var selector uint16
 		if mr.isReg {
 			selector = c.GetReg16(reg16FromModRM(int(mr.rm)))
 		} else {
-			selector = c.readMem16(c.segBase[DS] + mr.ea)
+			selector = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 		}
 		if selector == 0 {
 			c.seg[LDTR] = 0
@@ -229,7 +229,7 @@ func (c *CPU) handleGroupO_00() error {
 		if mr.isReg {
 			selector = c.GetReg16(reg16FromModRM(int(mr.rm)))
 		} else {
-			selector = c.readMem16(c.segBase[DS] + mr.ea)
+			selector = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 		}
 		if selector == 0 {
 			return fmt.Errorf("LTR: cannot load null selector")
@@ -274,24 +274,24 @@ func (c *CPU) handleGroupO_01() error {
 	switch mr.reg {
 	case 0: // SGDT
 		if !mr.isReg {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem16(addr, uint16(c.segLimit[GDTR]))
 			c.writeMem32(addr+2, c.segBase[GDTR])
 		}
 	case 1: // SIDT
 		if !mr.isReg {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem16(addr, uint16(c.segLimit[IDTR]))
 			c.writeMem32(addr+2, c.segBase[IDTR])
 		}
 	case 2: // LGDT
-		addr := c.segBase[DS] + mr.ea
+		addr := c.segBaseForModRM(mr) + mr.ea
 		limit := uint32(c.readMem16(addr))
 		base := uint32(c.readMem32(addr + 2))
 		c.segLimit[GDTR] = limit
 		c.segBase[GDTR] = base
 	case 3: // LIDT
-		addr := c.segBase[DS] + mr.ea
+		addr := c.segBaseForModRM(mr) + mr.ea
 		limit := uint32(c.readMem16(addr))
 		base := uint32(c.readMem32(addr + 2))
 		c.segLimit[IDTR] = limit
@@ -301,14 +301,14 @@ func (c *CPU) handleGroupO_01() error {
 		if mr.isReg {
 			c.SetReg16(reg16FromModRM(int(mr.rm)), val)
 		} else {
-			c.writeMem16(c.segBase[DS]+mr.ea, val)
+			c.writeMem16(c.segBaseForModRM(mr) + mr.ea, val)
 		}
 	case 6: // LMSW
 		var val uint16
 		if mr.isReg {
 			val = c.GetReg16(reg16FromModRM(int(mr.rm)))
 		} else {
-			val = c.readMem16(c.segBase[DS] + mr.ea)
+			val = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 		}
 		c.cr[0] = (c.cr[0] & ^uint32(0xFFFF)) | uint32(val)
 	case 7:
@@ -324,7 +324,12 @@ func (c *CPU) handleGroupO_01() error {
 		}
 		// INVLPG m: invalidate the TLB entry for the supplied linear page.
 		if !mr.isReg {
-			c.tlb.invalidatePage(c.segBase[DS] + mr.ea)
+			lin := c.segBaseForModRM(mr) + mr.ea
+			if invlpgDebug {
+				fmt.Fprintf(os.Stderr, "[invlpg] EIP=0x%08X lin=0x%08X cycles=%d\n",
+					c.eip, lin, c.cycles)
+			}
+			c.tlb.invalidatePage(lin)
 		}
 	default:
 		return fmt.Errorf("0F 01 /%d not implemented", mr.reg)
@@ -341,7 +346,7 @@ func (c *CPU) handleLAR(operandSize uint8) error {
 	if mr.isReg {
 		sel = c.GetReg16(reg16FromModRM(int(mr.rm)))
 	} else {
-		sel = c.readMem16(c.segBase[DS] + mr.ea)
+		sel = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 	}
 	access, ok := c.descriptorAccessByte(sel)
 	if !ok {
@@ -366,7 +371,7 @@ func (c *CPU) handleLSL(operandSize uint8) error {
 	if mr.isReg {
 		sel = c.GetReg16(reg16FromModRM(int(mr.rm)))
 	} else {
-		sel = c.readMem16(c.segBase[DS] + mr.ea)
+		sel = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 	}
 	limit, ok := c.descriptorLimit(sel)
 	if !ok {
@@ -474,6 +479,9 @@ func (c *CPU) handleMovCR(read bool) error {
 
 // crDebug enables tracing of CR0/CR3/CR4 writes (env TINYEMU_X86_CR_DEBUG=1).
 var crDebug = os.Getenv("TINYEMU_X86_CR_DEBUG") == "1"
+
+// invlpgDebug enables tracing of INVLPG (env TINYEMU_X86_INVLPG_DEBUG=1).
+var invlpgDebug = os.Getenv("TINYEMU_X86_INVLPG_DEBUG") == "1"
 
 // updatePAEActive reconciles c.paeActive with the current CR0.PG and CR4.PAE
 // state and reloads the PDPTE cache from CR3 whenever PAE is active.

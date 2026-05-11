@@ -254,6 +254,15 @@ type CPU struct {
 	currentAddrSize uint8
 	currentOpSize   uint8
 
+	// Active segment override for the instruction in flight. -1 means none;
+	// otherwise one of CS/SS/DS/ES/FS/GS. Set by Step before dispatching
+	// executeOpcode and consulted by ModRM helpers so that prefixes like
+	// 64 (FS) and 65 (GS) properly redirect memory accesses. Without this
+	// field, per-CPU accesses (mov reg, fs:[disp]) would silently fall
+	// through to DS and read the static instance instead of the dynamic
+	// per-CPU instance.
+	currentSegOverride int
+
 	// Model-specific registers (allow-list).
 	msrSysenterCS  uint32
 	msrSysenterESP uint32
@@ -276,6 +285,10 @@ type CPU struct {
 	// that software can rely on TLB-survives-after-PTE-clear semantics
 	// (the pattern Linux's free_initmem depends on).
 	tlb tlb
+
+	// pfDumpActive guards the PF stack-walk diagnostic against infinite
+	// recursion when the stack itself is unmapped.
+	pfDumpActive bool
 }
 
 // NewCPU creates a new x86 CPU instance.
@@ -312,6 +325,7 @@ func (c *CPU) Reset() {
 	c.exitReason = 0
 	c.pendingVector = 0
 	c.ackInterruptFunc = nil
+	c.currentSegOverride = -1
 }
 
 // ===== Register accessors =====

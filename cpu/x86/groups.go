@@ -10,7 +10,7 @@ func (c *CPU) handleGroup2_8() error {
 	if mr.isReg {
 		r = c.GetReg8(reg8FromModRM(int(mr.rm)))
 	} else {
-		r = c.readMem8(c.segBase[DS] + mr.ea)
+		r = c.readMem8(c.segBaseForModRM(mr) + mr.ea)
 	}
 	switch mr.reg {
 	case 0:
@@ -33,7 +33,7 @@ func (c *CPU) handleGroup2_8() error {
 	if mr.isReg {
 		c.SetReg8(reg8FromModRM(int(mr.rm)), r)
 	} else {
-		c.writeMem8(c.segBase[DS]+mr.ea, r)
+		c.writeMem8(c.segBaseForModRM(mr) + mr.ea, r)
 	}
 	return nil
 }
@@ -46,7 +46,7 @@ func (c *CPU) handleGroup2_32() error {
 	if mr.isReg {
 		r = c.GetReg32(int(mr.rm))
 	} else {
-		r = c.readMem32(c.segBase[DS] + mr.ea)
+		r = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 	}
 	switch mr.reg {
 	case 0:
@@ -69,7 +69,7 @@ func (c *CPU) handleGroup2_32() error {
 	if mr.isReg {
 		c.SetReg32(int(mr.rm), r)
 	} else {
-		c.writeMem32(c.segBase[DS]+mr.ea, r)
+		c.writeMem32(c.segBaseForModRM(mr) + mr.ea, r)
 	}
 	return nil
 }
@@ -81,7 +81,7 @@ func (c *CPU) handleGroup2_8Count(count uint8) error {
 	if mr.isReg {
 		r = c.GetReg8(reg8FromModRM(int(mr.rm)))
 	} else {
-		r = c.readMem8(c.segBase[DS] + mr.ea)
+		r = c.readMem8(c.segBaseForModRM(mr) + mr.ea)
 	}
 	switch mr.reg {
 	case 0:
@@ -104,7 +104,7 @@ func (c *CPU) handleGroup2_8Count(count uint8) error {
 	if mr.isReg {
 		c.SetReg8(reg8FromModRM(int(mr.rm)), r)
 	} else {
-		c.writeMem8(c.segBase[DS]+mr.ea, r)
+		c.writeMem8(c.segBaseForModRM(mr) + mr.ea, r)
 	}
 	return nil
 }
@@ -116,7 +116,7 @@ func (c *CPU) handleGroup2_32Count(count uint8) error {
 	if mr.isReg {
 		r = c.GetReg32(int(mr.rm))
 	} else {
-		r = c.readMem32(c.segBase[DS] + mr.ea)
+		r = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 	}
 	switch mr.reg {
 	case 0:
@@ -139,7 +139,7 @@ func (c *CPU) handleGroup2_32Count(count uint8) error {
 	if mr.isReg {
 		c.SetReg32(int(mr.rm), r)
 	} else {
-		c.writeMem32(c.segBase[DS]+mr.ea, r)
+		c.writeMem32(c.segBaseForModRM(mr) + mr.ea, r)
 	}
 	return nil
 }
@@ -152,7 +152,7 @@ func (c *CPU) handleGroup2_16() error {
 	if mr.isReg {
 		r = c.GetReg16(reg16FromModRM(int(mr.rm)))
 	} else {
-		r = c.readMem16(c.segBase[DS] + mr.ea)
+		r = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 	}
 	switch mr.reg {
 	case 0:
@@ -175,7 +175,7 @@ func (c *CPU) handleGroup2_16() error {
 	if mr.isReg {
 		c.SetReg16(reg16FromModRM(int(mr.rm)), r)
 	} else {
-		c.writeMem16(c.segBase[DS]+mr.ea, r)
+		c.writeMem16(c.segBaseForModRM(mr) + mr.ea, r)
 	}
 	return nil
 }
@@ -187,7 +187,7 @@ func (c *CPU) handleGroup2_16Count(count uint8) error {
 	if mr.isReg {
 		r = c.GetReg16(reg16FromModRM(int(mr.rm)))
 	} else {
-		r = c.readMem16(c.segBase[DS] + mr.ea)
+		r = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 	}
 	switch mr.reg {
 	case 0:
@@ -210,7 +210,7 @@ func (c *CPU) handleGroup2_16Count(count uint8) error {
 	if mr.isReg {
 		c.SetReg16(reg16FromModRM(int(mr.rm)), r)
 	} else {
-		c.writeMem16(c.segBase[DS]+mr.ea, r)
+		c.writeMem16(c.segBaseForModRM(mr) + mr.ea, r)
 	}
 	return nil
 }
@@ -224,20 +224,20 @@ func (c *CPU) handleGroup3_16() error {
 		if mr.isReg {
 			c.and16(c.GetReg16(reg16FromModRM(int(mr.rm))), imm)
 		} else {
-			c.and16(c.readMem16(c.segBase[DS]+mr.ea), imm)
+			c.and16(c.readMem16(c.segBaseForModRM(mr) + mr.ea), imm)
 		}
 	case 2: // NOT r/m16
 		if mr.isReg {
 			c.SetReg16(reg16FromModRM(int(mr.rm)), c.not16(c.GetReg16(reg16FromModRM(int(mr.rm)))))
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem16(addr, c.not16(c.readMem16(addr)))
 		}
 	case 3: // NEG r/m16
 		if mr.isReg {
 			c.SetReg16(reg16FromModRM(int(mr.rm)), c.neg16(c.GetReg16(reg16FromModRM(int(mr.rm)))))
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem16(addr, c.neg16(c.readMem16(addr)))
 		}
 	case 4: // MUL AX, r/m16
@@ -245,7 +245,7 @@ func (c *CPU) handleGroup3_16() error {
 		if mr.isReg {
 			v = c.GetReg16(reg16FromModRM(int(mr.rm)))
 		} else {
-			v = c.readMem16(c.segBase[DS] + mr.ea)
+			v = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 		}
 		res := uint32(c.GetReg16(AX)) * uint32(v)
 		c.SetReg16(AX, uint16(res))
@@ -257,7 +257,7 @@ func (c *CPU) handleGroup3_16() error {
 		if mr.isReg {
 			v = int16(c.GetReg16(reg16FromModRM(int(mr.rm))))
 		} else {
-			v = int16(c.readMem16(c.segBase[DS] + mr.ea))
+			v = int16(c.readMem16(c.segBaseForModRM(mr) + mr.ea))
 		}
 		c.imul16(v)
 	case 6: // DIV AX, r/m16
@@ -265,7 +265,7 @@ func (c *CPU) handleGroup3_16() error {
 		if mr.isReg {
 			v = c.GetReg16(reg16FromModRM(int(mr.rm)))
 		} else {
-			v = c.readMem16(c.segBase[DS] + mr.ea)
+			v = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 		}
 		c.div16(v)
 	case 7: // IDIV AX, r/m16
@@ -273,7 +273,7 @@ func (c *CPU) handleGroup3_16() error {
 		if mr.isReg {
 			v = int16(c.GetReg16(reg16FromModRM(int(mr.rm))))
 		} else {
-			v = int16(c.readMem16(c.segBase[DS] + mr.ea))
+			v = int16(c.readMem16(c.segBaseForModRM(mr) + mr.ea))
 		}
 		c.idiv16(v)
 	default:
@@ -290,14 +290,14 @@ func (c *CPU) handleGroup5_16() error {
 		if mr.isReg {
 			c.SetReg16(reg16FromModRM(int(mr.rm)), c.inc16(c.GetReg16(reg16FromModRM(int(mr.rm)))))
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem16(addr, c.inc16(c.readMem16(addr)))
 		}
 	case 1: // DEC r/m16
 		if mr.isReg {
 			c.SetReg16(reg16FromModRM(int(mr.rm)), c.dec16(c.GetReg16(reg16FromModRM(int(mr.rm)))))
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem16(addr, c.dec16(c.readMem16(addr)))
 		}
 	case 2: // CALL r/m16
@@ -305,13 +305,13 @@ func (c *CPU) handleGroup5_16() error {
 		if mr.isReg {
 			target = c.GetReg16(reg16FromModRM(int(mr.rm)))
 		} else {
-			target = c.readMem16(c.segBase[DS] + mr.ea)
+			target = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 		}
 		c.push16(uint16(c.eip))
 		c.eip = uint32(target)
 	case 3: // CALLF m16:16
 		if !mr.isReg {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			off := c.readMem16(addr)
 			cs := c.readMem16(addr + 2)
 			c.push16(c.seg[CS])
@@ -330,11 +330,11 @@ func (c *CPU) handleGroup5_16() error {
 		if mr.isReg {
 			c.eip = uint32(c.GetReg16(reg16FromModRM(int(mr.rm))))
 		} else {
-			c.eip = uint32(c.readMem16(c.segBase[DS] + mr.ea))
+			c.eip = uint32(c.readMem16(c.segBaseForModRM(mr) + mr.ea))
 		}
 	case 5: // JMPF m16:16
 		if !mr.isReg {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			off := c.readMem16(addr)
 			cs := c.readMem16(addr + 2)
 			if c.IsProtectedMode() {
@@ -351,7 +351,7 @@ func (c *CPU) handleGroup5_16() error {
 		if mr.isReg {
 			c.push16(c.GetReg16(reg16FromModRM(int(mr.rm))))
 		} else {
-			c.push16(c.readMem16(c.segBase[DS] + mr.ea))
+			c.push16(c.readMem16(c.segBaseForModRM(mr) + mr.ea))
 		}
 	default:
 		return fmt.Errorf("FF /%d not implemented", mr.reg)
@@ -368,20 +368,20 @@ func (c *CPU) handleGroup3_8() error {
 		if mr.isReg {
 			c.and8(c.GetReg8(reg8FromModRM(int(mr.rm))), imm)
 		} else {
-			c.and8(c.readMem8(c.segBase[DS]+mr.ea), imm)
+			c.and8(c.readMem8(c.segBaseForModRM(mr) + mr.ea), imm)
 		}
 	case 2: // NOT r/m8
 		if mr.isReg {
 			c.SetReg8(reg8FromModRM(int(mr.rm)), c.not8(c.GetReg8(reg8FromModRM(int(mr.rm)))))
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem8(addr, c.not8(c.readMem8(addr)))
 		}
 	case 3: // NEG r/m8
 		if mr.isReg {
 			c.SetReg8(reg8FromModRM(int(mr.rm)), c.neg8(c.GetReg8(reg8FromModRM(int(mr.rm)))))
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem8(addr, c.neg8(c.readMem8(addr)))
 		}
 	case 4: // MUL AL, r/m8
@@ -389,7 +389,7 @@ func (c *CPU) handleGroup3_8() error {
 		if mr.isReg {
 			v = c.GetReg8(reg8FromModRM(int(mr.rm)))
 		} else {
-			v = c.readMem8(c.segBase[DS] + mr.ea)
+			v = c.readMem8(c.segBaseForModRM(mr) + mr.ea)
 		}
 		res := uint16(c.GetReg8(AL)) * uint16(v)
 		c.SetReg16(AX, res)
@@ -400,7 +400,7 @@ func (c *CPU) handleGroup3_8() error {
 		if mr.isReg {
 			v = int8(c.GetReg8(reg8FromModRM(int(mr.rm))))
 		} else {
-			v = int8(c.readMem8(c.segBase[DS] + mr.ea))
+			v = int8(c.readMem8(c.segBaseForModRM(mr) + mr.ea))
 		}
 		c.imul8(v)
 	case 6: // DIV AL, r/m8
@@ -408,7 +408,7 @@ func (c *CPU) handleGroup3_8() error {
 		if mr.isReg {
 			v = c.GetReg8(reg8FromModRM(int(mr.rm)))
 		} else {
-			v = c.readMem8(c.segBase[DS] + mr.ea)
+			v = c.readMem8(c.segBaseForModRM(mr) + mr.ea)
 		}
 		c.div8(v)
 	case 7: // IDIV AL, r/m8
@@ -416,7 +416,7 @@ func (c *CPU) handleGroup3_8() error {
 		if mr.isReg {
 			v = int8(c.GetReg8(reg8FromModRM(int(mr.rm))))
 		} else {
-			v = int8(c.readMem8(c.segBase[DS] + mr.ea))
+			v = int8(c.readMem8(c.segBaseForModRM(mr) + mr.ea))
 		}
 		c.idiv8(v)
 	default:
@@ -434,20 +434,20 @@ func (c *CPU) handleGroup3_32() error {
 		if mr.isReg {
 			c.and32(c.GetReg32(int(mr.rm)), imm)
 		} else {
-			c.and32(c.readMem32(c.segBase[DS]+mr.ea), imm)
+			c.and32(c.readMem32(c.segBaseForModRM(mr) + mr.ea), imm)
 		}
 	case 2: // NOT r/m32
 		if mr.isReg {
 			c.SetReg32(int(mr.rm), c.not32(c.GetReg32(int(mr.rm))))
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem32(addr, c.not32(c.readMem32(addr)))
 		}
 	case 3: // NEG r/m32
 		if mr.isReg {
 			c.SetReg32(int(mr.rm), c.neg32(c.GetReg32(int(mr.rm))))
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem32(addr, c.neg32(c.readMem32(addr)))
 		}
 	case 4: // MUL EAX, r/m32
@@ -455,7 +455,7 @@ func (c *CPU) handleGroup3_32() error {
 		if mr.isReg {
 			v = c.GetReg32(int(mr.rm))
 		} else {
-			v = c.readMem32(c.segBase[DS] + mr.ea)
+			v = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 		}
 		res := uint64(c.GetReg32(EAX)) * uint64(v)
 		c.SetReg32(EAX, uint32(res))
@@ -467,7 +467,7 @@ func (c *CPU) handleGroup3_32() error {
 		if mr.isReg {
 			v = int32(c.GetReg32(int(mr.rm)))
 		} else {
-			v = int32(c.readMem32(c.segBase[DS] + mr.ea))
+			v = int32(c.readMem32(c.segBaseForModRM(mr) + mr.ea))
 		}
 		c.imul32(v)
 	case 6: // DIV EAX, r/m32
@@ -475,7 +475,7 @@ func (c *CPU) handleGroup3_32() error {
 		if mr.isReg {
 			v = c.GetReg32(int(mr.rm))
 		} else {
-			v = c.readMem32(c.segBase[DS] + mr.ea)
+			v = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 		}
 		c.div32(v)
 	case 7: // IDIV EAX, r/m32
@@ -483,7 +483,7 @@ func (c *CPU) handleGroup3_32() error {
 		if mr.isReg {
 			v = int32(c.GetReg32(int(mr.rm)))
 		} else {
-			v = int32(c.readMem32(c.segBase[DS] + mr.ea))
+			v = int32(c.readMem32(c.segBaseForModRM(mr) + mr.ea))
 		}
 		c.idiv32(v)
 	default:
@@ -500,14 +500,14 @@ func (c *CPU) handleGroup4_8() error {
 		if mr.isReg {
 			c.SetReg8(reg8FromModRM(int(mr.rm)), c.inc8(c.GetReg8(reg8FromModRM(int(mr.rm)))))
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem8(addr, c.inc8(c.readMem8(addr)))
 		}
 	case 1: // DEC r/m8
 		if mr.isReg {
 			c.SetReg8(reg8FromModRM(int(mr.rm)), c.dec8(c.GetReg8(reg8FromModRM(int(mr.rm)))))
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem8(addr, c.dec8(c.readMem8(addr)))
 		}
 	default:
@@ -524,14 +524,14 @@ func (c *CPU) handleGroup5_32() error {
 		if mr.isReg {
 			c.SetReg32(int(mr.rm), c.inc32(c.GetReg32(int(mr.rm))))
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem32(addr, c.inc32(c.readMem32(addr)))
 		}
 	case 1: // DEC r/m32
 		if mr.isReg {
 			c.SetReg32(int(mr.rm), c.dec32(c.GetReg32(int(mr.rm))))
 		} else {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			c.writeMem32(addr, c.dec32(c.readMem32(addr)))
 		}
 	case 2: // CALL r/m32
@@ -539,13 +539,13 @@ func (c *CPU) handleGroup5_32() error {
 		if mr.isReg {
 			target = c.GetReg32(int(mr.rm))
 		} else {
-			target = c.readMem32(c.segBase[DS] + mr.ea)
+			target = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 		}
 		c.push32(c.eip)
 		c.eip = target
 	case 3: // CALLF m16:32
 		if !mr.isReg {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			off := c.readMem32(addr)
 			cs := c.readMem16(addr + 4)
 			c.push32(uint32(c.seg[CS]))
@@ -564,11 +564,11 @@ func (c *CPU) handleGroup5_32() error {
 		if mr.isReg {
 			c.eip = c.GetReg32(int(mr.rm))
 		} else {
-			c.eip = c.readMem32(c.segBase[DS] + mr.ea)
+			c.eip = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 		}
 	case 5: // JMPF m16:32
 		if !mr.isReg {
-			addr := c.segBase[DS] + mr.ea
+			addr := c.segBaseForModRM(mr) + mr.ea
 			off := c.readMem32(addr)
 			cs := c.readMem16(addr + 4)
 			if c.IsProtectedMode() {
@@ -585,7 +585,7 @@ func (c *CPU) handleGroup5_32() error {
 		if mr.isReg {
 			c.push32(c.GetReg32(int(mr.rm)))
 		} else {
-			c.push32(c.readMem32(c.segBase[DS] + mr.ea))
+			c.push32(c.readMem32(c.segBaseForModRM(mr) + mr.ea))
 		}
 	default:
 		return fmt.Errorf("FF /%d not implemented", mr.reg)

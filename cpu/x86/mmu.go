@@ -11,6 +11,58 @@ import (
 // paging, etc.).
 var pfDebug = os.Getenv("TINYEMU_X86_PF_DEBUG") == "1"
 
+// ud2SkipAndLog turns the #UD fault path into "log + skip the UD2", which
+// lets us see whether the kernel's BUG sites are warnings (it would normally
+// continue) or hard BUGs (it would have panicked). Enable with
+// TINYEMU_X86_SKIP_UD2=1.
+var ud2SkipAndLog = os.Getenv("TINYEMU_X86_SKIP_UD2") == "1"
+
+// ud2LogAlways logs every UD2 site even when it's delivered normally as #UD.
+// Enable with TINYEMU_X86_LOG_UD2=1. Useful to see which BUG/WARN sites the
+// kernel hits without changing fault semantics.
+var ud2LogAlways = os.Getenv("TINYEMU_X86_LOG_UD2") == "1"
+
+// ud2Log prints diagnostic information about a UD2 site: the EIP, the bytes
+// immediately following (which may contain inline metadata), and the current
+// register snapshot.
+func ud2Log(c *CPU, eip uint32) {
+	// Read 24 bytes around EIP via the page tables.
+	pde := c.readPhys32(c.cr[3] + (eip>>22)*4)
+	if pde&1 == 0 {
+		fmt.Fprintf(os.Stderr, "[UD2] EIP=0x%08X (no mapping)\n", eip)
+		return
+	}
+	var phys uint32
+	if pde&0x80 != 0 {
+		phys = (pde & 0xFFC00000) | (eip & 0x3FFFFF)
+	} else {
+		pte := c.readPhys32((pde &^ 0xFFF) + ((eip>>12)&0x3FF)*4)
+		if pte&1 == 0 {
+			fmt.Fprintf(os.Stderr, "[UD2] EIP=0x%08X (pte missing)\n", eip)
+			return
+		}
+		phys = (pte &^ 0xFFF) | (eip & 0xFFF)
+	}
+	fmt.Fprintf(os.Stderr, "[UD2] step=%d EIP=0x%08X (phys 0x%08X) bytes:", c.cycles, eip, phys)
+	for i := uint32(0); i < 24; i++ {
+		addr := phys + i
+		b := uint8(c.readPhys32(addr&^uint32(3)) >> ((addr & 3) * 8))
+		fmt.Fprintf(os.Stderr, " %02X", b)
+	}
+	fmt.Fprintf(os.Stderr, "\n[UD2]   EAX=%08X EBX=%08X ECX=%08X EDX=%08X ESI=%08X EDI=%08X EBP=%08X ESP=%08X EFLAGS=%08X\n",
+		c.GetReg32(EAX), c.GetReg32(EBX), c.GetReg32(ECX), c.GetReg32(EDX),
+		c.GetReg32(ESI), c.GetReg32(EDI), c.GetReg32(EBP), c.GetReg32(ESP), c.eflags)
+	// Dump 6 return-address slots from the current stack to help unwinding.
+	esp := c.GetReg32(ESP)
+	fmt.Fprintf(os.Stderr, "[UD2]   stack(ESP):")
+	for i := uint32(0); i < 8; i++ {
+		defer func() { _ = recover() }()
+		v := c.readPhys32(c.translateAddress(esp+i*4, false, false, false))
+		fmt.Fprintf(os.Stderr, " %08X", v)
+	}
+	fmt.Fprintln(os.Stderr)
+}
+
 // intDebug controls whether each interrupt/exception service is logged.
 // Enabled with TINYEMU_X86_INT_DEBUG=1.
 var intDebug = os.Getenv("TINYEMU_X86_INT_DEBUG") == "1"
@@ -74,6 +126,15 @@ type generalProtectionFaultError struct {
 	errorCode uint32
 }
 
+// invalidOpcodeError is used to signal #UD (vector 6) — raised on UD2 and on
+// genuinely unimplemented opcodes that the kernel may handle via its fault
+// path. No error code is pushed for #UD.
+type invalidOpcodeError struct{}
+
+// divideError is used to signal #DE (vector 0) — raised on integer divide
+// by zero and on overflow during signed division.
+type divideError struct{}
+
 // pageFaultFlags carries the dimensions used to construct the #PF error code.
 //
 //	bit 0 (P) is set when the violation is a permission/type check (not used
@@ -112,9 +173,71 @@ func (c *CPU) raisePageFault(addr uint32, f pageFaultFlags) {
 		code |= 0x10
 	}
 	if pfDebug {
-		fmt.Fprintf(os.Stderr, "[PF] step=%d linear=%08X w=%v u=%v fetch=%v rsvd=%v CR3=%08X CR0=%08X CR4=%08X EIP=%08X ESP=%08X\n",
+		// Walk page tables for diagnostic context.
+		pdeAddr := c.cr[3] + (addr>>22)*4
+		pde := c.readPhys32(pdeAddr)
+		pteVal, pteAddr := uint32(0), uint32(0)
+		if pde&1 != 0 && pde&0x80 == 0 {
+			pteAddr = (pde &^ uint32(0xFFF)) + ((addr>>12)&0x3FF)*4
+			pteVal = c.readPhys32(pteAddr)
+		}
+		fmt.Fprintf(os.Stderr,
+			"[PF] step=%d linear=%08X w=%v u=%v fetch=%v rsvd=%v "+
+				"CR3=%08X CR0=%08X CR4=%08X EIP=%08X ESP=%08X "+
+				"PDE@%08X=%08X PTE@%08X=%08X\n",
 			c.cycles, addr, f.write, f.user, f.fetch, f.reserved,
-			c.cr[3], c.cr[0], c.cr[4], c.eip, c.GetReg32(ESP))
+			c.cr[3], c.cr[0], c.cr[4], c.eip, c.GetReg32(ESP),
+			pdeAddr, pde, pteAddr, pteVal)
+		// Dump 32 bytes of instruction stream around EIP and a full register
+		// snapshot — exact bytes at the moment of fault. Use physical access
+		// via the existing CR3/PDE/PTE walk for the EIP page.
+		eipPDE := c.readPhys32(c.cr[3] + (c.eip>>22)*4)
+		var eipPhys uint32 = 0xFFFFFFFF
+		if eipPDE&1 != 0 {
+			if eipPDE&0x80 != 0 {
+				eipPhys = (eipPDE & 0xFFC00000) | (c.eip & 0x3FFFFF)
+			} else {
+				eipPTE := c.readPhys32((eipPDE &^ uint32(0xFFF)) + ((c.eip>>12)&0x3FF)*4)
+				if eipPTE&1 != 0 {
+					eipPhys = (eipPTE &^ uint32(0xFFF)) | (c.eip & 0xFFF)
+				}
+			}
+		}
+		if eipPhys != 0xFFFFFFFF {
+			// c.eip is post-fetch; show bytes from EIP-8 through EIP+15 so the
+			// actual faulting instruction is visible (it ends at c.eip).
+			fmt.Fprintf(os.Stderr, "[PF]   code @ EIP-8..EIP+15 around 0x%08X:", c.eip)
+			for i := int32(-8); i < 16; i++ {
+				addr := uint32(int32(eipPhys) + i)
+				b := uint8(c.readPhys32(addr&^uint32(3)) >> ((addr & 3) * 8))
+				if i == 0 {
+					fmt.Fprintf(os.Stderr, " |")
+				}
+				fmt.Fprintf(os.Stderr, " %02X", b)
+			}
+			fmt.Fprintln(os.Stderr)
+		}
+		fmt.Fprintf(os.Stderr,
+			"[PF]   EAX=%08X EBX=%08X ECX=%08X EDX=%08X ESI=%08X EDI=%08X EBP=%08X ESP=%08X EFLAGS=%08X\n",
+			c.GetReg32(EAX), c.GetReg32(EBX), c.GetReg32(ECX), c.GetReg32(EDX),
+			c.GetReg32(ESI), c.GetReg32(EDI), c.GetReg32(EBP), c.GetReg32(ESP), c.eflags)
+		// Walk 8 stack slots so we can read the caller chain. Skip if we're
+		// already inside a PF dump to avoid infinite recursion when the stack
+		// itself is unmapped.
+		if !c.pfDumpActive {
+			c.pfDumpActive = true
+			fmt.Fprintf(os.Stderr, "[PF]   stack(ESP):")
+			esp := c.GetReg32(ESP)
+			for i := uint32(0); i < 8; i++ {
+				func() {
+					defer func() { _ = recover() }()
+					v := c.readPhys32(c.translateAddress(esp+i*4, false, false, false))
+					fmt.Fprintf(os.Stderr, " %08X", v)
+				}()
+			}
+			fmt.Fprintln(os.Stderr)
+			c.pfDumpActive = false
+		}
 	}
 	panic(pageFaultError{addr: addr, errorCode: code})
 }

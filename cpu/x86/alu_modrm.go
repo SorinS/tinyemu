@@ -12,7 +12,7 @@ func (c *CPU) handleALU_ModRM8(opcode uint8) error {
 		if mr.isReg {
 			src = c.GetReg8(reg8FromModRM(int(mr.rm)))
 		} else {
-			src = c.readMem8(c.segBase[DS] + mr.ea)
+			src = c.readMem8(c.segBaseForModRM(mr) + mr.ea)
 		}
 		dst = c.GetReg8(reg8FromModRM(int(mr.reg)))
 	} else {
@@ -20,7 +20,7 @@ func (c *CPU) handleALU_ModRM8(opcode uint8) error {
 		if mr.isReg {
 			dst = c.GetReg8(reg8FromModRM(int(mr.rm)))
 		} else {
-			dst = c.readMem8(c.segBase[DS] + mr.ea)
+			dst = c.readMem8(c.segBaseForModRM(mr) + mr.ea)
 		}
 		src = c.GetReg8(reg8FromModRM(int(mr.reg)))
 	}
@@ -52,7 +52,7 @@ func (c *CPU) handleALU_ModRM8(opcode uint8) error {
 			if mr.isReg {
 				c.SetReg8(reg8FromModRM(int(mr.rm)), res)
 			} else {
-				c.writeMem8(c.segBase[DS]+mr.ea, res)
+				c.writeMem8(c.segBaseForModRM(mr) + mr.ea, res)
 			}
 		}
 	}
@@ -71,7 +71,7 @@ func (c *CPU) handleALU_ModRM32(opcode uint8) error {
 		if mr.isReg {
 			src = c.GetReg32(int(mr.rm))
 		} else {
-			src = c.readMem32(c.segBase[DS] + mr.ea)
+			src = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 		}
 		dst = c.GetReg32(int(mr.reg))
 	} else {
@@ -79,7 +79,7 @@ func (c *CPU) handleALU_ModRM32(opcode uint8) error {
 		if mr.isReg {
 			dst = c.GetReg32(int(mr.rm))
 		} else {
-			dst = c.readMem32(c.segBase[DS] + mr.ea)
+			dst = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 		}
 		src = c.GetReg32(int(mr.reg))
 	}
@@ -111,7 +111,7 @@ func (c *CPU) handleALU_ModRM32(opcode uint8) error {
 			if mr.isReg {
 				c.SetReg32(int(mr.rm), res)
 			} else {
-				c.writeMem32(c.segBase[DS]+mr.ea, res)
+				c.writeMem32(c.segBaseForModRM(mr) + mr.ea, res)
 			}
 		}
 	}
@@ -130,7 +130,7 @@ func (c *CPU) handleALU_ModRM16(opcode uint8) error {
 		if mr.isReg {
 			src = c.GetReg16(reg16FromModRM(int(mr.rm)))
 		} else {
-			src = c.readMem16(c.segBase[DS] + mr.ea)
+			src = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 		}
 		dst = c.GetReg16(reg16FromModRM(int(mr.reg)))
 	} else {
@@ -138,7 +138,7 @@ func (c *CPU) handleALU_ModRM16(opcode uint8) error {
 		if mr.isReg {
 			dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
 		} else {
-			dst = c.readMem16(c.segBase[DS] + mr.ea)
+			dst = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 		}
 		src = c.GetReg16(reg16FromModRM(int(mr.reg)))
 	}
@@ -170,7 +170,7 @@ func (c *CPU) handleALU_ModRM16(opcode uint8) error {
 			if mr.isReg {
 				c.SetReg16(reg16FromModRM(int(mr.rm)), res)
 			} else {
-				c.writeMem16(c.segBase[DS]+mr.ea, res)
+				c.writeMem16(c.segBaseForModRM(mr) + mr.ea, res)
 			}
 		}
 	}
@@ -185,7 +185,7 @@ func (c *CPU) handleTEST_ModRM(size int) error {
 		if mr.isReg {
 			dst = c.GetReg8(reg8FromModRM(int(mr.rm)))
 		} else {
-			dst = c.readMem8(c.segBase[DS] + mr.ea)
+			dst = c.readMem8(c.segBaseForModRM(mr) + mr.ea)
 		}
 		src = c.GetReg8(reg8FromModRM(int(mr.reg)))
 		c.and8(dst, src)
@@ -194,7 +194,7 @@ func (c *CPU) handleTEST_ModRM(size int) error {
 		if mr.isReg {
 			dst = c.GetReg32(int(mr.rm))
 		} else {
-			dst = c.readMem32(c.segBase[DS] + mr.ea)
+			dst = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 		}
 		src = c.GetReg32(int(mr.reg))
 		c.and32(dst, src)
