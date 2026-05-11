@@ -1185,6 +1185,91 @@ func TestIRET32PrivilegeDowngrade(t *testing.T) {
 	}
 }
 
+// TestIRET32PrivilegeDowngradePagedSupervisorStack reproduces the exact bug
+// that killed Yocto init during return-to-userspace: IRET pops EFLAGS (and
+// ESP/SS) AFTER the new CS has been loaded — if we updated CPL to 3 between
+// the CS load and the EFLAGS pop, those pops would happen at CPL=3 and #PF
+// on the supervisor-only kernel-stack page. The CPU treats the whole IRET
+// frame unload as atomic against CPL: pop everything at the old CPL first,
+// then install CS / SS / CPL.
+func TestIRET32PrivilegeDowngradePagedSupervisorStack(t *testing.T) {
+	c := newTestCPU(t)
+	c.SetCR(0, c.GetCR(0)&^CR0_PE)
+	c.SetSegAccess(CS, 0)
+
+	gdtBase := uint32(0x2000)
+	buildFlatGDT(t, c, gdtBase)
+	c.writeMem8(gdtBase+24, 0xFF)
+	c.writeMem8(gdtBase+25, 0xFF)
+	c.writeMem8(gdtBase+26, 0x00)
+	c.writeMem8(gdtBase+27, 0x00)
+	c.writeMem8(gdtBase+28, 0x00)
+	c.writeMem8(gdtBase+29, 0xFA)
+	c.writeMem8(gdtBase+30, 0xCF)
+	c.writeMem8(gdtBase+31, 0x00)
+	c.writeMem8(gdtBase+32, 0xFF)
+	c.writeMem8(gdtBase+33, 0xFF)
+	c.writeMem8(gdtBase+34, 0x00)
+	c.writeMem8(gdtBase+35, 0x00)
+	c.writeMem8(gdtBase+36, 0x00)
+	c.writeMem8(gdtBase+37, 0xF2)
+	c.writeMem8(gdtBase+38, 0xCF)
+	c.writeMem8(gdtBase+39, 0x00)
+	enterProtectedMode(t, c, gdtBase, 0x3000, 0x0F*8+7, 0x5000)
+	c.segLimit[GDTR] = 0x0027
+
+	// Lay out IRET frame on the kernel stack BEFORE enabling paging (so we
+	// avoid bootstrap-paging hassle for the test writer; the bug manifests on
+	// the pops, not the pushes).
+	c.SetReg32(ESP, 0x9000)
+	c.push32(0x0023)     // SS  (ring 3)
+	c.push32(0x00008000) // user ESP (we don't dereference it)
+	c.push32(0x00000200) // EFLAGS (IF=1)
+	c.push32(0x0000001B) // CS  (ring 3)
+	c.push32(0x00006000) // user EIP (we don't fetch from it post-IRET)
+
+	// Build paging that maps everything we touched so far as supervisor-only.
+	// 4 KB pages (no PSE), one PD + one PT, all within 1 MB RAM.
+	pdBase := uint32(0x80000)
+	ptBase := uint32(0x81000)
+	for i := uint32(0); i < 1024; i++ {
+		c.writePhys32(pdBase+i*4, 0)
+		c.writePhys32(ptBase+i*4, 0)
+	}
+	// PD[0] -> PT, present|RW, U=0 (supervisor).
+	c.writePhys32(pdBase, ptBase|0x03)
+	// Identity-map first 256 pages (1 MB) supervisor-only.
+	for i := uint32(0); i < 256; i++ {
+		c.writePhys32(ptBase+i*4, (i<<12)|0x03) // P|RW, U=0
+	}
+	c.SetCR(3, pdBase)
+	c.SetCR(0, c.GetCR(0)|CR0_PG)
+	c.tlb.flushAll()
+
+	c.cpl = 0
+	c.writeMem8(0x5000, 0xCF) // IRET
+	c.SetEIP(0x5000)
+
+	if err := c.Step(); err != nil {
+		t.Fatalf("IRET step error: %v", err)
+	}
+	if c.GetEIP() != 0x6000 {
+		t.Errorf("EIP = 0x%08X, want 0x6000", c.GetEIP())
+	}
+	if c.GetSeg(CS) != 0x001B {
+		t.Errorf("CS = 0x%04X, want 0x001B", c.GetSeg(CS))
+	}
+	if c.cpl != 3 {
+		t.Errorf("CPL = %d, want 3", c.cpl)
+	}
+	if c.GetSeg(SS) != 0x0023 {
+		t.Errorf("SS = 0x%04X, want 0x0023 (would be unchanged kernel SS if pop happened at CPL=3 and faulted)", c.GetSeg(SS))
+	}
+	if c.GetReg32(ESP) != 0x00008000 {
+		t.Errorf("ESP = 0x%08X, want 0x00008000", c.GetReg32(ESP))
+	}
+}
+
 // TestCLIIOPLViolation validates that CLI raises #GP when CPL > IOPL.
 func TestCLIIOPLViolation(t *testing.T) {
 	c := newTestCPU(t)

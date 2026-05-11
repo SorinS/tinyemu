@@ -101,48 +101,69 @@ func (c *CPU) writePhys32(addr uint32, val uint32) {
 
 // readMem8 reads a byte from the given linear address (with paging).
 func (c *CPU) readMem8(addr uint32) uint8 {
-	return c.readPhys8(c.translateAddress(addr, false, false, false))
+	return c.readPhys8(c.translateAddress(addr, false, c.cpl == 3, false))
 }
 
 // readMem16 reads a word from the given linear address (with paging).
 func (c *CPU) readMem16(addr uint32) uint16 {
-	return c.readPhys16(c.translateAddress(addr, false, false, false))
+	return c.readPhys16(c.translateAddress(addr, false, c.cpl == 3, false))
 }
 
 // readMem32 reads a dword from the given linear address (with paging).
 func (c *CPU) readMem32(addr uint32) uint32 {
-	return c.readPhys32(c.translateAddress(addr, false, false, false))
+	return c.readPhys32(c.translateAddress(addr, false, c.cpl == 3, false))
 }
 
 // writeMem8 writes a byte to the given linear address (with paging).
 func (c *CPU) writeMem8(addr uint32, val uint8) {
-	c.writePhys8(c.translateAddress(addr, true, false, false), val)
+	c.writePhys8(c.translateAddress(addr, true, c.cpl == 3, false), val)
 }
 
 // writeMem16 writes a word to the given linear address (with paging).
 func (c *CPU) writeMem16(addr uint32, val uint16) {
-	c.writePhys16(c.translateAddress(addr, true, false, false), val)
+	c.writePhys16(c.translateAddress(addr, true, c.cpl == 3, false), val)
 }
 
 // writeMem32 writes a dword to the given linear address (with paging).
 func (c *CPU) writeMem32(addr uint32, val uint32) {
-	c.writePhys32(c.translateAddress(addr, true, false, false), val)
+	c.writePhys32(c.translateAddress(addr, true, c.cpl == 3, false), val)
 }
 
 // fetchMem8 reads a code byte from the given linear address. Faults during
-// instruction fetch get bit 4 set in the #PF error code.
+// instruction fetch get bit 4 set in the #PF error code, and the U/S bit
+// reflects whether the fetch happens at CPL=3.
 func (c *CPU) fetchMem8(addr uint32) uint8 {
-	return c.readPhys8(c.translateAddress(addr, false, false, true))
+	return c.readPhys8(c.translateAddress(addr, false, c.cpl == 3, true))
 }
 
 // fetchMem16 reads a code word.
 func (c *CPU) fetchMem16(addr uint32) uint16 {
-	return c.readPhys16(c.translateAddress(addr, false, false, true))
+	return c.readPhys16(c.translateAddress(addr, false, c.cpl == 3, true))
 }
 
 // fetchMem32 reads a code dword.
 func (c *CPU) fetchMem32(addr uint32) uint32 {
-	return c.readPhys32(c.translateAddress(addr, false, false, true))
+	return c.readPhys32(c.translateAddress(addr, false, c.cpl == 3, true))
+}
+
+// Supervisor-mode memory access helpers. The CPU itself accesses the IDT,
+// GDT, LDT, and TSS as a privileged agent regardless of the current CPL —
+// Intel SDM Vol. 3 §6.12.1.2 / §7.2.3. These accesses must NOT carry the U/S
+// bit in their page-fault error code (they would never page-fault on a
+// user-only mapping on real hardware). Routing IDT/TSS/GDT reads through
+// these helpers fixes a triple-fault that occurred when delivering a #PF
+// raised at CPL=3: the implicit IDT read inherited user=true and faulted on
+// the kernel-owned IDT page.
+func (c *CPU) readMemSV8(addr uint32) uint8 {
+	return c.readPhys8(c.translateAddress(addr, false, false, false))
+}
+
+func (c *CPU) readMemSV16(addr uint32) uint16 {
+	return c.readPhys16(c.translateAddress(addr, false, false, false))
+}
+
+func (c *CPU) readMemSV32(addr uint32) uint32 {
+	return c.readPhys32(c.translateAddress(addr, false, false, false))
 }
 
 // Exported memory accessors for tests and loaders.
@@ -1013,25 +1034,40 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			return c.handleInterrupt(0x04, false)
 		}
 
-		// IRET
+		// IRET. The privilege transition is conceptually atomic: ALL pops
+		// from the outgoing stack happen at the old CPL, and only once the
+		// frame is fully unloaded do CS/SS get installed and CPL updated.
+		// If we updated CPL after popping CS but before popping EFLAGS/ESP/SS,
+		// the remaining pops would inherit the new (user) CPL and #PF on the
+		// supervisor-only kernel stack — that exact sequence was killing the
+		// Yocto init process during return-to-userspace.
 		case 0xCF:
 			if operandSize == 2 {
 				oldCPL := c.cpl
-				c.eip = uint32(c.pop16())
-				cs := c.pop16()
+				newIP := c.pop16()
+				newCS := c.pop16()
+				newFlags := c.pop16()
+				// Decide whether a privilege change occurs based on the new
+				// CS's RPL — still using the old CPL for pops.
+				crossPriv := c.IsProtectedMode() && int(newCS&3) > oldCPL
+				var newSP uint16
+				var newSS uint16
+				if crossPriv {
+					newSP = c.pop16()
+					newSS = c.pop16()
+				}
+				c.eip = uint32(newIP)
 				if c.IsProtectedMode() {
-					if err := c.LoadSegmentProtected(CS, cs); err != nil {
+					if err := c.LoadSegmentProtected(CS, newCS); err != nil {
 						return err
 					}
 				} else {
-					c.seg[CS] = cs
-					c.segBase[CS] = uint32(cs) << 4
+					c.seg[CS] = newCS
+					c.segBase[CS] = uint32(newCS) << 4
 				}
-				c.setEFlagsFromPop(uint32(c.pop16()), c.cpl)
+				c.setEFlagsFromPop(uint32(newFlags), c.cpl)
 				c.eflags |= EFLAGS_RF
-				if c.IsProtectedMode() && c.cpl > oldCPL {
-					newSP := c.pop16()
-					newSS := c.pop16()
+				if crossPriv {
 					if err := c.LoadSegmentProtected(SS, newSS); err != nil {
 						return err
 					}
@@ -1039,26 +1075,33 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				}
 			} else {
 				oldCPL := c.cpl
-				c.eip = c.pop32()
-				cs := c.pop32()
+				newEIP := c.pop32()
+				newCS := uint16(c.pop32())
+				newFlags := c.pop32()
+				crossPriv := c.IsProtectedMode() && int(newCS&3) > oldCPL
+				var newESP uint32
+				var newSS uint16
+				if crossPriv {
+					newESP = c.pop32()
+					newSS = uint16(c.pop32())
+				}
+				c.eip = newEIP
 				if c.IsProtectedMode() {
-					if err := c.LoadSegmentProtected(CS, uint16(cs)); err != nil {
+					if err := c.LoadSegmentProtected(CS, newCS); err != nil {
 						return err
 					}
 				} else {
-					c.seg[CS] = uint16(cs)
-					c.segBase[CS] = uint32(cs) << 4
+					c.seg[CS] = newCS
+					c.segBase[CS] = uint32(newCS) << 4
 				}
-				c.setEFlagsFromPop(c.pop32(), c.cpl)
+				c.setEFlagsFromPop(newFlags, c.cpl)
 				c.eflags |= EFLAGS_RF
 				// Restore VM bit if CPL=0 and popped EFLAGS has it.
 				if c.IsProtectedMode() && c.cpl == 0 && (c.eflags&EFLAGS_VM) != 0 {
 					// TODO: pop ES, DS, FS, GS for full v8086 mode entry
 				}
-				if c.IsProtectedMode() && c.cpl > oldCPL {
-					newESP := c.pop32()
-					newSS := c.pop32()
-					if err := c.LoadSegmentProtected(SS, uint16(newSS)); err != nil {
+				if crossPriv {
+					if err := c.LoadSegmentProtected(SS, newSS); err != nil {
 						return err
 					}
 					c.SetReg32(ESP, newESP)
@@ -2008,18 +2051,35 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			// RDMSR — ECX = MSR number, return EDX:EAX
 			c.handleRDMSR()
 		case 0xAF:
-			// IMUL r32, r/m32
+			// IMUL r16/r32, r/m16/r/m32. With the 0x66 prefix this is a
+			// 16-bit multiply that must only touch the low 16 bits of the
+			// destination — otherwise the upper half gets clobbered with
+			// the sign-extended 32-bit product, breaking any code that
+			// relies on it being preserved.
 			mr := c.parseModRM()
-			var v int32
-			if mr.isReg {
-				v = int32(c.GetReg32(int(mr.rm)))
+			if operandSize == 2 {
+				var v int16
+				if mr.isReg {
+					v = int16(c.GetReg16(reg16FromModRM(int(mr.rm))))
+				} else {
+					v = int16(c.readMem16(c.segBaseForModRM(mr) + mr.ea))
+				}
+				r := int32(int16(c.GetReg16(reg16FromModRM(int(mr.reg))))) * int32(v)
+				c.SetReg16(reg16FromModRM(int(mr.reg)), uint16(r))
+				c.setOF(r != int32(int16(r)))
+				c.setCF(r != int32(int16(r)))
 			} else {
-				v = int32(c.readMem32(c.segBaseForModRM(mr) + mr.ea))
+				var v int32
+				if mr.isReg {
+					v = int32(c.GetReg32(int(mr.rm)))
+				} else {
+					v = int32(c.readMem32(c.segBaseForModRM(mr) + mr.ea))
+				}
+				r := int64(int32(c.GetReg32(int(mr.reg)))) * int64(v)
+				c.SetReg32(int(mr.reg), uint32(r))
+				c.setOF(r != int64(int32(r)))
+				c.setCF(r != int64(int32(r)))
 			}
-			r := int64(int32(c.GetReg32(int(mr.reg)))) * int64(v)
-			c.SetReg32(int(mr.reg), uint32(r))
-			c.setOF(r != int64(int32(r)))
-			c.setCF(r != int64(int32(r)))
 		case 0xB0:
 			// CMPXCHG r/m8, r8
 			// SDM: CF, OF, SF, ZF, AF, PF are all set as if `CMP acc, dst`
@@ -2089,96 +2149,111 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			}
 		case 0xA3:
 			// BT r/m16/32, r16/32
+			// Per Intel SDM: when the destination is MEMORY and the bit
+			// index comes from a REGISTER, the bit index is treated as a
+			// signed value that extends the memory address — i.e. the
+			// instruction accesses dword/word `base + (bit/32)*4` and
+			// modifies bit `bit & 0x1F` of that dword (signed shift for
+			// negative indices). For register destinations the bit index
+			// IS masked to operand_size-1.
 			mr := c.parseModRM()
-			var bit, mask uint32
 			if operandSize == 2 {
 				if mr.isReg {
-					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
-					mask = 1 << bit
-					c.setCF((c.GetReg16(reg16FromModRM(int(mr.rm))) & uint16(mask)) != 0)
+					bit := uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
+					mask := uint16(1) << bit
+					c.setCF((c.GetReg16(reg16FromModRM(int(mr.rm))) & mask) != 0)
 				} else {
-					addr := c.segBaseForModRM(mr) + mr.ea
-					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
-					mask = 1 << bit
-					c.setCF((c.readMem16(addr) & uint16(mask)) != 0)
+					bitIdx := int32(int16(c.GetReg16(reg16FromModRM(int(mr.reg)))))
+					base := c.segBaseForModRM(mr) + mr.ea
+					addr := uint32(int32(base) + (bitIdx>>4)*2)
+					mask := uint16(1) << uint32(bitIdx&0xF)
+					c.setCF((c.readMem16(addr) & mask) != 0)
 				}
 			} else {
 				if mr.isReg {
-					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
-					mask = 1 << bit
+					bit := uint32(c.GetReg32(int(mr.reg))) & 0x1F
+					mask := uint32(1) << bit
 					c.setCF((c.GetReg32(int(mr.rm)) & mask) != 0)
 				} else {
-					addr := c.segBaseForModRM(mr) + mr.ea
-					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
-					mask = 1 << bit
+					bitIdx := int32(c.GetReg32(int(mr.reg)))
+					base := c.segBaseForModRM(mr) + mr.ea
+					addr := uint32(int32(base) + (bitIdx>>5)*4)
+					mask := uint32(1) << uint32(bitIdx&0x1F)
 					c.setCF((c.readMem32(addr) & mask) != 0)
 				}
 			}
 		case 0xAB:
-			// BTS r/m16/32, r16/32
+			// BTS r/m16/32, r16/32 — memory operand + register bit index
+			// uses signed bit offset that extends the memory address.
 			mr := c.parseModRM()
-			var bit, mask uint32
 			if operandSize == 2 {
 				if mr.isReg {
-					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
-					mask = 1 << bit
+					bit := uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
+					mask := uint16(1) << bit
 					v := c.GetReg16(reg16FromModRM(int(mr.rm)))
-					c.setCF((v & uint16(mask)) != 0)
-					c.SetReg16(reg16FromModRM(int(mr.rm)), v|uint16(mask))
+					c.setCF((v & mask) != 0)
+					c.SetReg16(reg16FromModRM(int(mr.rm)), v|mask)
 				} else {
-					addr := c.segBaseForModRM(mr) + mr.ea
-					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
-					mask = 1 << bit
+					bitIdx := int32(int16(c.GetReg16(reg16FromModRM(int(mr.reg)))))
+					base := c.segBaseForModRM(mr) + mr.ea
+					addr := uint32(int32(base) + (bitIdx>>4)*2)
+					mask := uint16(1) << uint32(bitIdx&0xF)
 					v := c.readMem16(addr)
-					c.setCF((v & uint16(mask)) != 0)
-					c.writeMem16(addr, v|uint16(mask))
+					c.setCF((v & mask) != 0)
+					c.writeMem16(addr, v|mask)
 				}
 			} else {
 				if mr.isReg {
-					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
-					mask = 1 << bit
+					bit := uint32(c.GetReg32(int(mr.reg))) & 0x1F
+					mask := uint32(1) << bit
 					v := c.GetReg32(int(mr.rm))
 					c.setCF((v & mask) != 0)
 					c.SetReg32(int(mr.rm), v|mask)
 				} else {
-					addr := c.segBaseForModRM(mr) + mr.ea
-					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
-					mask = 1 << bit
+					bitIdx := int32(c.GetReg32(int(mr.reg)))
+					base := c.segBaseForModRM(mr) + mr.ea
+					addr := uint32(int32(base) + (bitIdx>>5)*4)
+					mask := uint32(1) << uint32(bitIdx&0x1F)
 					v := c.readMem32(addr)
 					c.setCF((v & mask) != 0)
 					c.writeMem32(addr, v|mask)
 				}
 			}
 		case 0xB3:
-			// BTR r/m16/32, r16/32
+			// BTR r/m16/32, r16/32 — memory operand + register bit index
+			// uses signed bit offset that extends the memory address. This
+			// is what Linux's setup_clear_cpu_cap uses; prior masking-only
+			// impl caused cap[0] bits to be cleared when the kernel meant
+			// to clear cap[N] bits.
 			mr := c.parseModRM()
-			var bit, mask uint32
 			if operandSize == 2 {
 				if mr.isReg {
-					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
-					mask = 1 << bit
+					bit := uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
+					mask := uint16(1) << bit
 					v := c.GetReg16(reg16FromModRM(int(mr.rm)))
-					c.setCF((v & uint16(mask)) != 0)
-					c.SetReg16(reg16FromModRM(int(mr.rm)), v&^uint16(mask))
+					c.setCF((v & mask) != 0)
+					c.SetReg16(reg16FromModRM(int(mr.rm)), v&^mask)
 				} else {
-					addr := c.segBaseForModRM(mr) + mr.ea
-					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
-					mask = 1 << bit
+					bitIdx := int32(int16(c.GetReg16(reg16FromModRM(int(mr.reg)))))
+					base := c.segBaseForModRM(mr) + mr.ea
+					addr := uint32(int32(base) + (bitIdx>>4)*2)
+					mask := uint16(1) << uint32(bitIdx&0xF)
 					v := c.readMem16(addr)
-					c.setCF((v & uint16(mask)) != 0)
-					c.writeMem16(addr, v&^uint16(mask))
+					c.setCF((v & mask) != 0)
+					c.writeMem16(addr, v&^mask)
 				}
 			} else {
 				if mr.isReg {
-					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
-					mask = 1 << bit
+					bit := uint32(c.GetReg32(int(mr.reg))) & 0x1F
+					mask := uint32(1) << bit
 					v := c.GetReg32(int(mr.rm))
 					c.setCF((v & mask) != 0)
 					c.SetReg32(int(mr.rm), v&^mask)
 				} else {
-					addr := c.segBaseForModRM(mr) + mr.ea
-					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
-					mask = 1 << bit
+					bitIdx := int32(c.GetReg32(int(mr.reg)))
+					base := c.segBaseForModRM(mr) + mr.ea
+					addr := uint32(int32(base) + (bitIdx>>5)*4)
+					mask := uint32(1) << uint32(bitIdx&0x1F)
 					v := c.readMem32(addr)
 					c.setCF((v & mask) != 0)
 					c.writeMem32(addr, v&^mask)
@@ -2295,52 +2370,63 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				return fmt.Errorf("0F BA /%d not implemented", mr.reg)
 			}
 		case 0xBB:
-			// BTC r/m16/32, r16/32
+			// BTC r/m16/32, r16/32 — memory operand + register bit index
+			// uses signed bit offset that extends the memory address.
 			mr := c.parseModRM()
-			var bit, mask uint32
 			if operandSize == 2 {
 				if mr.isReg {
-					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
-					mask = 1 << bit
+					bit := uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
+					mask := uint16(1) << bit
 					v := c.GetReg16(reg16FromModRM(int(mr.rm)))
-					c.setCF((v & uint16(mask)) != 0)
-					c.SetReg16(reg16FromModRM(int(mr.rm)), v^uint16(mask))
+					c.setCF((v & mask) != 0)
+					c.SetReg16(reg16FromModRM(int(mr.rm)), v^mask)
 				} else {
-					addr := c.segBaseForModRM(mr) + mr.ea
-					bit = uint32(c.GetReg16(reg16FromModRM(int(mr.reg)))) & 0xF
-					mask = 1 << bit
+					bitIdx := int32(int16(c.GetReg16(reg16FromModRM(int(mr.reg)))))
+					base := c.segBaseForModRM(mr) + mr.ea
+					addr := uint32(int32(base) + (bitIdx>>4)*2)
+					mask := uint16(1) << uint32(bitIdx&0xF)
 					v := c.readMem16(addr)
-					c.setCF((v & uint16(mask)) != 0)
-					c.writeMem16(addr, v^uint16(mask))
+					c.setCF((v & mask) != 0)
+					c.writeMem16(addr, v^mask)
 				}
 			} else {
 				if mr.isReg {
-					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
-					mask = 1 << bit
+					bit := uint32(c.GetReg32(int(mr.reg))) & 0x1F
+					mask := uint32(1) << bit
 					v := c.GetReg32(int(mr.rm))
 					c.setCF((v & mask) != 0)
 					c.SetReg32(int(mr.rm), v^mask)
 				} else {
-					addr := c.segBaseForModRM(mr) + mr.ea
-					bit = uint32(c.GetReg32(int(mr.reg))) & 0x1F
-					mask = 1 << bit
+					bitIdx := int32(c.GetReg32(int(mr.reg)))
+					base := c.segBaseForModRM(mr) + mr.ea
+					addr := uint32(int32(base) + (bitIdx>>5)*4)
+					mask := uint32(1) << uint32(bitIdx&0x1F)
 					v := c.readMem32(addr)
 					c.setCF((v & mask) != 0)
 					c.writeMem32(addr, v^mask)
 				}
 			}
 		case 0xB6:
-			// MOVZX r32, r/m8
+			// MOVZX r16/r32, r/m8. With the 0x66 operand prefix the
+			// destination is r16 and only the low 16 bits should be
+			// modified — the upper 16 bits of the underlying r32 must be
+			// preserved, NOT clobbered to zero.
 			mr := c.parseModRM()
-			var v uint32
+			var b uint8
 			if mr.isReg {
-				v = uint32(c.GetReg8(reg8FromModRM(int(mr.rm))))
+				b = c.GetReg8(reg8FromModRM(int(mr.rm)))
 			} else {
-				v = uint32(c.readMem8(c.segBaseForModRM(mr) + mr.ea))
+				b = c.readMem8(c.segBaseForModRM(mr) + mr.ea)
 			}
-			c.SetReg32(int(mr.reg), v)
+			if operandSize == 2 {
+				c.SetReg16(reg16FromModRM(int(mr.reg)), uint16(b))
+			} else {
+				c.SetReg32(int(mr.reg), uint32(b))
+			}
 		case 0xB7:
-			// MOVZX r32, r/m16
+			// MOVZX r32, r/m16 — the 0x66 prefix variant
+			// (MOVZX r16, r/m16) is meaningless and rejected by assemblers,
+			// so we always write 32 bits here.
 			mr := c.parseModRM()
 			var v uint32
 			if mr.isReg {
@@ -2350,17 +2436,21 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			}
 			c.SetReg32(int(mr.reg), v)
 		case 0xBE:
-			// MOVSX r32, r/m8
+			// MOVSX r16/r32, r/m8.
 			mr := c.parseModRM()
-			var v int32
+			var b uint8
 			if mr.isReg {
-				v = int32(int8(c.GetReg8(reg8FromModRM(int(mr.rm)))))
+				b = c.GetReg8(reg8FromModRM(int(mr.rm)))
 			} else {
-				v = int32(int8(c.readMem8(c.segBaseForModRM(mr) + mr.ea)))
+				b = c.readMem8(c.segBaseForModRM(mr) + mr.ea)
 			}
-			c.SetReg32(int(mr.reg), uint32(v))
+			if operandSize == 2 {
+				c.SetReg16(reg16FromModRM(int(mr.reg)), uint16(int16(int8(b))))
+			} else {
+				c.SetReg32(int(mr.reg), uint32(int32(int8(b))))
+			}
 		case 0xBF:
-			// MOVSX r32, r/m16
+			// MOVSX r32, r/m16.
 			mr := c.parseModRM()
 			var v int32
 			if mr.isReg {
@@ -2843,7 +2933,7 @@ func (c *CPU) handleInterruptCore(vector uint8, isHardware bool, errorCode ...ui
 	gateAddr := idtBase + offset
 	var gate [8]byte
 	for i := 0; i < 8; i++ {
-		gate[i] = c.readMem8(gateAddr + uint32(i))
+		gate[i] = c.readMemSV8(gateAddr + uint32(i))
 	}
 
 	offsetLow := uint32(gate[0]) | uint32(gate[1])<<8
@@ -2913,8 +3003,8 @@ func (c *CPU) handleInterruptCore(vector uint8, isHardware bool, errorCode ...ui
 		if ssOffset+1 > tssLimit {
 			return fmt.Errorf("TSS limit too small for stack switch to ring %d", csDPL)
 		}
-		newESP := c.readMem32(tssBase + espOffset)
-		newSS := c.readMem16(tssBase + ssOffset)
+		newESP := c.readMemSV32(tssBase + espOffset)
+		newSS := c.readMemSV16(tssBase + ssOffset)
 
 		oldSS := c.seg[SS]
 		oldESP := c.GetReg32(ESP)

@@ -177,26 +177,42 @@ func (c *CPU) handleALU_ModRM16(opcode uint8) error {
 	return nil
 }
 
-// handleTEST_ModRM handles TEST r/m8/32, r8/32.
+// handleTEST_ModRM handles TEST r/m, r at the given operand size (1, 2, or 4
+// bytes). Previously this routine treated any non-byte size as 32-bit, which
+// meant that `66 85 c0` (TEST AX,AX, with the 0x66 16-bit operand prefix)
+// silently tested EAX instead — so e.g. ZF was wrong whenever the upper 16
+// bits of EAX were non-zero. That broke busybox's wide-string loop, which
+// uses `mov ax, [esi+edx*2]` then `test ax,ax` to find a NUL terminator; the
+// loop never terminated and walked off the end of the buffer.
 func (c *CPU) handleTEST_ModRM(size int) error {
 	mr := c.parseModRM()
-	if size == 1 {
-		var dst, src uint8
+	switch size {
+	case 1:
+		var dst uint8
 		if mr.isReg {
 			dst = c.GetReg8(reg8FromModRM(int(mr.rm)))
 		} else {
 			dst = c.readMem8(c.segBaseForModRM(mr) + mr.ea)
 		}
-		src = c.GetReg8(reg8FromModRM(int(mr.reg)))
+		src := c.GetReg8(reg8FromModRM(int(mr.reg)))
 		c.and8(dst, src)
-	} else {
-		var dst, src uint32
+	case 2:
+		var dst uint16
+		if mr.isReg {
+			dst = c.GetReg16(reg16FromModRM(int(mr.rm)))
+		} else {
+			dst = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
+		}
+		src := c.GetReg16(reg16FromModRM(int(mr.reg)))
+		c.and16(dst, src)
+	default:
+		var dst uint32
 		if mr.isReg {
 			dst = c.GetReg32(int(mr.rm))
 		} else {
 			dst = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 		}
-		src = c.GetReg32(int(mr.reg))
+		src := c.GetReg32(int(mr.reg))
 		c.and32(dst, src)
 	}
 	return nil

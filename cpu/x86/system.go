@@ -97,7 +97,7 @@ func (c *CPU) LoadSegmentProtected(segReg int, selector uint16) error {
 	addr := tableBase + uint32(index)*8
 	var descBytes [8]byte
 	for i := 0; i < 8; i++ {
-		descBytes[i] = c.readMem8(addr + uint32(i))
+		descBytes[i] = c.readMemSV8(addr + uint32(i))
 	}
 	desc := ParseDescriptor(descBytes)
 
