@@ -133,6 +133,19 @@ func New(cfg Config) (*PC, error) {
 		port61 = uint8(val)
 	})
 
+	// LAPIC MMIO at 0xFEE00000 (4 KB) and IOAPIC at 0xFEC00000 (4 KB).
+	// We don't model APICs, but modern kernels poke these regions during
+	// early CPU init even with `nolapic noapic` on the cmdline. Provide
+	// read-as-zero, write-ignored stubs so those accesses don't #PF.
+	stubRead := func(opaque any, offset uint32, sizeLog2 int) uint32 { return 0 }
+	stubWrite := func(opaque any, offset uint32, val uint32, sizeLog2 int) {}
+	if _, err := p.memMap.RegisterDevice(0xFEE00000, 0x1000, nil, stubRead, stubWrite, 0); err != nil {
+		return nil, fmt.Errorf("register LAPIC stub: %w", err)
+	}
+	if _, err := p.memMap.RegisterDevice(0xFEC00000, 0x1000, nil, stubRead, stubWrite, 0); err != nil {
+		return nil, fmt.Errorf("register IOAPIC stub: %w", err)
+	}
+
 	// Wire CPU I/O to board I/O dispatcher
 	p.cpu.SetIOHandlers(
 		func(port uint16) uint8 { return p.io.Read8(port) },

@@ -33,6 +33,8 @@ DEBUG FLAGS (any subsequent positional args):
     pf       Page-fault tracing (TINYEMU_X86_PF_DEBUG=1)
     int      Interrupt/exception tracing (TINYEMU_X86_INT_DEBUG=1)
     io       Port I/O tracing (TINYEMU_X86_IO_DEBUG=1, very noisy)
+    esp      ESP-change tracing (TINYEMU_X86_ESP_DEBUG=1, NOISIEST)
+    espjumps ESP-jump tracing only (suppress ±256 push/pop deltas)
 
 EXAMPLES:
     ./run_exp.sh
@@ -61,6 +63,9 @@ for flag in "$@"; do
         pf)  env_vars+=("TINYEMU_X86_PF_DEBUG=1") ;;
         int) env_vars+=("TINYEMU_X86_INT_DEBUG=1") ;;
         io)  env_vars+=("TINYEMU_X86_IO_DEBUG=1") ;;
+        esp) env_vars+=("TINYEMU_X86_ESP_DEBUG=1") ;;
+        espjumps) env_vars+=("TINYEMU_X86_ESP_DEBUG=jumps") ;;
+        espalien) env_vars+=("TINYEMU_X86_ESP_DEBUG=alien") ;;
         *)
             echo "unknown flag: $flag" >&2
             print_help

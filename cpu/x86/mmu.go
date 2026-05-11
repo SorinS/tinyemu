@@ -15,6 +15,16 @@ var pfDebug = os.Getenv("TINYEMU_X86_PF_DEBUG") == "1"
 // Enabled with TINYEMU_X86_INT_DEBUG=1.
 var intDebug = os.Getenv("TINYEMU_X86_INT_DEBUG") == "1"
 
+// espTrace controls whether every change to ESP (or SP via SetReg16) is
+// logged with old/new values plus a Go stack trace, so we can pinpoint which
+// instruction handler corrupts ESP. Enabled with TINYEMU_X86_ESP_DEBUG=1.
+// Use "jumps" instead of "1" to suppress normal ±4 push/pop deltas and only
+// log non-stack-shaped ESP changes (much less noise).
+var espTrace = func() bool {
+	v := os.Getenv("TINYEMU_X86_ESP_DEBUG")
+	return v == "1" || v == "jumps" || v == "alien"
+}()
+
 // pagingEnabled returns true if paging is enabled (CR0.PG = 1).
 func (c *CPU) pagingEnabled() bool {
 	return c.cr[0]&CR0_PG != 0

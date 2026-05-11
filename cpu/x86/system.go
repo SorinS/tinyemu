@@ -308,12 +308,121 @@ func (c *CPU) handleGroupO_01() error {
 			val = c.readMem16(c.segBase[DS] + mr.ea)
 		}
 		c.cr[0] = (c.cr[0] & ^uint32(0xFFFF)) | uint32(val)
-	case 7: // INVLPG
-		// No TLB in this emulator, so this is a NOP.
+	case 7:
+		if mr.isReg {
+			// 0F 01 F9 = RDTSCP (ModRM byte 11 111 001). Returns TSC in
+			// EDX:EAX and the IA32_TSC_AUX MSR in ECX (we return 0).
+			if mr.rm == 1 {
+				c.handleRDTSC()
+				c.SetReg32(ECX, 0)
+				return nil
+			}
+			return fmt.Errorf("0F 01 modrm=%02X not implemented", (3<<6)|(7<<3)|mr.rm)
+		}
+		// INVLPG m: we have no TLB, so this is a NOP.
 	default:
 		return fmt.Errorf("0F 01 /%d not implemented", mr.reg)
 	}
 	return nil
+}
+
+// handleLAR implements LAR r16/32, r/m16 (0F 02): load access-rights byte of
+// the segment descriptor named by r/m. We return the access byte shifted to
+// bits [15:8] of the result, with ZF set on success.
+func (c *CPU) handleLAR(operandSize uint8) error {
+	mr := c.parseModRM()
+	var sel uint16
+	if mr.isReg {
+		sel = c.GetReg16(reg16FromModRM(int(mr.rm)))
+	} else {
+		sel = c.readMem16(c.segBase[DS] + mr.ea)
+	}
+	access, ok := c.descriptorAccessByte(sel)
+	if !ok {
+		c.setZF(false)
+		return nil
+	}
+	c.setZF(true)
+	if operandSize == 2 {
+		c.SetReg16(reg16FromModRM(int(mr.reg)), uint16(access)<<8)
+	} else {
+		// 32-bit: bits 15:8 = access byte, bits 23:20 = flags upper nibble.
+		c.SetReg32(int(mr.reg), uint32(access)<<8)
+	}
+	return nil
+}
+
+// handleLSL implements LSL r16/32, r/m16 (0F 03): load the byte-granular
+// limit of the segment named by r/m.
+func (c *CPU) handleLSL(operandSize uint8) error {
+	mr := c.parseModRM()
+	var sel uint16
+	if mr.isReg {
+		sel = c.GetReg16(reg16FromModRM(int(mr.rm)))
+	} else {
+		sel = c.readMem16(c.segBase[DS] + mr.ea)
+	}
+	limit, ok := c.descriptorLimit(sel)
+	if !ok {
+		c.setZF(false)
+		return nil
+	}
+	c.setZF(true)
+	if operandSize == 2 {
+		c.SetReg16(reg16FromModRM(int(mr.reg)), uint16(limit))
+	} else {
+		c.SetReg32(int(mr.reg), limit)
+	}
+	return nil
+}
+
+// descriptorAccessByte fetches the access byte of the descriptor named by
+// selector. Returns ok=false for null selectors or out-of-range indexes.
+func (c *CPU) descriptorAccessByte(selector uint16) (uint8, bool) {
+	if selector == 0 {
+		return 0, false
+	}
+	index := (selector >> 3) & 0x1FFF
+	ti := (selector >> 2) & 1
+	var base, limit uint32
+	if ti == 0 {
+		base = c.segBase[GDTR]
+		limit = c.segLimit[GDTR]
+	} else {
+		base = c.segBase[LDTR]
+		limit = c.segLimit[LDTR]
+	}
+	if uint32(index)*8+7 > limit {
+		return 0, false
+	}
+	return c.readMem8(base + uint32(index)*8 + 5), true
+}
+
+// descriptorLimit returns the byte-granular limit field of the descriptor.
+func (c *CPU) descriptorLimit(selector uint16) (uint32, bool) {
+	if selector == 0 {
+		return 0, false
+	}
+	index := (selector >> 3) & 0x1FFF
+	ti := (selector >> 2) & 1
+	var base, tlimit uint32
+	if ti == 0 {
+		base = c.segBase[GDTR]
+		tlimit = c.segLimit[GDTR]
+	} else {
+		base = c.segBase[LDTR]
+		tlimit = c.segLimit[LDTR]
+	}
+	if uint32(index)*8+7 > tlimit {
+		return 0, false
+	}
+	addr := base + uint32(index)*8
+	var d [8]byte
+	for i := 0; i < 8; i++ {
+		d[i] = c.readMem8(addr + uint32(i))
+	}
+	desc := ParseDescriptor(d)
+	return desc.Limit, true
 }
 
 // handleMovCR handles MOV r32, CRn (read) and MOV CRn, r32 (write).

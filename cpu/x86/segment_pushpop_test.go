@@ -4,6 +4,30 @@ import (
 	"testing"
 )
 
+// installFlatGDTForPopTests writes a GDT with flat data descriptors at the
+// selectors used by the POP-segment tests below (0x10, 0x18, 0x20, 0x28,
+// 0x30, 0x40, 0x50, 0x60) so LoadSegmentProtected can resolve them.
+func installFlatGDTForPopTests(c *CPU) {
+	gdt := uint32(0x4000)
+	// Use 16 entries × 8 bytes = 128-byte GDT
+	for i := uint32(0); i < 128; i++ {
+		c.writeMem8(gdt+i, 0)
+	}
+	for slot := uint32(0); slot < 16; slot++ {
+		base := gdt + slot*8
+		c.writeMem8(base+0, 0xFF)
+		c.writeMem8(base+1, 0xFF)
+		c.writeMem8(base+2, 0x00)
+		c.writeMem8(base+3, 0x00)
+		c.writeMem8(base+4, 0x00)
+		c.writeMem8(base+5, 0x92) // data, writable, present, DPL=0
+		c.writeMem8(base+6, 0xCF)
+		c.writeMem8(base+7, 0x00)
+	}
+	c.SetSegBase(GDTR, gdt)
+	c.SetSegLimit(GDTR, 127)
+}
+
 // TestPushFS tests PUSH FS (0F A0)
 func TestPushFS(t *testing.T) {
 	c := newTestCPU(t)
@@ -24,6 +48,7 @@ func TestPushFS(t *testing.T) {
 // TestPopFS tests POP FS (0F A1)
 func TestPopFS(t *testing.T) {
 	c := newTestCPU(t)
+	installFlatGDTForPopTests(c)
 	c.SetReg32(ESP, 0x0FFC)
 	c.writeMem32(0x0FFC, 0x0040)
 	code := []byte{0x0F, 0xA1, 0xF4}
@@ -58,6 +83,7 @@ func TestPushGS(t *testing.T) {
 // TestPopGS tests POP GS (0F A9)
 func TestPopGS(t *testing.T) {
 	c := newTestCPU(t)
+	installFlatGDTForPopTests(c)
 	c.SetReg32(ESP, 0x0FFC)
 	c.writeMem32(0x0FFC, 0x0060)
 	code := []byte{0x0F, 0xA9, 0xF4}
@@ -92,6 +118,7 @@ func TestPushES(t *testing.T) {
 // TestPopES tests POP ES (07)
 func TestPopES(t *testing.T) {
 	c := newTestCPU(t)
+	installFlatGDTForPopTests(c)
 	c.SetReg32(ESP, 0x0FFC)
 	c.writeMem32(0x0FFC, 0x0020)
 	code := []byte{0x07, 0xF4}
@@ -143,6 +170,7 @@ func TestPushSS(t *testing.T) {
 // TestPopSS tests POP SS (17)
 func TestPopSS(t *testing.T) {
 	c := newTestCPU(t)
+	installFlatGDTForPopTests(c)
 	c.SetReg32(ESP, 0x0FFC)
 	c.writeMem32(0x0FFC, 0x0018)
 	code := []byte{0x17, 0xF4}
@@ -177,6 +205,7 @@ func TestPushDS(t *testing.T) {
 // TestPopDS tests POP DS (1F)
 func TestPopDS(t *testing.T) {
 	c := newTestCPU(t)
+	installFlatGDTForPopTests(c)
 	c.SetReg32(ESP, 0x0FFC)
 	c.writeMem32(0x0FFC, 0x0030)
 	code := []byte{0x1F, 0xF4}

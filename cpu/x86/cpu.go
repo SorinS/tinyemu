@@ -3,8 +3,77 @@
 package x86
 
 import (
+	"fmt"
+	"os"
+	"runtime"
+
 	"github.com/jtolio/tinyemu-go/mem"
 )
+
+// espTraceMode selects what changes get logged:
+//
+//	"1"      — every change
+//	"jumps"  — only changes whose delta exceeds ±256 (skip push/pop)
+//	"alien"  — only changes where the NEW value's top byte differs from
+//	            the OLD value's top byte by more than 1 (i.e. ESP leaves
+//	            its current 16 MB stack region — catches truly anomalous
+//	            corruptions while hiding both small push/pop and ordinary
+//	            kernel stack switches inside the same region).
+var espTraceMode = os.Getenv("TINYEMU_X86_ESP_DEBUG")
+
+// logESPChange writes an ESP-change line to stderr along with a short Go
+// stack trace so we can identify which handler/instruction caused the change.
+// Only called when espTrace is true.
+func (c *CPU) logESPChange(old, newVal uint32, source string) {
+	switch espTraceMode {
+	case "jumps":
+		diff := int64(newVal) - int64(old)
+		if diff > -256 && diff < 256 {
+			return
+		}
+	case "alien":
+		// "Alien" = any change that moves ESP by more than 64KB. Catches
+		// ESP reloads (LSS, MOV ESP, IRET stack switch) and corruption,
+		// while hiding routine push/pop/ENTER/LEAVE.
+		diff := int64(newVal) - int64(old)
+		if diff > -0x10000 && diff < 0x10000 {
+			return
+		}
+	}
+	pcs := make([]uintptr, 16)
+	n := runtime.Callers(3, pcs)
+	frames := runtime.CallersFrames(pcs[:n])
+	var trace []string
+	for {
+		f, more := frames.Next()
+		name := f.Function
+		for i := len(name) - 1; i >= 0; i-- {
+			if name[i] == '/' {
+				name = name[i+1:]
+				break
+			}
+		}
+		trace = append(trace, name)
+		if !more || len(trace) >= 10 {
+			break
+		}
+	}
+	// Dump the 8 bytes of memory around EIP — captures the actual runtime
+	// opcode (which may differ from static disassembly when the kernel
+	// uses alternative-instruction patching).
+	lip := c.GetLIP()
+	var pre [4]byte
+	var post [4]byte
+	defer func() { _ = recover() }() // tolerate memory-translate faults
+	for i := uint32(0); i < 4; i++ {
+		if lip >= 4 {
+			pre[i] = c.readMem8(lip - 4 + i)
+		}
+		post[i] = c.readMem8(lip + i)
+	}
+	fmt.Fprintf(os.Stderr, "[ESP] %08X -> %08X (%s)  EIP=%08X cycles=%d  pre=% x | post=% x  via %v\n",
+		old, newVal, source, c.eip, c.cycles, pre, post, trace)
+}
 
 // Register indices for 32-bit access.
 const (
@@ -253,6 +322,9 @@ func (c *CPU) SetReg32(r int, v uint32) {
 	if r == EZR {
 		return
 	}
+	if r == ESP && espTrace && v != c.reg32[ESP] {
+		c.logESPChange(c.reg32[ESP], v, "SetReg32")
+	}
 	c.reg32[r] = v
 }
 
@@ -268,6 +340,13 @@ func (c *CPU) SetReg16(r int, v uint16) {
 		return
 	}
 	idx := r >> 1
+	if idx == ESP && espTrace {
+		oldFull := c.reg32[idx]
+		newFull := (oldFull & ^uint32(0xFFFF)) | uint32(v)
+		if newFull != oldFull {
+			c.logESPChange(oldFull, newFull, "SetReg16(SP)")
+		}
+	}
 	c.reg32[idx] = (c.reg32[idx] & ^uint32(0xFFFF)) | uint32(v)
 }
 

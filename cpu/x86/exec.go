@@ -709,7 +709,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 
 	// POP ES
 	case 0x07:
-		c.seg[ES] = uint16(c.pop32())
+		return c.popSegReg(ES, operandSize, false)
 
 	// PUSH CS
 	case 0x0E:
@@ -719,10 +719,12 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 	case 0x16:
 		c.push32(uint32(c.seg[SS]))
 
-	// POP SS
+	// POP SS — reload SS and (in protected mode) refresh its descriptor
+	// cache. Direct seg[SS] = pop() without LoadSegmentProtected leaves the
+	// old base/limit/access in place; subsequent stack accesses would use
+	// the WRONG segment base.
 	case 0x17:
-		c.seg[SS] = uint16(c.pop32())
-		c.interruptsBlocked = true
+		return c.popSegReg(SS, operandSize, true)
 
 	// PUSH DS
 	case 0x1E:
@@ -730,7 +732,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 
 	// POP DS
 	case 0x1F:
-		c.seg[DS] = uint16(c.pop32())
+		return c.popSegReg(DS, operandSize, false)
 
 	// ADD AL, imm8
 	case 0x04:
@@ -890,7 +892,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					c.seg[CS] = cs
 					c.segBase[CS] = uint32(cs) << 4
 				}
-				c.eflags = uint32(c.pop16())
+				c.setEFlagsFromPop(uint32(c.pop16()), c.cpl)
 				c.eflags |= EFLAGS_RF
 				if c.IsProtectedMode() && c.cpl > oldCPL {
 					newSP := c.pop16()
@@ -912,7 +914,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					c.seg[CS] = uint16(cs)
 					c.segBase[CS] = uint32(cs) << 4
 				}
-				c.eflags = c.pop32()
+				c.setEFlagsFromPop(c.pop32(), c.cpl)
 				c.eflags |= EFLAGS_RF
 				// Restore VM bit if CPL=0 and popped EFLAGS has it.
 				if c.IsProtectedMode() && c.cpl == 0 && (c.eflags&EFLAGS_VM) != 0 {
@@ -934,7 +936,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 
 	// POPF
 	case 0x9D:
-		c.eflags = c.popOp(operandSize)
+		c.setEFlagsFromPop(c.popOp(operandSize), c.cpl)
 
 	// CBW/CWDE
 	case 0x98:
@@ -1612,6 +1614,10 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			return c.handleGroupO_00()
 		case 0x01:
 			return c.handleGroupO_01()
+		case 0x02:
+			return c.handleLAR(operandSize)
+		case 0x03:
+			return c.handleLSL(operandSize)
 		case 0x20:
 			// MOV r32, CR0-CR7
 			return c.handleMovCR(true)
@@ -1635,13 +1641,13 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			c.push32(uint32(c.seg[FS]))
 		case 0xA1:
 			// POP FS
-			c.seg[FS] = uint16(c.pop32())
+			return c.popSegReg(FS, operandSize, false)
 		case 0xA8:
 			// PUSH GS
 			c.push32(uint32(c.seg[GS]))
 		case 0xA9:
 			// POP GS
-			c.seg[GS] = uint16(c.pop32())
+			return c.popSegReg(GS, operandSize, false)
 		case 0xA2:
 			// CPUID
 			c.handleCPUID()
@@ -2242,6 +2248,13 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 		case 0x1F, 0x0D:
 			c.parseModRM()
 
+		// 0F AE — group encoding for FXSAVE/FXRSTOR (and LFENCE/MFENCE/SFENCE
+		// /CLFLUSH/XSAVE variants). We have no FPU/XMM state to save, so all
+		// of these are treated as NOPs — we just consume the ModRM byte (plus
+		// any displacement) and continue.
+		case 0xAE:
+			c.parseModRM()
+
 		// CLTS (clear CR0.TS).
 		case 0x06:
 			if c.IsProtectedMode() && c.cpl != 0 {
@@ -2469,11 +2482,17 @@ func (c *CPU) fetchMoffs() uint32 {
 	return uint32(c.fetch16())
 }
 
-// push16 pushes a 16-bit value onto the stack.
+// push16 pushes a 16-bit value onto the stack. The write is translated first
+// (which may raise #PF or #SS); only on success do we commit the new SP. This
+// matches real x86 instruction-restart semantics, leaving SP unchanged when a
+// fault propagates so the kernel's #PF handler sees a consistent frame.
+//
+//go:noinline
 func (c *CPU) push16(v uint16) {
-	c.SetReg16(SP, c.GetReg16(SP)-2)
-	c.checkStackLimit(uint32(c.GetReg16(SP)), 2)
-	c.writeMem16(c.segBase[SS]+uint32(c.GetReg16(SP)), v)
+	newSP := c.GetReg16(SP) - 2
+	c.checkStackLimit(uint32(newSP), 2)
+	c.writeMem16(c.segBase[SS]+uint32(newSP), v)
+	c.SetReg16(SP, newSP)
 }
 
 // pop16 pops a 16-bit value from the stack.
@@ -2483,11 +2502,15 @@ func (c *CPU) pop16() uint16 {
 	return v
 }
 
-// push32 pushes a 32-bit value onto the stack.
+// push32 pushes a 32-bit value onto the stack. PF-safe: SP is committed only
+// after the memory write succeeds.
+//
+//go:noinline
 func (c *CPU) push32(v uint32) {
-	c.SetReg32(ESP, c.GetReg32(ESP)-4)
-	c.checkStackLimit(c.GetReg32(ESP), 4)
-	c.writeMem32(c.segBase[SS]+c.GetReg32(ESP), v)
+	newESP := c.GetReg32(ESP) - 4
+	c.checkStackLimit(newESP, 4)
+	c.writeMem32(c.segBase[SS]+newESP, v)
+	c.SetReg32(ESP, newESP)
 }
 
 // pop32 pops a 32-bit value from the stack.
@@ -2495,6 +2518,72 @@ func (c *CPU) pop32() uint32 {
 	v := c.readMem32(c.segBase[SS] + c.GetReg32(ESP))
 	c.SetReg32(ESP, c.GetReg32(ESP)+4)
 	return v
+}
+
+// popSegReg implements POP <seg> for ES/SS/DS/FS/GS. In protected mode the
+// new descriptor is fetched via LoadSegmentProtected so base/limit/access
+// are kept in sync; without this the segment selector changes but accesses
+// would still use the OLD base, corrupting subsequent loads/stores.
+// For SS, the interrupts-blocked flag is set per Intel SDM.
+func (c *CPU) popSegReg(segReg int, operandSize uint8, blockInterrupts bool) error {
+	var sel uint16
+	if operandSize == 2 {
+		sel = c.pop16()
+	} else {
+		sel = uint16(c.pop32())
+	}
+	if c.IsProtectedMode() {
+		if err := c.LoadSegmentProtected(segReg, sel); err != nil {
+			return err
+		}
+	} else {
+		c.seg[segReg] = sel
+		c.segBase[segReg] = uint32(sel) << 4
+		c.segLimit[segReg] = 0xFFFF
+		c.segAccess[segReg] = 0
+	}
+	if blockInterrupts {
+		c.interruptsBlocked = true
+	}
+	return nil
+}
+
+// eflagsReservedSetMask is the OR-mask applied to every value loaded into
+// EFLAGS: bit 1 is reserved-as-1 per the Intel SDM. (Bits 3, 5, 15, 22-31
+// are reserved-as-0 but we don't enforce that — software that depends on
+// reading them as 0 is rare and our masking would change semantics for
+// extensions like AC/VIF/VIP.)
+const eflagsReservedSetMask = uint32(0x02)
+
+// setEFlagsFromPop loads a value popped off the stack into c.eflags while
+// honoring Intel's rules:
+//   - bit 1 (reserved) is always written as 1.
+//   - bits 17 (VM), 19 (VIF), 20 (VIP) are only writable at CPL=0.
+//   - IOPL field (bits 12-13) is only writable at CPL=0; lower CPLs keep
+//     the current IOPL.
+//   - IF (bit 9) is only writable when CPL <= IOPL.
+//
+// Without this guard, real-mode/PE early-init code that does POPF or IRET
+// with a value that happens to have bit 1 = 0 would silently clear it, and
+// any subsequent `testl $0x2, EFLAGS` (used by Linux's SAVE_ALL trampoline
+// to detect v8086 entry vs kernel entry) would take the wrong path, leading
+// to stack corruption.
+func (c *CPU) setEFlagsFromPop(val uint32, cpl int) {
+	const fullCPL0Mask = ValidFlagMask
+	preserved := uint32(0)
+	allowed := uint32(0xFFFFFFFF)
+	if c.IsProtectedMode() && cpl > 0 {
+		// CPL > 0 cannot modify IOPL, VM, VIF, VIP.
+		allowed = ^(uint32(EFLAGS_IOPL) | EFLAGS_VM | EFLAGS_VIF | EFLAGS_VIP)
+		iopl := (c.eflags & EFLAGS_IOPL) >> 12
+		if uint32(cpl) > iopl {
+			// IF is not modifiable either.
+			allowed &^= EFLAGS_IF
+		}
+		preserved = c.eflags &^ allowed
+	}
+	c.eflags = ((val & allowed) | preserved) & fullCPL0Mask
+	c.eflags |= eflagsReservedSetMask
 }
 
 // pushOp pushes a value of the given operand size (2 or 4).
@@ -2524,9 +2613,11 @@ func (c *CPU) popOp(size uint8) uint32 {
 	return c.pop32()
 }
 
-// handleInterrupt services a software or hardware interrupt.
-// In real mode, it reads the IVT at physical address vector*4.
-// In protected mode, it reads the IDT gate descriptor.
+// handleInterrupt services a software or hardware interrupt. The body lives
+// in handleInterruptCore; this wrapper adds the diagnostic trace and the
+// double-fault recovery path. On a nested fault during delivery it tries to
+// deliver vector 8 (#DF); if that also faults we report a triple-fault
+// error rather than letting the Go panic propagate.
 func (c *CPU) handleInterrupt(vector uint8, isHardware bool, errorCode ...uint32) (err error) {
 	if intDebug {
 		ec := uint32(0)
@@ -2536,25 +2627,48 @@ func (c *CPU) handleInterrupt(vector uint8, isHardware bool, errorCode ...uint32
 		fmt.Fprintf(os.Stderr, "[INT] vec=0x%02X hw=%v errcode=0x%X EIP=0x%08X ESP=0x%08X CR2=0x%08X cycles=%d\n",
 			vector, isHardware, ec, c.eip, c.GetReg32(ESP), c.cr[2], c.cycles)
 	}
-	// Catch nested faults (e.g. #PF during IDT gate read) and surface them
-	// as a Go error rather than letting the panic propagate past Step()'s
-	// outer defer. On real hardware this is the path to double-fault and
-	// then triple-fault; here we just report and stop the run.
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		err = c.deliverDoubleFault(vector, r)
+	}()
+	return c.handleInterruptCore(vector, isHardware, errorCode...)
+}
+
+// deliverDoubleFault is called by handleInterrupt's defer when delivery
+// raised a nested fault. It attempts to deliver vector 8 (#DF); on a further
+// nested fault it returns a triple-fault error.
+func (c *CPU) deliverDoubleFault(origVector uint8, firstPanic any) (err error) {
+	var origMsg string
+	switch ex := firstPanic.(type) {
+	case pageFaultError:
+		origMsg = fmt.Sprintf("nested #PF: linear=0x%08X errcode=0x%X", ex.addr, ex.errorCode)
+	case stackFaultError:
+		origMsg = fmt.Sprintf("nested #SS: errcode=0x%X", ex.errorCode)
+	case generalProtectionFaultError:
+		origMsg = fmt.Sprintf("nested #GP: errcode=0x%X", ex.errorCode)
+	default:
+		panic(firstPanic)
+	}
 	defer func() {
 		if r := recover(); r != nil {
-			switch ex := r.(type) {
-			case pageFaultError:
-				err = fmt.Errorf("nested #PF delivering vector 0x%02X: linear=0x%08X errcode=0x%X (IDTR base=0x%08X)",
-					vector, ex.addr, ex.errorCode, c.segBase[IDTR])
-			case stackFaultError:
-				err = fmt.Errorf("nested #SS delivering vector 0x%02X: errcode=0x%X", vector, ex.errorCode)
-			case generalProtectionFaultError:
-				err = fmt.Errorf("nested #GP delivering vector 0x%02X: errcode=0x%X", vector, ex.errorCode)
-			default:
-				panic(r)
-			}
+			err = fmt.Errorf("triple fault delivering vector 0x%02X: %s; #DF also faulted",
+				origVector, origMsg)
 		}
 	}()
+	if dfErr := c.handleInterruptCore(8, true, 0); dfErr != nil {
+		return fmt.Errorf("delivering vector 0x%02X: %s; #DF gate failed: %w",
+			origVector, origMsg, dfErr)
+	}
+	return nil
+}
+
+// handleInterruptCore is the actual delivery body. It does NOT recover from
+// panics — its callers wrap it in defer/recover (handleInterrupt for the
+// initial delivery, deliverDoubleFault for the #DF attempt).
+func (c *CPU) handleInterruptCore(vector uint8, isHardware bool, errorCode ...uint32) error {
 
 	// Hardware interrupts wake the CPU from HLT.
 	if isHardware {

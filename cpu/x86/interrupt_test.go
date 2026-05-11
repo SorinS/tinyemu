@@ -1,6 +1,7 @@
 package x86
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -815,6 +816,51 @@ func TestHandleInterrupt16BitGateErrorCodeSize(t *testing.T) {
 	}
 }
 
+
+// TestNestedFaultBecomesTripleFault: when handleInterrupt's body raises a
+// nested page fault AND the #DF delivery also fails (because the #DF gate
+// itself is unreachable), the result should be a "triple fault" Go error
+// rather than a runtime panic.
+func TestNestedFaultBecomesTripleFault(t *testing.T) {
+	c := newTestCPU(t)
+	// Flat 32-bit code segment (newTestCPU leaves CS base at the
+	// real-mode reset value of 0xF0000).
+	c.SetSeg(CS, 0x0000)
+	c.SetSegBase(CS, 0x00000)
+
+	const pdAddr uint32 = 0x10000
+	const ptLow uint32 = 0x11000
+	for i := uint32(0); i < 4096; i++ {
+		c.writePhys8(pdAddr+i, 0)
+		c.writePhys8(ptLow+i, 0)
+	}
+	c.writePhys32(pdAddr+0, ptLow|0x07)
+	for i := uint32(0); i < 256; i++ {
+		c.writePhys32(ptLow+i*4, (i<<12)|0x07)
+	}
+	idtBase := uint32(0x40000)
+	// Mark the IDT page non-present so every gate read PFs.
+	c.writePhys32(ptLow+(idtBase>>12)*4, 0)
+
+	c.SetSegBase(IDTR, idtBase)
+	c.SetSegLimit(IDTR, 256*8-1)
+
+	c.writePhys8(0x1000, 0xCD)
+	c.writePhys8(0x1001, 0x20)
+
+	c.SetCR(3, pdAddr)
+	c.SetCR(0, c.GetCR(0)|CR0_PG)
+	c.SetReg32(ESP, 0x7000)
+	c.SetEIP(0x1000)
+
+	err := c.Step()
+	if err == nil {
+		t.Fatalf("expected triple-fault error, got nil")
+	}
+	if !strings.Contains(err.Error(), "triple fault") {
+		t.Errorf("error = %q, want it to mention 'triple fault'", err.Error())
+	}
+}
 
 // TestPush16StackLimitExpandUp validates #SS when pushing past an expand-up
 // segment limit. #SS delivery itself nests-faults because the stack is broken;
