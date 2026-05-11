@@ -522,23 +522,36 @@ func (c *CPU) updateCPLFromCR0() {
 
 // CPUID feature bits we advertise. These choices push Linux toward simple code
 // paths: TSC (so it uses fast TSC calibration instead of the PIT delay loop),
-// MSR + CX8 + CMOV + PAT + PGE + PSE for standard kernel functionality. We do
-// NOT advertise FPU (forces softfp), SEP (forces INT 0x80 instead of
-// SYSENTER), APIC, MTRR, MMX, SSE, or SSE2 — none of which are implemented.
+// MSR + CX8 + CMOV + PAT + PGE + PSE for standard kernel functionality. We
+// advertise FPU=1 so the kernel doesn't bail at fpu__init_disable_system_
+// fpu_support (Yocto's qemux86 kernel is built without CONFIG_MATH_EMULATION,
+// so "no FPU" → panic). x87 handlers are stubs (NOPs that consume ModRM);
+// Linux's early-boot FPU usage is limited to FNINIT + a feature probe.
+// We do NOT advertise SEP (forces INT 0x80 instead of SYSENTER), APIC,
+// MTRR, MMX, SSE, or SSE2 — none of which are implemented.
 const (
-	cpuidFeat1EDX = (1 << 3) | // PSE
+	cpuidFeat1EDX = (1 << 0) | // FPU (x87)
+		(1 << 3) | // PSE
 		(1 << 4) | // TSC
 		(1 << 5) | // MSR
 		(1 << 6) | // PAE
 		(1 << 8) | // CX8 (CMPXCHG8B)
 		(1 << 13) | // PGE
 		(1 << 15) | // CMOV
-		(1 << 16) // PAT
+		(1 << 16) | // PAT
+		(1 << 24) // FXSR (FXSAVE/FXRSTOR) — kernel uses for save/restore
 )
+
+// cpuidTrace logs each CPUID invocation (leaf + EIP) to stderr. Enable with
+// TINYEMU_X86_CPUID_TRACE=1.
+var cpuidTrace = os.Getenv("TINYEMU_X86_CPUID_TRACE") == "1"
 
 // handleCPUID handles the CPUID instruction.
 func (c *CPU) handleCPUID() {
 	eax := c.GetReg32(EAX)
+	if cpuidTrace {
+		fmt.Fprintf(os.Stderr, "[CPUID] leaf=0x%08X EIP=0x%08X\n", eax, c.eip)
+	}
 	switch eax {
 	case 0:
 		c.SetReg32(EAX, 0x00000004) // Maximum standard function

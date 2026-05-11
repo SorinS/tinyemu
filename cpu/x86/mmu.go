@@ -22,6 +22,9 @@ var ud2SkipAndLog = os.Getenv("TINYEMU_X86_SKIP_UD2") == "1"
 // kernel hits without changing fault semantics.
 var ud2LogAlways = os.Getenv("TINYEMU_X86_LOG_UD2") == "1"
 
+// x87Trace logs every x87 instruction. Enable with TINYEMU_X86_X87_TRACE=1.
+var x87Trace = os.Getenv("TINYEMU_X86_X87_TRACE") == "1"
+
 // ud2Log prints diagnostic information about a UD2 site: the EIP, the bytes
 // immediately following (which may contain inline metadata), and the current
 // register snapshot.

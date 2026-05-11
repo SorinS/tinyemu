@@ -289,6 +289,14 @@ type CPU struct {
 	// pfDumpActive guards the PF stack-walk diagnostic against infinite
 	// recursion when the stack itself is unmapped.
 	pfDumpActive bool
+
+	// Minimal x87 state — just enough to satisfy Linux's FPU detection
+	// probe (FNINIT/FNSTSW/FNSTCW). We don't emulate floating-point
+	// arithmetic; the kernel only uses FPU in early-boot detection (we
+	// claim FPU=1 in CPUID and pass that probe).
+	fpuStatusWord  uint16
+	fpuControlWord uint16
+	fpuInitialized bool
 }
 
 // NewCPU creates a new x86 CPU instance.
@@ -317,7 +325,16 @@ func (c *CPU) Reset() {
 	c.segBase[CS] = 0xF0000
 	c.eip = 0xFFF0
 	c.eflags = 2 // Bit 1 is always set
-	c.cr[0] = 0
+	// Initial CR0: bit 4 (ET) reflects "FPU is x87 not 287" — should be set
+	// for all CPUs >= 486. Linux's 32-bit FPU probe path treats CR0.ET=0 as
+	// "no FPU" and panics. CR0.EM=0 means hardware FPU executes natively.
+	c.cr[0] = CR0_ET
+	// FPU defaults — match the state FNINIT would leave us in. Linux's FPU
+	// probe reads FNSTSW/FNSTCW before any FNINIT in some configurations, so
+	// we need stable defaults.
+	c.fpuControlWord = 0x037F
+	c.fpuStatusWord = 0
+	c.fpuInitialized = true
 	c.cpl = 0
 	c.powerDown = false
 	c.intrLineState = 0

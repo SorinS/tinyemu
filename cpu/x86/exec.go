@@ -347,11 +347,64 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 	case 0x9B:
 		// Do nothing.
 
-	// x87 family (D8-DF). With CPUID FPU=0 the kernel uses softfp and won't
-	// issue these on the fast path; we still need to consume the ModRM byte
-	// so the decoder doesn't desync if a stray FNINIT/FNCLEX appears.
-	case 0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF:
+	// x87 family (D8-DF). With CPUID FPU=1 we advertise FPU support, but
+	// only implement the ops Linux uses during its FPU probe:
+	//   FNINIT  (DB E3) — initialize FPU state.
+	//   FNSTSW  (DF E0 → AX, or DD /7 → m16) — store status word.
+	//   FNSTCW  (D9 /7 → m16) — store control word.
+	//   FLDCW   (D9 /5 → m16) — load control word.
+	//   FNCLEX  (DB E2) — clear exceptions.
+	// All other x87 ops are NOP stubs that consume the ModRM byte so the
+	// decoder stays in sync. Real floating-point math isn't emulated.
+	case 0xD8, 0xDA, 0xDC, 0xDE:
 		c.parseModRM()
+	case 0xD9:
+		// D9 /5 = FLDCW m16; D9 /7 = FNSTCW m16. Other D9 ops are stubs.
+		mr := c.parseModRM()
+		if x87Trace {
+			fmt.Fprintf(os.Stderr, "[FPU] D9 mod=%d reg=%d rm=%d EIP=0x%08X\n", mr.mod, mr.reg, mr.rm, c.eip)
+		}
+		if !mr.isReg {
+			addr := c.segBaseForModRM(mr) + mr.ea
+			switch mr.reg {
+			case 5: // FLDCW m16
+				c.fpuControlWord = c.readMem16(addr)
+				c.fpuInitialized = true
+			case 7: // FNSTCW m16
+				if !c.fpuInitialized {
+					c.fpuControlWord = 0x037F
+					c.fpuInitialized = true
+				}
+				c.writeMem16(addr, c.fpuControlWord)
+			}
+		}
+	case 0xDB:
+		// DB E2 = FNCLEX; DB E3 = FNINIT. Other DB ops are stubs.
+		mr := c.parseModRM()
+		if x87Trace {
+			fmt.Fprintf(os.Stderr, "[FPU] DB mod=%d reg=%d rm=%d EIP=0x%08X\n", mr.mod, mr.reg, mr.rm, c.eip)
+		}
+		if mr.isReg && mr.reg == 4 && mr.rm == 2 {
+			// FNCLEX — modrm 0xE2: mod=11, reg=100, rm=010
+			c.fpuStatusWord = 0
+		} else if mr.isReg && mr.reg == 4 && mr.rm == 3 {
+			// FNINIT — modrm 0xE3: mod=11, reg=100, rm=011
+			c.fpuControlWord = 0x037F
+			c.fpuStatusWord = 0
+			c.fpuInitialized = true
+		}
+	case 0xDD:
+		// DD /7 m16 = FNSTSW m16. Other DD ops are stubs.
+		mr := c.parseModRM()
+		if !mr.isReg && mr.reg == 7 {
+			c.writeMem16(c.segBaseForModRM(mr)+mr.ea, c.fpuStatusWord)
+		}
+	case 0xDF:
+		// DF E0 = FNSTSW AX. Other DF ops are stubs.
+		mr := c.parseModRM()
+		if mr.isReg && mr.reg == 4 && mr.rm == 0 {
+			c.SetReg16(AX, c.fpuStatusWord)
+		}
 
 	// PUSHA/PUSHAD
 	case 0x60:

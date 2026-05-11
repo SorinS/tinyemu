@@ -30,16 +30,16 @@ func TestCPUID_Leaf0(t *testing.T) {
 }
 
 // TestCPUID_Leaf1FeatureBits verifies the EDX feature flags advertised. We
-// require TSC, MSR, CX8, CMOV, PSE; we require FPU and SEP and APIC NOT
-// advertised so Linux takes the simple paths we support.
+// require TSC, MSR, CX8, CMOV, PSE, FPU; we require SEP and APIC NOT
+// advertised so Linux takes the simple paths we support. FPU is advertised
+// because Yocto's qemux86 kernel is built without CONFIG_MATH_EMULATION and
+// will panic during boot otherwise — our x87 ops are NOP stubs which is
+// enough for the kernel's FNINIT-based probe path.
 func TestCPUID_Leaf1FeatureBits(t *testing.T) {
 	_, _, _, edx := runCPUID(t, 1)
-	required := uint32((1 << 4) | (1 << 5) | (1 << 8) | (1 << 15) | (1 << 3))
+	required := uint32((1 << 0) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 8) | (1 << 15))
 	if edx&required != required {
 		t.Errorf("EDX = 0x%08X missing required feature bits 0x%08X", edx, required)
-	}
-	if edx&(1<<0) != 0 {
-		t.Errorf("FPU bit set, expected cleared (we have no x87)")
 	}
 	if edx&(1<<9) != 0 {
 		t.Errorf("APIC bit set, expected cleared (we have no APIC)")
