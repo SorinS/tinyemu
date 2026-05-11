@@ -816,9 +816,9 @@ func TestHandleInterrupt16BitGateErrorCodeSize(t *testing.T) {
 }
 
 
-// TestPush16StackLimitExpandUp validates #SS when pushing past an expand-up segment limit.
-// With a broken stack, #SS delivery itself will double-fault in our emulator.
-// We verify that the original push raises the expected stack fault.
+// TestPush16StackLimitExpandUp validates #SS when pushing past an expand-up
+// segment limit. #SS delivery itself nests-faults because the stack is broken;
+// handleInterrupt catches the nested fault and returns an error.
 func TestPush16StackLimitExpandUp(t *testing.T) {
 	c := newTestCPU(t)
 	c.SetCR(0, c.GetCR(0)&^CR0_PE)
@@ -827,29 +827,19 @@ func TestPush16StackLimitExpandUp(t *testing.T) {
 	c.SetSegBase(CS, 0x00000)
 	c.SetSeg(SS, 0x0000)
 	c.SetSegBase(SS, 0x00000)
-	c.SetSegLimit(SS, 0x0100) // small expand-up segment: valid 0x0000-0x0100
-	c.SetSegAccess(SS, 0x92)  // read/write, expand-up
-	c.SetReg16(SP, 0x0104)    // push16 will go to 0x0102 (> limit)
+	c.SetSegLimit(SS, 0x0100)
+	c.SetSegAccess(SS, 0x92)
+	c.SetReg16(SP, 0x0104)
 
-	// We expect a panic because #SS delivery itself will double-fault
-	// (the stack is too small for the interrupt frame).
-	defer func() {
-		if r := recover(); r != nil {
-			// Expected: double fault / panic cascade
-			return
-		}
-		t.Errorf("expected panic for expand-up #SS double fault")
-	}()
-
-	c.writeMem8(0x1000, 0x50) // PUSH AX
+	c.writeMem8(0x1000, 0x50)
 	c.SetEIP(0x1000)
-	c.Step() // should panic
+	err := c.Step()
+	if err == nil {
+		t.Errorf("expected nested-fault error, got nil")
+	}
 }
 
-// TestPush16StackLimitExpandDown validates #SS when pushing past an expand-down segment limit.
-// For expand-down with limit=0x0100, valid range is 0x0101-0xFFFF.
-// SP=0x0101 is at the boundary; a 16-bit push goes to 0x00FF (below, fault).
-// #SS delivery itself double-faults, so we just verify the panic.
+// TestPush16StackLimitExpandDown is the expand-down counterpart.
 func TestPush16StackLimitExpandDown(t *testing.T) {
 	c := newTestCPU(t)
 	c.SetCR(0, c.GetCR(0)&^CR0_PE)
@@ -858,21 +848,16 @@ func TestPush16StackLimitExpandDown(t *testing.T) {
 	c.SetSegBase(CS, 0x00000)
 	c.SetSeg(SS, 0x0000)
 	c.SetSegBase(SS, 0x00000)
-	c.SetSegLimit(SS, 0x0100) // expand-down: valid 0x0101-0xFFFF
-	c.SetSegAccess(SS, 0x96)  // read/write, expand-down
-	c.SetReg16(SP, 0x0101)    // at boundary; push goes to 0x00FF (below, fault)
+	c.SetSegLimit(SS, 0x0100)
+	c.SetSegAccess(SS, 0x96)
+	c.SetReg16(SP, 0x0101)
 
-	// We expect a panic because #SS delivery itself will double-fault.
-	defer func() {
-		if r := recover(); r != nil {
-			return
-		}
-		t.Errorf("expected panic for expand-down #SS double fault")
-	}()
-
-	c.writeMem8(0x1000, 0x50) // PUSH AX (real mode, 16-bit)
+	c.writeMem8(0x1000, 0x50)
 	c.SetEIP(0x1000)
-	c.Step() // should panic
+	err := c.Step()
+	if err == nil {
+		t.Errorf("expected nested-fault error, got nil")
+	}
 }
 
 // TestPush16StackLimitOK validates that a push within the limit succeeds.

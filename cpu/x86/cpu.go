@@ -319,6 +319,10 @@ func (c *CPU) SetSegLimit(sel int, v uint32) {
 	c.segLimit[sel] = v
 }
 
+func (c *CPU) GetSegLimit(sel int) uint32 {
+	return c.segLimit[sel]
+}
+
 // ===== EIP accessors =====
 
 func (c *CPU) GetEIP() uint32 {

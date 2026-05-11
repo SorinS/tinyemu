@@ -2,6 +2,7 @@ package x86
 
 import (
 	"fmt"
+	"os"
 )
 
 // detectDecJnzLoop returns true if the next two bytes after EIP form
@@ -2526,7 +2527,35 @@ func (c *CPU) popOp(size uint8) uint32 {
 // handleInterrupt services a software or hardware interrupt.
 // In real mode, it reads the IVT at physical address vector*4.
 // In protected mode, it reads the IDT gate descriptor.
-func (c *CPU) handleInterrupt(vector uint8, isHardware bool, errorCode ...uint32) error {
+func (c *CPU) handleInterrupt(vector uint8, isHardware bool, errorCode ...uint32) (err error) {
+	if intDebug {
+		ec := uint32(0)
+		if len(errorCode) > 0 {
+			ec = errorCode[0]
+		}
+		fmt.Fprintf(os.Stderr, "[INT] vec=0x%02X hw=%v errcode=0x%X EIP=0x%08X ESP=0x%08X CR2=0x%08X cycles=%d\n",
+			vector, isHardware, ec, c.eip, c.GetReg32(ESP), c.cr[2], c.cycles)
+	}
+	// Catch nested faults (e.g. #PF during IDT gate read) and surface them
+	// as a Go error rather than letting the panic propagate past Step()'s
+	// outer defer. On real hardware this is the path to double-fault and
+	// then triple-fault; here we just report and stop the run.
+	defer func() {
+		if r := recover(); r != nil {
+			switch ex := r.(type) {
+			case pageFaultError:
+				err = fmt.Errorf("nested #PF delivering vector 0x%02X: linear=0x%08X errcode=0x%X (IDTR base=0x%08X)",
+					vector, ex.addr, ex.errorCode, c.segBase[IDTR])
+			case stackFaultError:
+				err = fmt.Errorf("nested #SS delivering vector 0x%02X: errcode=0x%X", vector, ex.errorCode)
+			case generalProtectionFaultError:
+				err = fmt.Errorf("nested #GP delivering vector 0x%02X: errcode=0x%X", vector, ex.errorCode)
+			default:
+				panic(r)
+			}
+		}
+	}()
+
 	// Hardware interrupts wake the CPU from HLT.
 	if isHardware {
 		c.powerDown = false

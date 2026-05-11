@@ -295,3 +295,9 @@ func (p *PC) Console() *virtio.Console {
 func (p *PC) UART() *UART16550 {
 	return p.uart
 }
+
+// PIC returns the 8259 master controller (for diagnostics).
+func (p *PC) PIC() *PIC8259 { return p.pic }
+
+// PIT returns the 8254 programmable interval timer (for diagnostics).
+func (p *PC) PIT() *PIT8254 { return p.pit }

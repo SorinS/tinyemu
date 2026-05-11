@@ -11,6 +11,10 @@ import (
 // paging, etc.).
 var pfDebug = os.Getenv("TINYEMU_X86_PF_DEBUG") == "1"
 
+// intDebug controls whether each interrupt/exception service is logged.
+// Enabled with TINYEMU_X86_INT_DEBUG=1.
+var intDebug = os.Getenv("TINYEMU_X86_INT_DEBUG") == "1"
+
 // pagingEnabled returns true if paging is enabled (CR0.PG = 1).
 func (c *CPU) pagingEnabled() bool {
 	return c.cr[0]&CR0_PG != 0
