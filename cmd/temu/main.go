@@ -591,6 +591,12 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 		inputBuf := make([]byte, 256)
 		n, _ := console.Read(inputBuf)
 
+		// For x86 PC boards, route stdin into the COM1 RX FIFO so the
+		// kernel's serial driver delivers it to userspace.
+		if pcBoard, ok := m.(*pc.PC); ok && n > 0 {
+			pcBoard.UART().Push(inputBuf[:n])
+		}
+
 		// Feed console input to guest if available and guest is ready
 		if virtConsole := m.Console(); virtConsole != nil && virtConsole.CanWriteData() {
 			writeLen := virtConsole.GetWriteLen()

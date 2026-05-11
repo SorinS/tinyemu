@@ -77,32 +77,30 @@ func TestMOVDR(t *testing.T) {
 	}
 }
 
-// TestLSS loads SS:ESP from memory in protected mode using the GDT we set up
-// in newTestCPU.
-func TestLSS(t *testing.T) {
-	c := newTestCPU(t)
-
-	// Build a minimal GDT with a flat data descriptor at selector 0x10.
+// setupFlatGDT places a single flat data descriptor at selector 0x10 so
+// LSS/LFS/LGS tests can load a valid segment in protected mode.
+func setupFlatDataSelector(c *CPU) {
 	gdtBase := uint32(0x4000)
 	for i := 0; i < 24; i++ {
 		c.writeMem8(gdtBase+uint32(i), 0)
 	}
-	// Selector 0x10 = entry index 2.
 	c.writeMem8(gdtBase+16, 0xFF)
 	c.writeMem8(gdtBase+17, 0xFF)
 	c.writeMem8(gdtBase+18, 0x00)
 	c.writeMem8(gdtBase+19, 0x00)
 	c.writeMem8(gdtBase+20, 0x00)
-	c.writeMem8(gdtBase+21, 0x92) // data, present, DPL=0, writable
+	c.writeMem8(gdtBase+21, 0x92)
 	c.writeMem8(gdtBase+22, 0xCF)
 	c.writeMem8(gdtBase+23, 0x00)
 	c.SetSegBase(GDTR, gdtBase)
 	c.SetSegLimit(GDTR, 23)
+}
 
-	// Memory operand at 0x5000 holds (offset=0xCAFEBABE, selector=0x10).
+func TestLSS(t *testing.T) {
+	c := newTestCPU(t)
+	setupFlatDataSelector(c)
 	c.writeMem32(0x5000, 0xCAFEBABE)
 	c.writeMem16(0x5004, 0x0010)
-
 	// LSS ESP, [DS:0x5000] = 0F B2 25 00 50 00 00
 	code := []byte{0x0F, 0xB2, 0x25, 0x00, 0x50, 0x00, 0x00, 0xF4}
 	if err := runCode(t, c, code, 0x1000); err != nil {
@@ -113,5 +111,41 @@ func TestLSS(t *testing.T) {
 	}
 	if got := c.GetSeg(SS); got != 0x0010 {
 		t.Errorf("SS = 0x%04X, want 0x0010", got)
+	}
+}
+
+func TestLFS(t *testing.T) {
+	c := newTestCPU(t)
+	setupFlatDataSelector(c)
+	c.writeMem32(0x5000, 0x11223344)
+	c.writeMem16(0x5004, 0x0010)
+	// LFS EDI, [DS:0x5000] = 0F B4 3D 00 50 00 00
+	code := []byte{0x0F, 0xB4, 0x3D, 0x00, 0x50, 0x00, 0x00, 0xF4}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("runCode: %v", err)
+	}
+	if got := c.GetReg32(EDI); got != 0x11223344 {
+		t.Errorf("EDI = 0x%08X, want 0x11223344", got)
+	}
+	if got := c.GetSeg(FS); got != 0x0010 {
+		t.Errorf("FS = 0x%04X, want 0x0010", got)
+	}
+}
+
+func TestLGS(t *testing.T) {
+	c := newTestCPU(t)
+	setupFlatDataSelector(c)
+	c.writeMem32(0x5000, 0xAABBCCDD)
+	c.writeMem16(0x5004, 0x0010)
+	// LGS ESI, [DS:0x5000] = 0F B5 35 00 50 00 00
+	code := []byte{0x0F, 0xB5, 0x35, 0x00, 0x50, 0x00, 0x00, 0xF4}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("runCode: %v", err)
+	}
+	if got := c.GetReg32(ESI); got != 0xAABBCCDD {
+		t.Errorf("ESI = 0x%08X, want 0xAABBCCDD", got)
+	}
+	if got := c.GetSeg(GS); got != 0x0010 {
+		t.Errorf("GS = 0x%04X, want 0x0010", got)
 	}
 }

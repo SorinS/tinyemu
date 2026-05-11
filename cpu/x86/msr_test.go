@@ -93,12 +93,89 @@ func TestMSR_MTRRPhysBaseRoundtrip(t *testing.T) {
 	}
 }
 
-// TestMSR_UnknownRaisesGP verifies that reading or writing an unrecognized
-// MSR raises #GP(0). The kernel uses this with fixup tables for probing.
-func TestMSR_UnknownRaisesGP(t *testing.T) {
+func TestMSR_MiscEnableRoundtrip(t *testing.T) {
+	lo, hi := roundtripMSR(t, msrIA32_MISC_ENABLE, 0x12345678, 0x9ABCDEF0)
+	if lo != 0x12345678 || hi != 0x9ABCDEF0 {
+		t.Errorf("MISC_ENABLE = %08X:%08X, want 9ABCDEF0:12345678", hi, lo)
+	}
+}
+
+func TestMSR_SysenterEIP(t *testing.T) {
+	lo, hi := roundtripMSR(t, msrIA32_SYSENTER_EIP, 0xC1234567, 0)
+	if lo != 0xC1234567 || hi != 0 {
+		t.Errorf("SYSENTER_EIP = %08X:%08X, want 0:C1234567", hi, lo)
+	}
+}
+
+func TestMSR_GSBase(t *testing.T) {
 	c := newTestCPU(t)
-	// Set up an IDT entry for vector 0x0D (#GP). The handler just sets EAX
-	// to a sentinel and halts.
+	c.SetReg32(ECX, msrIA32_GS_BASE)
+	c.SetReg32(EAX, 0xC2222000)
+	c.SetReg32(EDX, 0)
+	code := []byte{0x0F, 0x30, 0xF4}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("WRMSR GS_BASE: %v", err)
+	}
+	if got := c.GetSegBase(GS); got != 0xC2222000 {
+		t.Errorf("GS base = 0x%08X, want 0xC2222000", got)
+	}
+}
+
+func TestMSR_KGSBaseRoundtrip(t *testing.T) {
+	lo, hi := roundtripMSR(t, msrIA32_KGS_BASE, 0xDEADBEEF, 0)
+	if lo != 0xDEADBEEF || hi != 0 {
+		t.Errorf("KGS_BASE = %08X:%08X, want 0:DEADBEEF", hi, lo)
+	}
+}
+
+// TestMSR_TSCRead verifies RDMSR IA32_TSC returns the cycles counter.
+func TestMSR_TSCRead(t *testing.T) {
+	c := newTestCPU(t)
+	c.cycles = 0x123456789AB
+	c.SetReg32(ECX, msrIA32_TSC)
+	code := []byte{0x0F, 0x32, 0xF4}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("RDMSR TSC: %v", err)
+	}
+	// runCode itself executes some Steps; cycles is updated by Run() not
+	// by Step(), so cycles should be close to our preset value modulo
+	// per-instruction bumping.
+	got := uint64(c.GetReg32(EAX)) | (uint64(c.GetReg32(EDX)) << 32)
+	if got < 0x123456789AB {
+		t.Errorf("TSC = 0x%X, want >= 0x123456789AB", got)
+	}
+}
+
+// TestMSR_EFER_LMERejected: writing EFER with LME (bit 8) set must raise #GP
+// because we don't support long mode.
+func TestMSR_EFER_LMERejected(t *testing.T) {
+	c := setupGPCatchCPU(t)
+	c.SetReg32(ECX, msrIA32_EFER)
+	c.SetReg32(EAX, 1<<8) // LME
+	c.SetReg32(EDX, 0)
+	code := []byte{0x0F, 0x30, 0xF4} // WRMSR; HLT
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("execution error: %v", err)
+	}
+	if got := c.GetReg32(EAX); got != 0xDEAD {
+		t.Errorf("EAX = 0x%X, want 0xDEAD (i.e. #GP handler ran)", got)
+	}
+}
+
+// TestMSR_EFER_NXEAllowed: setting NXE (bit 11) should succeed.
+func TestMSR_EFER_NXEAllowed(t *testing.T) {
+	lo, hi := roundtripMSR(t, msrIA32_EFER, 1<<11, 0)
+	if lo != (1<<11) || hi != 0 {
+		t.Errorf("EFER = %08X:%08X, want 0:00000800 (NXE only)", hi, lo)
+	}
+}
+
+// setupGPCatchCPU returns a CPU configured so that a #GP fault diverts to a
+// handler at linear address 0x4000 which sets EAX = 0xDEAD and halts. Useful
+// to assert that some instruction raises #GP without leaking the panic.
+func setupGPCatchCPU(t *testing.T) *CPU {
+	t.Helper()
+	c := newTestCPU(t)
 	idtBase := uint32(0x4000)
 	for i := uint32(0); i < 8*16; i++ {
 		c.writeMem8(idtBase+i, 0)
@@ -115,8 +192,6 @@ func TestMSR_UnknownRaisesGP(t *testing.T) {
 	c.SetSegBase(IDTR, idtBase)
 	c.SetSegLimit(IDTR, 0x0D*8+7)
 
-	// Configure a flat code descriptor at selector 0x08 in the GDT so the
-	// interrupt gate can load CS.
 	gdtBase := uint32(0x5000)
 	for i := uint32(0); i < 16; i++ {
 		c.writeMem8(gdtBase+i, 0)
@@ -132,7 +207,6 @@ func TestMSR_UnknownRaisesGP(t *testing.T) {
 	c.SetSegBase(GDTR, gdtBase)
 	c.SetSegLimit(GDTR, 15)
 
-	// Handler at 0x4000: MOV EAX, 0xDEAD; HLT.
 	c.writeMem8(0x4000, 0xB8)
 	c.writeMem8(0x4001, 0xAD)
 	c.writeMem8(0x4002, 0xDE)
@@ -140,9 +214,15 @@ func TestMSR_UnknownRaisesGP(t *testing.T) {
 	c.writeMem8(0x4004, 0x00)
 	c.writeMem8(0x4005, 0xF4)
 
-	// Main: ECX=0xDEADBEEF (unknown MSR), RDMSR.
-	c.SetReg32(ECX, 0xDEADBEEF)
 	c.SetReg32(ESP, 0x6000)
+	return c
+}
+
+// TestMSR_UnknownRaisesGP verifies that reading or writing an unrecognized
+// MSR raises #GP(0). The kernel uses this with fixup tables for probing.
+func TestMSR_UnknownRaisesGP(t *testing.T) {
+	c := setupGPCatchCPU(t)
+	c.SetReg32(ECX, 0xDEADBEEF)
 	code := []byte{0x0F, 0x32, 0xF4}
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("execution error: %v", err)

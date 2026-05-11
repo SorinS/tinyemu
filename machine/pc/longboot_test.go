@@ -34,7 +34,7 @@ func loadAlpine(t *testing.T, ramMiB uint64) (*PC, *bytes.Buffer) {
 	var uartBuf bytes.Buffer
 	p.uart.SetOutput(&uartBuf)
 
-	cmdline := "console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp earlyprintk=serial,ttyS0,115200 nokaslr"
+	cmdline := "console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp earlyprintk=serial,ttyS0,115200 nokaslr lpj=100000 tsc=unstable clocksource=jiffies notsc"
 	if err := p.LoadBIOS(nil, kernelData, initrdData, cmdline); err != nil {
 		p.Close()
 		t.Fatalf("LoadBIOS failed: %v", err)
@@ -77,12 +77,17 @@ func runBoot(t *testing.T, p *PC, uartBuf *bytes.Buffer, wallTimeout time.Durati
 			for i := range post {
 				post[i] = cpu.ReadMem8(lin + uint32(i))
 			}
-			t.Logf("cycles=%d EIP=0x%08X EFLAGS=0x%08X (IF=%v) PG=%v INTR=%v PD=%v UART=%d (+%d) tscFP=%d pre=% x | post=% x",
+			esp := cpu.GetReg32(x86.ESP)
+			var stk [8]uint32
+			for i := range stk {
+				stk[i] = cpu.ReadMem32(esp + uint32(i)*4)
+			}
+			t.Logf("cycles=%d EIP=0x%08X EFLAGS=0x%08X (IF=%v) PG=%v INTR=%v PD=%v UART=%d (+%d) tscFP=%d pre=% x | post=% x | stack=%08X",
 				cpu.GetCycles(), eip, cpu.GetEFLAGS(),
 				cpu.GetEFLAGS()&x86.EFLAGS_IF != 0,
 				cpu.GetCR(0)&x86.CR0_PG != 0,
 				cpu.HasPendingInterrupt(), cpu.IsPowerDown(),
-				len(out), len(out)-lastOutLen, x86.TSCFastpathHits(), pre[:], post[:])
+				len(out), len(out)-lastOutLen, x86.TSCFastpathHits(), pre[:], post[:], stk)
 			lastLog = time.Now()
 			lastOutLen = len(out)
 		}

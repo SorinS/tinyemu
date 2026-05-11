@@ -195,11 +195,12 @@ func TestUARTDLAB(t *testing.T) {
 	// Clear DLAB
 	io.Write8(0x3FB, 0x00)
 
-	// Now 0x3F8 is THR again
-	io.Write8(0x3F8, 0x55)
-	// Reading 0x3F8 returns RBR (which holds last THR value in our stub)
-	if got := io.Read8(0x3F8); got != 0x55 {
-		t.Errorf("RBR = 0x%02X, want 0x55", got)
+	// With DLAB clear, 0x3F8 is THR on write, RBR on read. Push a byte
+	// into the receive FIFO and verify the read returns it.
+	io.Write8(0x3F8, 0x55) // transmit; doesn't affect RBR
+	uart.Push([]byte{0x77})
+	if got := io.Read8(0x3F8); got != 0x77 {
+		t.Errorf("RBR = 0x%02X, want 0x77 (pushed byte)", got)
 	}
 }
 

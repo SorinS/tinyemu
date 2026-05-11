@@ -1,6 +1,9 @@
 package x86
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // runCPUID executes CPUID with the given EAX leaf and returns the four output
 // registers.
@@ -56,5 +59,26 @@ func TestCPUID_ExtendedLeaf(t *testing.T) {
 	a, _, _, _ = runCPUID(t, 0x80000002)
 	if a == 0 {
 		t.Errorf("brand string leaf 0x80000002 EAX is zero")
+	}
+}
+
+// TestCPUID_BrandStringContent decodes leaves 0x80000002..0x80000004 and
+// checks the resulting 48-byte string starts with "tinyemu-go".
+func TestCPUID_BrandStringContent(t *testing.T) {
+	var buf [48]byte
+	idx := 0
+	for leaf := uint32(0x80000002); leaf <= 0x80000004; leaf++ {
+		a, b, ce, d := runCPUID(t, leaf)
+		for _, v := range []uint32{a, b, ce, d} {
+			buf[idx+0] = byte(v)
+			buf[idx+1] = byte(v >> 8)
+			buf[idx+2] = byte(v >> 16)
+			buf[idx+3] = byte(v >> 24)
+			idx += 4
+		}
+	}
+	got := string(buf[:])
+	if !strings.HasPrefix(got, "tinyemu-go") {
+		t.Errorf("brand string = %q, want prefix %q", got, "tinyemu-go")
 	}
 }
