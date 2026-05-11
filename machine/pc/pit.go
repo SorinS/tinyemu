@@ -21,11 +21,16 @@ type pitChannel struct {
 	readMSBNext bool  // read-side LSB/MSB state for accessMode 3
 }
 
-// NewPIT8254 creates a new PIT.
+// NewPIT8254 creates a new PIT. Channel 0 is pre-programmed at the BIOS-typical
+// max-divisor (~18.2 Hz). Linux's calibrate_delay() polls jiffies, which only
+// advance on IRQ0; without BIOS, we'd never tick.
 func NewPIT8254(pic *PIC8259) *PIT8254 {
-	return &PIT8254{
-		pic: pic,
-	}
+	p := &PIT8254{pic: pic}
+	p.channels[0].reload = 0xFFFF
+	p.channels[0].count = 0xFFFF
+	p.channels[0].accessMode = 3 // LSB then MSB
+	p.channels[0].mode = 2       // rate generator
+	return p
 }
 
 // SetCyclesFunc registers a callback that returns the current CPU cycle count.

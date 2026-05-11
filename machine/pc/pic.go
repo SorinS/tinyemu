@@ -4,24 +4,28 @@ import "github.com/jtolio/tinyemu-go/cpu/x86"
 
 // PIC8259 implements a minimal 8259 Programmable Interrupt Controller.
 type PIC8259 struct {
-	cpu      *x86.CPU
-	basePort uint16
-	icwState int
-	icw1     uint8
-	icw2     uint8
-	icw3     uint8
-	icw4     uint8
-	imr      uint8 // Interrupt Mask Register
-	irr      uint8 // Interrupt Request Register
-	isr      uint8 // In-Service Register
-	readISR  bool  // OCW3: read ISR instead of IRR
+	cpu        *x86.CPU
+	basePort   uint16
+	icwState   int
+	icw1       uint8
+	icw2       uint8
+	icw3       uint8
+	icw4       uint8
+	imr        uint8 // Interrupt Mask Register
+	irr        uint8 // Interrupt Request Register
+	isr        uint8 // In-Service Register
+	readISR    bool  // OCW3: read ISR instead of IRR
+	raiseCount [8]uint64
 }
 
-// NewPIC8259 creates a new PIC.
+// NewPIC8259 creates a new PIC. IMR defaults to 0xFF (all masked) so the
+// pre-programmed PIT does not deliver IRQ0 before the kernel sets up its IDT
+// and explicitly unmasks the timer.
 func NewPIC8259(cpu *x86.CPU, basePort uint16) *PIC8259 {
 	return &PIC8259{
 		cpu:      cpu,
 		basePort: basePort,
+		imr:      0xFF,
 	}
 }
 
@@ -114,9 +118,28 @@ func (p *PIC8259) updateINTR() {
 func (p *PIC8259) RaiseIRQ(irq uint8) {
 	if irq < 8 {
 		p.irr |= 1 << irq
+		p.raiseCount[irq]++
 		p.updateINTR()
 	}
 }
+
+// RaiseCount returns the cumulative number of times the given IRQ has been
+// raised. Exposed for tests/diagnostics.
+func (p *PIC8259) RaiseCount(irq uint8) uint64 {
+	if irq < 8 {
+		return p.raiseCount[irq]
+	}
+	return 0
+}
+
+// IMR returns the current Interrupt Mask Register. Exposed for tests.
+func (p *PIC8259) IMR() uint8 { return p.imr }
+
+// IRR returns the current Interrupt Request Register. Exposed for tests.
+func (p *PIC8259) IRR() uint8 { return p.irr }
+
+// ISR returns the In-Service Register. Exposed for tests.
+func (p *PIC8259) ISR() uint8 { return p.isr }
 
 // LowerIRQ lowers an IRQ line.
 func (p *PIC8259) LowerIRQ(irq uint8) {
