@@ -142,9 +142,21 @@ func (p *PC) loadBZImage(kernelData, initrdData []byte, cmdLine string) (uint32,
 		return 0, fmt.Errorf("kernel data shorter than setup area (%d < %d)", len(kernelData), setupBytes)
 	}
 
-	// Load setup area (boot sector + setup sectors) to 0x90000
+	// boot_params is a 4 KB "zero page" the bootloader must construct fresh.
+	// The bzImage file's first 0x1F0 bytes are real-mode boot sector code +
+	// PE/DOS header junk — copying them verbatim into boot_params clobbers
+	// fields like alt_mem_k (= 0xFFFFFFFF), e820_entries (= 0xFF), and
+	// sentinel (= 0xFF). A non-zero sentinel makes Linux's
+	// `sanitize_boot_params()` wipe the very e820 fields we want the kernel
+	// to read. So: zero the 4 KB page first, then overlay only the
+	// `setup_header` slice (offsets 0x1F1..0x268) from the bzImage on top.
 	setupAddr := uint32(0x90000)
-	for i := 0; i < setupBytes && i < len(kernelData); i++ {
+	for i := uint32(0); i < 0x1000; i++ {
+		p.writePhys8(setupAddr+i, 0)
+	}
+	const hdrStart = 0x1F1
+	const hdrEnd = 0x268
+	for i := hdrStart; i < hdrEnd && i < len(kernelData); i++ {
 		p.writePhys8(setupAddr+uint32(i), kernelData[i])
 	}
 
@@ -166,6 +178,19 @@ func (p *PC) loadBZImage(kernelData, initrdData []byte, cmdLine string) (uint32,
 	p.patchBootParam(setupAddr+0x210, 0xFF)              // type_of_loader = 0xFF (generic bootloader)
 	p.patchBootParam(setupAddr+0x211, h.LoadFlags|0x01)  // LOADED_HIGH | keep existing flags
 	p.patchBootParam32(setupAddr+0x228, cmdLineAddr)     // cmd_line_ptr
+
+	// Populate the E820 memory map. Without this the kernel falls back to
+	// the legacy BIOS int15 alt_mem_k field (zero here) and assumes only
+	// 16 MB of RAM is present. The kernel then proceeds to unmap every
+	// kernel-direct-map PTE for memory it thinks doesn't exist — which
+	// includes its own .text, leading to a triple-fault when it next
+	// tries to fetch an instruction from the just-unmapped page.
+	//
+	// boot_params layout (Documentation/x86/boot.rst):
+	//   0x1E8: u8  e820_entries
+	//   0x2D0: e820_entry[E820_MAX_ENTRIES_ZEROPAGE] (20 bytes each:
+	//          u64 addr; u64 size; u32 type)
+	p.writeE820Map(setupAddr)
 
 	// Set up initrd if provided
 	if len(initrdData) > 0 {
@@ -253,4 +278,68 @@ func (p *PC) patchBootParam32(addr uint32, val uint32) {
 	p.writePhys8(addr+1, uint8(val>>8))
 	p.writePhys8(addr+2, uint8(val>>16))
 	p.writePhys8(addr+3, uint8(val>>24))
+}
+
+// patchBootParam64 patches a 64-bit little-endian value in the zero page.
+func (p *PC) patchBootParam64(addr uint32, val uint64) {
+	for i := uint32(0); i < 8; i++ {
+		p.writePhys8(addr+i, uint8(val>>(i*8)))
+	}
+}
+
+// writeE820Map fills in boot_params.e820_table with entries describing the
+// emulator's RAM layout. Without this, the kernel assumes only the legacy
+// 16 MB of RAM exists and unmaps the rest of its direct map, including its
+// own .text — leading to a triple-fault.
+//
+// Entry layout for x86 (e820_entry, 20 bytes): u64 addr, u64 size, u32 type.
+// type 1 = RAM, type 2 = RESERVED.
+//
+// We must ALSO zero the sentinel byte at offset 0x1EF: Linux's
+// `sanitize_boot_params()` interprets any non-zero sentinel as "the
+// bootloader corrupted my boot_params" and wipes out the very fields we
+// just populated (alt_mem_k, e820_entries, e820_table, ...).
+func (p *PC) writeE820Map(setupAddr uint32) {
+	const (
+		altMemKOff        = 0x1E0
+		e820NumEntriesOff = 0x1E8
+		sentinelOff       = 0x1EF
+		e820TableOff      = 0x2D0
+		entrySize         = 20
+	)
+
+	// Compute usable RAM above 1 MB and report it as alt_mem_k (kilobytes)
+	// for the kernel's legacy fallback. (e820_table is preferred when
+	// present.)
+	memAbove1M := uint32(0)
+	if p.ramSize > 0x100000 {
+		memAbove1M = uint32((p.ramSize - 0x100000) / 1024)
+	}
+	p.patchBootParam32(setupAddr+altMemKOff, memAbove1M)
+
+	type e820Entry struct {
+		addr uint64
+		size uint64
+		typ  uint32
+	}
+	entries := []e820Entry{
+		// Low memory: 0..640 KB usable RAM (standard PC layout).
+		{addr: 0x00000000, size: 0x9F000, typ: 1},
+		// 0xA0000..0x100000: reserved (BIOS/VGA region).
+		{addr: 0x000A0000, size: 0x60000, typ: 2},
+		// Extended memory: from 1 MB to end of RAM.
+		{addr: 0x00100000, size: p.ramSize - 0x100000, typ: 1},
+	}
+	p.patchBootParam(setupAddr+e820NumEntriesOff, uint8(len(entries)))
+	for i, e := range entries {
+		base := setupAddr + e820TableOff + uint32(i)*entrySize
+		p.patchBootParam64(base, e.addr)
+		p.patchBootParam64(base+8, e.size)
+		p.patchBootParam32(base+16, e.typ)
+	}
+
+	// Sentinel = 0 means "bootloader produced clean boot_params". Without
+	// this the kernel calls sanitize_boot_params() which wipes out the
+	// e820 fields we just wrote.
+	p.patchBootParam(setupAddr+sentinelOff, 0)
 }

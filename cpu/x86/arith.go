@@ -271,74 +271,115 @@ func (c *CPU) setPF(flag bool) {
 }
 
 // adc8 performs 8-bit addition with carry.
+//
+// NOTE: We cannot simply call updateArithFlags8(r, a, b+cfIn, true) — when
+// b+cfIn overflows (e.g. b=0xFF, cfIn=1), the second operand truncates to 0
+// and the helper's `cf = op1+op2 > 0xFF` check returns wrong values.
+// Instead we compute CF/OF/AF directly here using the wider-precision sum.
 func (c *CPU) adc8(a, b uint8) uint8 {
-	cf := uint8(0)
+	cfIn := uint16(0)
 	if c.eflags&EFLAGS_CF != 0 {
-		cf = 1
+		cfIn = 1
 	}
-	res := uint16(a) + uint16(b) + uint16(cf)
-	r := uint8(res)
-	c.updateArithFlags8(r, a, b+cf, true)
+	sum := uint16(a) + uint16(b) + cfIn
+	r := uint8(sum)
+	c.setCF(sum > 0xFF)
+	c.setOF(((a^b)&0x80) == 0 && ((a^r)&0x80) != 0)
+	c.setSF((r & 0x80) != 0)
+	c.setZF(r == 0)
+	c.setAF(((a^b^r)&0x10) != 0)
+	c.setPF(parity8(r))
 	return r
 }
 
 // adc16 performs 16-bit addition with carry.
 func (c *CPU) adc16(a, b uint16) uint16 {
-	cf := uint16(0)
+	cfIn := uint32(0)
 	if c.eflags&EFLAGS_CF != 0 {
-		cf = 1
+		cfIn = 1
 	}
-	res := uint32(a) + uint32(b) + uint32(cf)
-	r := uint16(res)
-	c.updateArithFlags16(r, a, b+cf, true)
+	sum := uint32(a) + uint32(b) + cfIn
+	r := uint16(sum)
+	c.setCF(sum > 0xFFFF)
+	c.setOF(((a^b)&0x8000) == 0 && ((a^r)&0x8000) != 0)
+	c.setSF((r & 0x8000) != 0)
+	c.setZF(r == 0)
+	c.setAF(((a^b^r)&0x10) != 0)
+	c.setPF(parity8(uint8(r)))
 	return r
 }
 
 // adc32 performs 32-bit addition with carry.
 func (c *CPU) adc32(a, b uint32) uint32 {
-	cf := uint32(0)
+	cfIn := uint64(0)
 	if c.eflags&EFLAGS_CF != 0 {
-		cf = 1
+		cfIn = 1
 	}
-	res := uint64(a) + uint64(b) + uint64(cf)
-	r := uint32(res)
-	c.updateArithFlags32(r, a, b+cf, true)
+	sum := uint64(a) + uint64(b) + cfIn
+	r := uint32(sum)
+	c.setCF(sum > 0xFFFFFFFF)
+	c.setOF(((a^b)&0x80000000) == 0 && ((a^r)&0x80000000) != 0)
+	c.setSF((r & 0x80000000) != 0)
+	c.setZF(r == 0)
+	c.setAF(((a^b^r)&0x10) != 0)
+	c.setPF(parity8(uint8(r)))
 	return r
 }
 
 // sbb8 performs 8-bit subtraction with borrow.
+//
+// CF_out is set when (a < b + cf_in) considered in infinite precision,
+// equivalently when the 9-bit signed subtraction `a - b - cf_in` borrows
+// out of bit 8. The earlier `b + cf_in` shortcut was wrong when b == 0xFF
+// and cf_in == 1 (the sum truncated to 0, so the helper said CF=0 even
+// though a real CPU sets CF=1 here).
 func (c *CPU) sbb8(a, b uint8) uint8 {
-	cf := uint8(0)
+	cfIn := uint16(0)
 	if c.eflags&EFLAGS_CF != 0 {
-		cf = 1
+		cfIn = 1
 	}
-	res := uint16(a) - uint16(b) - uint16(cf)
-	r := uint8(res)
-	c.updateArithFlags8(r, a, b+cf, false)
+	diff := uint16(a) - uint16(b) - cfIn
+	r := uint8(diff)
+	c.setCF(diff > 0xFF) // borrow bit (when uint16 underflows, high bits become set)
+	c.setOF(((a^b)&0x80) != 0 && ((a^r)&0x80) != 0)
+	c.setSF((r & 0x80) != 0)
+	c.setZF(r == 0)
+	c.setAF(((a^b^r)&0x10) != 0)
+	c.setPF(parity8(r))
 	return r
 }
 
 // sbb16 performs 16-bit subtraction with borrow.
 func (c *CPU) sbb16(a, b uint16) uint16 {
-	cf := uint16(0)
+	cfIn := uint32(0)
 	if c.eflags&EFLAGS_CF != 0 {
-		cf = 1
+		cfIn = 1
 	}
-	res := uint32(a) - uint32(b) - uint32(cf)
-	r := uint16(res)
-	c.updateArithFlags16(r, a, b+cf, false)
+	diff := uint32(a) - uint32(b) - cfIn
+	r := uint16(diff)
+	c.setCF(diff > 0xFFFF)
+	c.setOF(((a^b)&0x8000) != 0 && ((a^r)&0x8000) != 0)
+	c.setSF((r & 0x8000) != 0)
+	c.setZF(r == 0)
+	c.setAF(((a^b^r)&0x10) != 0)
+	c.setPF(parity8(uint8(r)))
 	return r
 }
 
 // sbb32 performs 32-bit subtraction with borrow.
 func (c *CPU) sbb32(a, b uint32) uint32 {
-	cf := uint32(0)
+	cfIn := uint64(0)
 	if c.eflags&EFLAGS_CF != 0 {
-		cf = 1
+		cfIn = 1
 	}
-	res := uint64(a) - uint64(b) - uint64(cf)
-	r := uint32(res)
-	c.updateArithFlags32(r, a, b+cf, false)
+	diff := uint64(a) - uint64(b) - cfIn
+	r := uint32(diff)
+	c.setCF(diff > 0xFFFFFFFF)
+	c.setOF(((a^b)&0x80000000) != 0 && ((a^r)&0x80000000) != 0)
+	c.setSF((r & 0x80000000) != 0)
+	c.setZF(r == 0)
+	c.setAF(((a^b^r)&0x10) != 0)
+	c.setPF(parity8(uint8(r)))
 	return r
 }
 

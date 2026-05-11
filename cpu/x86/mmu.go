@@ -25,6 +25,34 @@ var espTrace = func() bool {
 	return v == "1" || v == "jumps" || v == "alien"
 }()
 
+// physWatchLo, physWatchHi: when both are non-zero, every writePhys* in
+// [physWatchLo, physWatchHi) is logged with EIP, value, and size. Configured
+// from TINYEMU_X86_PHYSWATCH=lo:hi (hex).
+var physWatchLo, physWatchHi uint32 = func() (uint32, uint32) {
+	s := os.Getenv("TINYEMU_X86_PHYSWATCH")
+	if s == "" {
+		return 0, 0
+	}
+	var lo, hi uint32
+	if _, err := fmt.Sscanf(s, "%x:%x", &lo, &hi); err != nil {
+		return 0, 0
+	}
+	return lo, hi
+}()
+
+// physWatchHook is invoked from each writePhys* path. If the address is in
+// the configured watch range, log the write.
+func (c *CPU) physWatchHook(addr, val uint32, size int) {
+	if physWatchLo == 0 && physWatchHi == 0 {
+		return
+	}
+	if addr < physWatchLo || addr >= physWatchHi {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[physwatch] cycles=%d EIP=0x%08X write phys=0x%08X size=%d val=0x%08X\n",
+		c.cycles, c.eip, addr, size, val)
+}
+
 // pagingEnabled returns true if paging is enabled (CR0.PG = 1).
 func (c *CPU) pagingEnabled() bool {
 	return c.cr[0]&CR0_PG != 0
@@ -167,6 +195,12 @@ func (c *CPU) translatePAE(lin uint32, write, user, fetch bool) uint32 {
 			c.writePhys64(pdAddr, pde|0x20|writeDirtyMask(write))
 		}
 		phys := uint32(pde&0xFFE00000) | (lin & 0x1FFFFF)
+		c.tlb.insert(lin, phys,
+			pde&0x2 != 0,
+			pde&0x4 != 0,
+			nxe && pde>>63 != 0,
+			pde&0x100 != 0 && c.cr[4]&CR4_PGE != 0,
+		)
 		return phys
 	}
 
@@ -191,6 +225,12 @@ func (c *CPU) translatePAE(lin uint32, write, user, fetch bool) uint32 {
 	}
 
 	phys := uint32(pte&0xFFFFF000) | (lin & 0xFFF)
+	c.tlb.insert(lin, phys,
+		(pde&pte)&0x2 != 0,
+		(pde&pte)&0x4 != 0,
+		nxe && (pde|pte)>>63 != 0,
+		pte&0x100 != 0 && c.cr[4]&CR4_PGE != 0,
+	)
 	return phys
 }
 
@@ -245,6 +285,12 @@ func (c *CPU) translateAddress(lin uint32, write, user, fetch bool) uint32 {
 	if !c.pagingEnabled() {
 		return lin
 	}
+	// TLB fast path. A hit means the cached translation was valid at some
+	// point and we may use it even if the underlying PTE has since been
+	// cleared (real CPUs do exactly this).
+	if phys, hit := c.tlb.lookup(lin, write, user, fetch); hit {
+		return phys
+	}
 	if c.cr[4]&CR4_PAE != 0 {
 		return c.translatePAE(lin, write, user, fetch)
 	}
@@ -263,6 +309,12 @@ func (c *CPU) translateAddress(lin uint32, write, user, fetch bool) uint32 {
 	// 4 MB page (PSE).
 	if pde&0x80 != 0 && c.cr[4]&CR4_PSE != 0 {
 		phys := (pde & 0xFFC00000) | (lin & 0x3FFFFF)
+		c.tlb.insert(lin, phys,
+			pde&0x02 != 0,
+			pde&0x04 != 0,
+			false,
+			pde&0x100 != 0 && c.cr[4]&CR4_PGE != 0,
+		)
 		return phys
 	}
 
@@ -310,5 +362,11 @@ func (c *CPU) translateAddress(lin uint32, write, user, fetch bool) uint32 {
 	}
 
 	phys := (pte &^ uint32(0xFFF)) | (lin & 0xFFF)
+	c.tlb.insert(lin, phys,
+		(pde&pte)&0x02 != 0,
+		(pde&pte)&0x04 != 0,
+		false,
+		pte&0x100 != 0 && c.cr[4]&CR4_PGE != 0,
+	)
 	return phys
 }

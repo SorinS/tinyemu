@@ -269,8 +269,13 @@ type CPU struct {
 	mtrrDefType    uint64
 
 	// PAE state (set when CR4.PAE && CR0.PG).
-	pdpte      [4]uint64
-	paeActive  bool
+	pdpte     [4]uint64
+	paeActive bool
+
+	// Translation Lookaside Buffer. Caches resolved page-table walks so
+	// that software can rely on TLB-survives-after-PTE-clear semantics
+	// (the pattern Linux's free_initmem depends on).
+	tlb tlb
 }
 
 // NewCPU creates a new x86 CPU instance.

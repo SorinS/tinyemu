@@ -1,6 +1,9 @@
 package x86
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 // SegmentDescriptor represents an x86 segment descriptor.
 type SegmentDescriptor struct {
@@ -319,7 +322,10 @@ func (c *CPU) handleGroupO_01() error {
 			}
 			return fmt.Errorf("0F 01 modrm=%02X not implemented", (3<<6)|(7<<3)|mr.rm)
 		}
-		// INVLPG m: we have no TLB, so this is a NOP.
+		// INVLPG m: invalidate the TLB entry for the supplied linear page.
+		if !mr.isReg {
+			c.tlb.invalidatePage(c.segBase[DS] + mr.ea)
+		}
 	default:
 		return fmt.Errorf("0F 01 /%d not implemented", mr.reg)
 	}
@@ -433,14 +439,41 @@ func (c *CPU) handleMovCR(read bool) error {
 	if read {
 		c.SetReg32(int(r32), c.cr[cr])
 	} else {
+		oldCR0 := c.cr[0]
+		oldCR3 := c.cr[3]
+		oldCR4 := c.cr[4]
 		c.cr[cr] = c.GetReg32(int(r32))
-		if cr == 0 {
+		if crDebug && cr != 2 {
+			fmt.Fprintf(os.Stderr, "[cr] EIP=0x%08X CR%d old=0x%08X new=0x%08X\n",
+				c.eip, cr, []uint32{oldCR0, 0, 0, oldCR3, oldCR4}[cr], c.cr[cr])
+		}
+		switch cr {
+		case 0:
 			c.updateCPLFromCR0()
+			// Toggling CR0.PG flushes the entire TLB.
+			if (oldCR0^c.cr[0])&CR0_PG != 0 {
+				c.tlb.flushAll()
+			}
+		case 3:
+			// CR3 reload flushes all non-global TLB entries (matches the
+			// behaviour software relies on for context switches). If the
+			// value is unchanged we still flush — software writes CR3 to
+			// the same value precisely to invoke this flush.
+			c.tlb.flushNonGlobal()
+		case 4:
+			// Toggling CR4.PGE/PSE/PAE flushes the entire TLB. (Linux uses
+			// CR4.PGE-toggle as its __flush_tlb_global primitive.)
+			if (oldCR4^c.cr[4])&(CR4_PGE|CR4_PSE|CR4_PAE) != 0 {
+				c.tlb.flushAll()
+			}
 		}
 		c.updatePAEActive()
 	}
 	return nil
 }
+
+// crDebug enables tracing of CR0/CR3/CR4 writes (env TINYEMU_X86_CR_DEBUG=1).
+var crDebug = os.Getenv("TINYEMU_X86_CR_DEBUG") == "1"
 
 // updatePAEActive reconciles c.paeActive with the current CR0.PG and CR4.PAE
 // state and reloads the PDPTE cache from CR3 whenever PAE is active.

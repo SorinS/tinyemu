@@ -3,6 +3,7 @@ package x86
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // detectDecJnzLoop returns true if the next two bytes after EIP form
@@ -31,6 +32,41 @@ func (c *CPU) readPhys32(addr uint32) uint32 {
 	return v
 }
 
+// eipBreakpoint, if non-zero, prints register state when EIP reaches it.
+// Set via TINYEMU_X86_EIPBP=hex (single address). Cheap "single breakpoint".
+var eipBreakpoint = func() uint32 {
+	s := os.Getenv("TINYEMU_X86_EIPBP")
+	if s == "" {
+		return 0
+	}
+	var v uint32
+	if _, err := fmt.Sscanf(s, "%x", &v); err != nil {
+		return 0
+	}
+	return v
+}()
+
+// eipBreakpoints supports multiple addresses, comma-separated hex.
+// e.g. TINYEMU_X86_EIPBPS=c22a8220,c22a8248,c22a829e
+var eipBreakpoints = func() map[uint32]bool {
+	s := os.Getenv("TINYEMU_X86_EIPBPS")
+	m := map[uint32]bool{}
+	if s == "" {
+		return m
+	}
+	for _, p := range strings.Split(s, ",") {
+		var v uint32
+		if _, err := fmt.Sscanf(p, "%x", &v); err == nil {
+			m[v] = true
+		}
+	}
+	return m
+}()
+
+// ReadPhys32 is the exported wrapper around readPhys32 for diagnostic tools
+// that need to inspect raw physical memory (e.g. page tables).
+func (c *CPU) ReadPhys32(addr uint32) uint32 { return c.readPhys32(addr) }
+
 // readPhys64 reads a qword from the given physical address (no paging). Used
 // by PAE paging-structure walks.
 func (c *CPU) readPhys64(addr uint32) uint64 {
@@ -47,16 +83,19 @@ func (c *CPU) writePhys64(addr uint32, val uint64) {
 
 // writePhys8 writes a byte to the given physical address (no paging).
 func (c *CPU) writePhys8(addr uint32, val uint8) {
+	c.physWatchHook(addr, uint32(val), 1)
 	c.memMap.Write8(uint64(addr&c.a20Mask), val)
 }
 
 // writePhys16 writes a word to the given physical address (no paging).
 func (c *CPU) writePhys16(addr uint32, val uint16) {
+	c.physWatchHook(addr, uint32(val), 2)
 	c.memMap.Write16(uint64(addr&c.a20Mask), val)
 }
 
 // writePhys32 writes a dword to the given physical address (no paging).
 func (c *CPU) writePhys32(addr uint32, val uint32) {
+	c.physWatchHook(addr, val, 4)
 	c.memMap.Write32(uint64(addr&c.a20Mask), val)
 }
 
@@ -165,6 +204,18 @@ func (c *CPU) fetchS32() int32 {
 // Step executes a single x86 instruction.
 func (c *CPU) Step() (err error) {
 	origEIP := c.eip
+	// EIP-breakpoint diagnostics: set TINYEMU_X86_EIPBP=hex (single addr) or
+	// TINYEMU_X86_EIPBPS=hex,hex,... (multiple) to dump register state when
+	// EIP lands on any of those addresses. Used while reverse-engineering
+	// failures against a known vmlinux.
+	if (eipBreakpoint != 0 && c.eip == eipBreakpoint) || eipBreakpoints[c.eip] {
+		fmt.Fprintf(os.Stderr,
+			"[bp] EIP=0x%08X cycles=%d EAX=0x%08X EBX=0x%08X ECX=0x%08X EDX=0x%08X ESI=0x%08X EDI=0x%08X ESP=0x%08X EBP=0x%08X eflags=0x%08X\n",
+			c.eip, c.cycles,
+			c.GetReg32(EAX), c.GetReg32(EBX), c.GetReg32(ECX), c.GetReg32(EDX),
+			c.GetReg32(ESI), c.GetReg32(EDI), c.GetReg32(ESP), c.GetReg32(EBP),
+			c.eflags)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			switch ex := r.(type) {
