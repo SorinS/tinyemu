@@ -156,17 +156,7 @@ const (
 func NewDevice(memMap *mem.PhysMemoryMap, addr uint64, irq *mem.IRQSignal,
 	deviceID uint32, configSpaceSize uint32, recvFunc DeviceRecvFunc) (*Device, error) {
 
-	dev := &Device{
-		MemMap:          memMap,
-		IRQ:             irq,
-		DeviceID:        deviceID,
-		VendorID:        0xffff, // Default vendor ID
-		ConfigSpaceSize: configSpaceSize,
-		DeviceRecv:      recvFunc,
-	}
-
-	// Reset device to initial state
-	dev.Reset()
+	dev := NewDeviceCore(memMap, irq, deviceID, configSpaceSize, recvFunc)
 
 	// Register MMIO region
 	var err error
@@ -180,6 +170,24 @@ func NewDevice(memMap *mem.PhysMemoryMap, addr uint64, irq *mem.IRQSignal,
 	}
 
 	return dev, nil
+}
+
+// NewDeviceCore creates a VirtIO Device without registering an MMIO
+// region. Use this when wiring the device to a non-MMIO transport
+// (e.g. PCI legacy I/O ports via virtio/pci.go).
+func NewDeviceCore(memMap *mem.PhysMemoryMap, irq *mem.IRQSignal,
+	deviceID uint32, configSpaceSize uint32, recvFunc DeviceRecvFunc) *Device {
+
+	dev := &Device{
+		MemMap:          memMap,
+		IRQ:             irq,
+		DeviceID:        deviceID,
+		VendorID:        0xffff, // Default vendor ID
+		ConfigSpaceSize: configSpaceSize,
+		DeviceRecv:      recvFunc,
+	}
+	dev.Reset()
+	return dev
 }
 
 // Reset resets the device to initial state.

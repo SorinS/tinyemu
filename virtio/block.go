@@ -33,26 +33,31 @@ type BlockDevice struct {
 	bs  devices.BlockDevice
 }
 
-// NewBlockDevice creates a new VirtIO block device.
-// The device is registered at the given memory address with the given IRQ.
+// NewBlockDevice creates a new VirtIO block device backed by an MMIO
+// transport. For PCI transport use NewBlockDeviceCore + your own
+// PCI wiring.
 func NewBlockDevice(memMap *mem.PhysMemoryMap, addr uint64, irq *mem.IRQSignal, bs devices.BlockDevice) (*BlockDevice, error) {
-	bd := &BlockDevice{
-		bs: bs,
-	}
+	bd := &BlockDevice{bs: bs}
 
-	// Create VirtIO device with device ID 2 (block) and 8-byte config space
-	// Config space holds the capacity (number of sectors) as a 64-bit value
 	var err error
 	bd.dev, err = NewDevice(memMap, addr, irq, DeviceIDBlock, 8, bd.recvRequest)
 	if err != nil {
 		return nil, err
 	}
-
-	// Set capacity in config space (little-endian 64-bit)
-	sectorCount := bs.GetSectorCount()
-	binary.LittleEndian.PutUint64(bd.dev.ConfigSpace[:], uint64(sectorCount))
-
+	binary.LittleEndian.PutUint64(bd.dev.ConfigSpace[:], uint64(bs.GetSectorCount()))
 	return bd, nil
+}
+
+// NewBlockDeviceCore creates a VirtIO block device whose underlying
+// Device is *not* registered to any transport. The caller is responsible
+// for wiring the returned device's Device() to a transport (e.g. PCI
+// via LegacyTransport). The block backend's request handler and config
+// space (capacity) are set up here.
+func NewBlockDeviceCore(memMap *mem.PhysMemoryMap, irq *mem.IRQSignal, bs devices.BlockDevice) *BlockDevice {
+	bd := &BlockDevice{bs: bs}
+	bd.dev = NewDeviceCore(memMap, irq, DeviceIDBlock, 8, bd.recvRequest)
+	binary.LittleEndian.PutUint64(bd.dev.ConfigSpace[:], uint64(bs.GetSectorCount()))
+	return bd
 }
 
 // Device returns the underlying VirtIO device.

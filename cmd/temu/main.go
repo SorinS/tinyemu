@@ -669,7 +669,16 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 			if cpu.HasPendingInterrupt() {
 				cpu.SetPowerDown(false)
 			} else {
-				// Sleep a bit to avoid busy waiting
+				// For x86 PC boards, fast-forward the PIT while
+				// the CPU is halted so the next timer tick can
+				// wake it. Without this, HLT deadlocks because
+				// the PIT only advances on `CheckTimer` calls,
+				// which are gated on CPU cycles in `pc.go`.
+				if pcBoard, ok := m.(*pc.PC); ok {
+					pcBoard.AdvanceIdle()
+					continue
+				}
+				// Sleep a bit to avoid busy waiting (RISC-V WFI path)
 				time.Sleep(maxSleepTime)
 				continue
 			}

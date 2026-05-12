@@ -56,8 +56,9 @@ type PC struct {
 	console    *virtio.CharacterDevice
 	consoleDev *virtio.Console
 
-	virtioDevices []*virtio.Device
-	virtioCount   int
+	virtioDevices      []*virtio.Device
+	virtioCount        int
+	virtioBlkPCICount  int
 	nextVirtIOIRQ int
 
 	lastTickCycles uint64
@@ -209,11 +210,8 @@ func New(cfg Config) (*PC, error) {
 		func(port uint16, val uint8) { p.io.Write8(port, val) },
 		func(port uint16) uint16 { return p.io.Read16(port) },
 		func(port uint16, val uint16) { p.io.Write16(port, val) },
-		func(port uint16) uint32 { return uint32(p.io.Read16(port)) | (uint32(p.io.Read16(port+2)) << 16) },
-		func(port uint16, val uint32) {
-			p.io.Write16(port, uint16(val))
-			p.io.Write16(port+2, uint16(val>>16))
-		},
+		func(port uint16) uint32 { return p.io.Read32(port) },
+		func(port uint16, val uint32) { p.io.Write32(port, val) },
 	)
 
 	// Wire PIC interrupt delivery to CPU
@@ -295,19 +293,23 @@ func (p *PC) LoadBIOS(biosData []byte, kernelData []byte, initrdData []byte, cmd
 	return nil
 }
 
-// AttachBlockDevice attaches a BlockDevice as the primary IDE master at
-// I/O ports 0x1F0-0x1F7 + 0x3F6, IRQ 14. Currently we support exactly one
-// drive — calling this twice replaces the previously-attached device.
-//
-// The kernel then sees the disk as /dev/sda; pass root=/dev/sda1 on the
-// cmdline to mount it.
+// AttachBlockDevice attaches a BlockDevice to the PC. By default this
+// goes through virtio-blk-pci (kernel sees /dev/vda), bypassing libata
+// entirely — our ATA/IDE controller is functional but Linux 6.6's
+// libata never completes its async PIO probe against it (see
+// project_atapi_probe_stall.md). Set TINYEMU_X86_IDE=1 to force the
+// legacy ATA/IDE path (where the controller is exposed at 0x1F0+ but
+// the kernel may not detect it).
 func (p *PC) AttachBlockDevice(bd devices.BlockDevice) error {
-	if p.ata != nil {
-		_ = p.ata.Close()
+	if os.Getenv("TINYEMU_X86_IDE") == "1" {
+		if p.ata != nil {
+			_ = p.ata.Close()
+		}
+		p.ata = NewATAController(p.pic, bd)
+		p.ata.Register(p.io)
+		return nil
 	}
-	p.ata = NewATAController(p.pic, bd)
-	p.ata.Register(p.io)
-	return nil
+	return p.AttachVirtioBlock(bd)
 }
 
 // AttachCDROM attaches a BlockDevice as an ATAPI CD-ROM on the primary
@@ -321,6 +323,81 @@ func (p *PC) AttachCDROM(bd devices.BlockDevice) error {
 	}
 	p.ata = NewCDROMController(p.pic, bd)
 	p.ata.Register(p.io)
+	return nil
+}
+
+// virtioBlkPCIIOBase is the I/O port base for the first virtio-blk-pci
+// device's legacy register window. Subsequent devices get +64 to stay
+// clear of the previous device's config-space tail.
+const virtioBlkPCIIOBase = 0xC100
+
+// virtioBlkPCIIRQ is the legacy IRQ line we wire virtio-blk-pci's INTx to.
+// IRQ 11 is unused by our PC board's other devices.
+const virtioBlkPCIIRQ = 11
+
+// AttachVirtioBlock attaches a BlockDevice as a virtio-blk-pci device.
+// The kernel sees it as /dev/vda. This bypasses libata entirely and is
+// the recommended way to give the guest a writable disk on x86.
+//
+// PCI slot allocation: (0, 3+n, 0) where n = how many virtio-blk devices
+// are already attached. Each device gets a 64-byte I/O BAR starting at
+// 0xC100+n*64. All devices share PIC IRQ 11 (level-triggered semantics
+// for shared INTx).
+func (p *PC) AttachVirtioBlock(bd devices.BlockDevice) error {
+	slot := uint8(3 + p.virtioBlkPCICount)
+	ioBase := uint16(virtioBlkPCIIOBase + p.virtioBlkPCICount*64)
+
+	// IRQSignal that raises/lowers our PIC IRQ.
+	irq := mem.NewIRQSignal(func(_ any, _ int, level int) {
+		if level != 0 {
+			p.pic.RaiseIRQ(virtioBlkPCIIRQ)
+		} else {
+			p.pic.LowerIRQ(virtioBlkPCIIRQ)
+		}
+	}, nil, virtioBlkPCIIRQ)
+
+	// Build the virtio block backend (sets up recvRequest + config).
+	blk := virtio.NewBlockDeviceCore(p.memMap, irq, bd)
+	transport := virtio.NewLegacyTransport(blk.Device())
+
+	// Register the I/O BAR ports. Each access is forwarded to the
+	// transport, which translates legacy register offsets to Device
+	// state.
+	end := ioBase + uint16(transport.IOSize()) - 1
+	t := transport // capture for closures
+	p.io.RegisterRead(ioBase, end, func(port uint16) uint32 {
+		return t.IORead(port-ioBase, 1)
+	})
+	p.io.RegisterWrite(ioBase, end, func(port uint16, val uint32) {
+		t.IOWrite(port-ioBase, val, 1)
+	})
+	p.io.RegisterRead16(ioBase, end-1, func(port uint16) uint32 {
+		return t.IORead(port-ioBase, 2)
+	})
+	p.io.RegisterWrite16(ioBase, end-1, func(port uint16, val uint32) {
+		t.IOWrite(port-ioBase, val, 2)
+	})
+	p.io.RegisterRead32(ioBase, end-3, func(port uint16) uint32 {
+		return t.IORead(port-ioBase, 4)
+	})
+	p.io.RegisterWrite32(ioBase, end-3, func(port uint16, val uint32) {
+		t.IOWrite(port-ioBase, val, 4)
+	})
+
+	// PCI device — vendor 0x1AF4 (Red Hat), device 0x1001 (virtio-blk
+	// legacy/transitional), subsystem device 0x0002 (block), class
+	// 0x010000 (mass storage controller, sub: SCSI).
+	pciDev := NewPCIDevice("virtio-blk", 0x1AF4, 0x1001, 0x010000, 0x00)
+	pciDev.SetIRQLine(virtioBlkPCIIRQ, 0x01) // INT A
+	pciDev.SetIOBAR(0, uint32(ioBase), 64)   // 64-byte I/O BAR
+	// Subsystem vendor/device per virtio spec §4.1.2.1: subsys-vendor
+	// is don't-care for transitional, subsys-id selects the device type.
+	pciDev.setU16(0x2C, 0x1AF4)
+	pciDev.setU16(0x2E, 0x0002) // 0x0002 = block
+	p.pciHost.Bus().AddDevice(slot, 0, pciDev)
+
+	p.virtioDevices = append(p.virtioDevices, blk.Device())
+	p.virtioBlkPCICount++
 	return nil
 }
 

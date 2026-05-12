@@ -31,7 +31,9 @@ func NewTerminal(allowCtrlC bool) (*Terminal, error) {
 	// Get current termios settings
 	origTermios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
 	if err != nil {
-		return nil, err
+		// Not a TTY (pipe / file / /dev/null). Fall back to a
+		// passthrough Terminal — useful for scripted runs and tests.
+		return newPassthroughTerminal(fd), nil
 	}
 
 	// Get current flags
@@ -115,4 +117,15 @@ func (t *Terminal) GetSize() (width, height int) {
 		return 80, 25 // Default size
 	}
 	return int(ws.Col), int(ws.Row)
+}
+
+// newPassthroughTerminal returns a Terminal that doesn't manipulate
+// termios — used when stdin is a pipe / file / /dev/null. Restore is
+// a no-op.
+func newPassthroughTerminal(fd int) *Terminal {
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if err == nil {
+		unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags|unix.O_NONBLOCK)
+	}
+	return &Terminal{fd: fd, origFlags: flags}
 }

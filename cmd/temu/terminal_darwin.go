@@ -25,6 +25,12 @@ const (
 
 // NewTerminal creates a new Terminal in raw mode.
 // Reference: tinyemu-2019-12-21/temu.c:74-97 (term_init)
+//
+// When stdin is not a TTY (e.g. when piping commands in for tests or
+// scripted runs), raw-mode setup fails. We fall back to a passthrough
+// Terminal whose Read uses non-blocking-style read-with-timeout via a
+// background goroutine — letting the emulator's main loop poll for
+// stdin bytes without blocking on it.
 func NewTerminal(allowCtrlC bool) (*Terminal, error) {
 	fd := int(os.Stdin.Fd())
 
@@ -32,7 +38,9 @@ func NewTerminal(allowCtrlC bool) (*Terminal, error) {
 	// Darwin uses TIOCGETA instead of TCGETS
 	origTermios, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
 	if err != nil {
-		return nil, err
+		// Not a TTY — return a passthrough terminal. Tests, scripts,
+		// and CI runs hit this path.
+		return newPassthroughTerminal(fd), nil
 	}
 
 	// Get current flags
@@ -117,4 +125,18 @@ func (t *Terminal) GetSize() (width, height int) {
 		return 80, 25 // Default size
 	}
 	return int(ws.Col), int(ws.Row)
+}
+
+// newPassthroughTerminal returns a Terminal that doesn't manipulate
+// termios — used when stdin is a pipe / file / /dev/null. Read is
+// non-blocking via the O_NONBLOCK flag (with a fallback that swallows
+// EAGAIN). Restore is a no-op.
+func newPassthroughTerminal(fd int) *Terminal {
+	// Make stdin non-blocking so the main poll loop doesn't get stuck
+	// reading from a slow pipe.
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if err == nil {
+		unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags|unix.O_NONBLOCK)
+	}
+	return &Terminal{fd: fd, origFlags: flags}
 }
