@@ -271,6 +271,7 @@ func run() int {
 	// Open network devices
 	// Reference: tinyemu-2019-12-21/temu.c:783-803
 	var ethDevs []*virtio.EthernetDevice
+	netAttacher, hasNetAttacher := m.(machine.NetAttacher)
 	for _, net := range cfg.Networks {
 		es, err := NewNetDevice(net.Driver)
 		if err != nil {
@@ -278,18 +279,27 @@ func run() int {
 			return 1
 		}
 
-		addr := m.GetVirtIOAddr()
-		irq := m.GetVirtIOIRQ()
-		virtNet, err := virtio.NewNet(m.MemMap(), addr, irq, es)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating VirtIO network device: %v\n", err)
-			return 1
+		if hasNetAttacher {
+			// PC board → virtio-net-pci.
+			if err := netAttacher.AttachNet(es); err != nil {
+				fmt.Fprintf(os.Stderr, "Error attaching net: %v\n", err)
+				return 1
+			}
+		} else {
+			// Fallback: VirtIO-MMIO (RISC-V today).
+			addr := m.GetVirtIOAddr()
+			irq := m.GetVirtIOIRQ()
+			virtNet, err := virtio.NewNet(m.MemMap(), addr, irq, es)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating VirtIO network device: %v\n", err)
+				return 1
+			}
+			if _, err := m.AddVirtIODevice(virtNet.Device()); err != nil {
+				fmt.Fprintf(os.Stderr, "Error adding VirtIO network device: %v\n", err)
+				return 1
+			}
 		}
 		ethDevs = append(ethDevs, es)
-		if _, err := m.AddVirtIODevice(virtNet.Device()); err != nil {
-			fmt.Fprintf(os.Stderr, "Error adding VirtIO network device: %v\n", err)
-			return 1
-		}
 
 		// Set carrier state
 		// Reference: tinyemu-2019-12-21/temu.c:826-828

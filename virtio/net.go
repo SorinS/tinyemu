@@ -90,51 +90,45 @@ type Net struct {
 	headerSize int
 }
 
-// NewNet creates a new VirtIO network device.
+// NewNet creates a new VirtIO network device backed by an MMIO transport.
+// For PCI transport, use NewNetCore + your own PCI wiring.
 //
 // Reference: tinyemu-2019-12-21/virtio.c:1235-1258 (virtio_net_init)
 func NewNet(memMap *mem.PhysMemoryMap, addr uint64, irq *mem.IRQSignal,
 	es *EthernetDevice) (*Net, error) {
 
-	n := &Net{
-		es:         es,
-		headerSize: NetHeaderSize,
-	}
-
-	// Create the underlying VirtIO device
-	// virtio_init(&s->common, bus, 1, 6 + 2, virtio_net_recv_request);
-	// Device ID 1 = network, config size = 8 (6 MAC + 2 status)
+	n := &Net{es: es, headerSize: NetHeaderSize}
 	var err error
 	n.dev, err = NewDevice(memMap, addr, irq, DeviceIDNet, NetConfigSpaceSize, n.recvRequest)
 	if err != nil {
 		return nil, err
 	}
+	n.setup(es)
+	return n, nil
+}
 
-	// Set device features: VIRTIO_NET_F_MAC
-	// Reference: tinyemu-2019-12-21/virtio.c:1243
+// NewNetCore creates a VirtIO net device whose underlying Device is not
+// registered to any transport. The caller wires the returned device's
+// Device() to a transport (e.g. PCI via LegacyTransport).
+func NewNetCore(memMap *mem.PhysMemoryMap, irq *mem.IRQSignal, es *EthernetDevice) *Net {
+	n := &Net{es: es, headerSize: NetHeaderSize}
+	n.dev = NewDeviceCore(memMap, irq, DeviceIDNet, NetConfigSpaceSize, n.recvRequest)
+	n.setup(es)
+	return n
+}
+
+// setup configures device features, the manual-RX queue, MAC, status,
+// and EthernetDevice callbacks. Shared between MMIO and PCI constructors.
+func (n *Net) setup(es *EthernetDevice) {
 	n.dev.SetFeatures(NetFeatureMAC)
-
-	// RX queue (queue 0) uses manual receive - we push packets to it explicitly
-	// Reference: tinyemu-2019-12-21/virtio.c:1244
 	n.dev.Queues[NetQueueRX].ManualRecv = true
-
-	// Copy MAC address to config space
-	// Reference: tinyemu-2019-12-21/virtio.c:1246
 	copy(n.dev.ConfigSpace[NetConfigMAC:], es.MACAddr[:])
-
-	// Initialize status to 0
-	// Reference: tinyemu-2019-12-21/virtio.c:1248-1249
 	n.dev.ConfigSpace[NetConfigStatus] = 0
 	n.dev.ConfigSpace[NetConfigStatus+1] = 0
-
-	// Set up callbacks on the EthernetDevice
-	// Reference: tinyemu-2019-12-21/virtio.c:1253-1256
 	es.DeviceOpaque = n
 	es.DeviceCanWritePacket = n.CanWritePacket
 	es.DeviceWritePacket = n.WritePacket
 	es.DeviceSetCarrier = n.SetCarrier
-
-	return n, nil
 }
 
 // Device returns the underlying VirtIO device.

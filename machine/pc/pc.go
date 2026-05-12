@@ -59,6 +59,7 @@ type PC struct {
 	virtioDevices      []*virtio.Device
 	virtioCount        int
 	virtioBlkPCICount  int
+	virtioNetPCICount  int
 	nextVirtIOIRQ int
 
 	lastTickCycles uint64
@@ -335,6 +336,13 @@ const virtioBlkPCIIOBase = 0xC100
 // IRQ 11 is unused by our PC board's other devices.
 const virtioBlkPCIIRQ = 11
 
+// virtioNetPCIIOBase is the I/O port base for virtio-net-pci's legacy
+// register window. Disjoint from virtio-blk so multiple devices coexist.
+const virtioNetPCIIOBase = 0xC200
+
+// virtioNetPCIIRQ is the legacy IRQ line for virtio-net-pci INTx.
+const virtioNetPCIIRQ = 10
+
 // AttachVirtioBlock attaches a BlockDevice as a virtio-blk-pci device.
 // The kernel sees it as /dev/vda. This bypasses libata entirely and is
 // the recommended way to give the guest a writable disk on x86.
@@ -398,6 +406,60 @@ func (p *PC) AttachVirtioBlock(bd devices.BlockDevice) error {
 
 	p.virtioDevices = append(p.virtioDevices, blk.Device())
 	p.virtioBlkPCICount++
+	return nil
+}
+
+// AttachNet attaches an EthernetDevice as a virtio-net-pci device,
+// satisfying the machine.NetAttacher interface. The kernel sees the NIC
+// as eth0. PCI slot (0, 4+n, 0); IRQ 10; I/O BAR at 0xC200+n*64.
+// Multiple devices can be attached by calling this repeatedly.
+func (p *PC) AttachNet(es *virtio.EthernetDevice) error {
+	slot := uint8(4 + p.virtioNetPCICount)
+	ioBase := uint16(virtioNetPCIIOBase + p.virtioNetPCICount*64)
+
+	irq := mem.NewIRQSignal(func(_ any, _ int, level int) {
+		if level != 0 {
+			p.pic.RaiseIRQ(virtioNetPCIIRQ)
+		} else {
+			p.pic.LowerIRQ(virtioNetPCIIRQ)
+		}
+	}, nil, virtioNetPCIIRQ)
+
+	net := virtio.NewNetCore(p.memMap, irq, es)
+	transport := virtio.NewLegacyTransport(net.Device())
+
+	end := ioBase + uint16(transport.IOSize()) - 1
+	t := transport
+	p.io.RegisterRead(ioBase, end, func(port uint16) uint32 {
+		return t.IORead(port-ioBase, 1)
+	})
+	p.io.RegisterWrite(ioBase, end, func(port uint16, val uint32) {
+		t.IOWrite(port-ioBase, val, 1)
+	})
+	p.io.RegisterRead16(ioBase, end-1, func(port uint16) uint32 {
+		return t.IORead(port-ioBase, 2)
+	})
+	p.io.RegisterWrite16(ioBase, end-1, func(port uint16, val uint32) {
+		t.IOWrite(port-ioBase, val, 2)
+	})
+	p.io.RegisterRead32(ioBase, end-3, func(port uint16) uint32 {
+		return t.IORead(port-ioBase, 4)
+	})
+	p.io.RegisterWrite32(ioBase, end-3, func(port uint16, val uint32) {
+		t.IOWrite(port-ioBase, val, 4)
+	})
+
+	// PCI device: vendor 0x1AF4, transitional net device 0x1000,
+	// subsystem 0x0001 (net), class 0x020000 (network controller).
+	pciDev := NewPCIDevice("virtio-net", 0x1AF4, 0x1000, 0x020000, 0x00)
+	pciDev.SetIRQLine(virtioNetPCIIRQ, 0x01)
+	pciDev.SetIOBAR(0, uint32(ioBase), 64)
+	pciDev.setU16(0x2C, 0x1AF4) // subsys vendor
+	pciDev.setU16(0x2E, 0x0001) // subsys device = net
+	p.pciHost.Bus().AddDevice(slot, 0, pciDev)
+
+	p.virtioDevices = append(p.virtioDevices, net.Device())
+	p.virtioNetPCICount++
 	return nil
 }
 

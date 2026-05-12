@@ -28,6 +28,14 @@ type CDROMAttacher interface {
 	AttachCDROM(bd devices.BlockDevice) error
 }
 
+// NetAttacher is implemented by boards that attach an EthernetDevice to
+// the guest via native means (virtio-net-pci on PC). Boards that only
+// support VirtIO-MMIO simply don't implement this; cmd/temu falls back
+// to AddVirtIODevice in that case.
+type NetAttacher interface {
+	AttachNet(es *virtio.EthernetDevice) error
+}
+
 // Board is the generic machine interface implemented by all
 // architecture-specific board implementations (RISC-V virt, PC, etc.).
 type Board interface {
