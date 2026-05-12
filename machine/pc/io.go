@@ -15,9 +15,18 @@ type IOReadFunc func(port uint16) uint32
 type IOWriteFunc func(port uint16, val uint32)
 
 // IOPortDispatcher manages the x86 I/O port space (64K ports).
+//
+// Most devices only need 8-bit register access (PIC, PIT, UART, …). A few
+// devices — ATA's data port at 0x1F0 in particular — need to behave
+// differently for 16-bit accesses, because a single `inw` should advance the
+// device's internal byte position by 2. For those cases a device may
+// register a width-specific handler via RegisterRead16 / RegisterWrite16,
+// which Read16 / Write16 prefer over the 8-bit handler.
 type IOPortDispatcher struct {
-	readHandlers  [65536]IOReadFunc
-	writeHandlers [65536]IOWriteFunc
+	readHandlers    [65536]IOReadFunc
+	writeHandlers   [65536]IOWriteFunc
+	readHandlers16  [65536]IOReadFunc  // optional, 16-bit-only
+	writeHandlers16 [65536]IOWriteFunc // optional, 16-bit-only
 }
 
 // NewIOPortDispatcher creates a new I/O port dispatcher.
@@ -39,6 +48,22 @@ func (io *IOPortDispatcher) RegisterWrite(start, end uint16, fn IOWriteFunc) {
 	}
 }
 
+// RegisterRead16 registers a 16-bit-specific read handler. Read16 prefers
+// this over the 8-bit handler when set; Read8 ignores it.
+func (io *IOPortDispatcher) RegisterRead16(start, end uint16, fn IOReadFunc) {
+	for i := start; i <= end && i >= start; i++ {
+		io.readHandlers16[i] = fn
+	}
+}
+
+// RegisterWrite16 registers a 16-bit-specific write handler. Write16 prefers
+// this over the 8-bit handler when set; Write8 ignores it.
+func (io *IOPortDispatcher) RegisterWrite16(start, end uint16, fn IOWriteFunc) {
+	for i := start; i <= end && i >= start; i++ {
+		io.writeHandlers16[i] = fn
+	}
+}
+
 // Read8 reads an 8-bit value from a port.
 func (io *IOPortDispatcher) Read8(port uint16) uint8 {
 	var val uint8 = 0xFF
@@ -54,7 +79,9 @@ func (io *IOPortDispatcher) Read8(port uint16) uint8 {
 // Read16 reads a 16-bit value from a port.
 func (io *IOPortDispatcher) Read16(port uint16) uint16 {
 	var val uint16 = 0xFFFF
-	if fn := io.readHandlers[port]; fn != nil {
+	if fn := io.readHandlers16[port]; fn != nil {
+		val = uint16(fn(port))
+	} else if fn := io.readHandlers[port]; fn != nil {
 		val = uint16(fn(port))
 	}
 	if ioDebug {
@@ -78,7 +105,9 @@ func (io *IOPortDispatcher) Write16(port uint16, val uint16) {
 	if ioDebug {
 		fmt.Fprintf(os.Stderr, "[io] outw %04x <= %04x\n", port, val)
 	}
-	if fn := io.writeHandlers[port]; fn != nil {
+	if fn := io.writeHandlers16[port]; fn != nil {
+		fn(port, uint32(val))
+	} else if fn := io.writeHandlers[port]; fn != nil {
 		fn(port, uint32(val))
 	}
 }

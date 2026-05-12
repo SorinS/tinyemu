@@ -8,6 +8,7 @@ import (
 
 	"github.com/jtolio/tinyemu-go/cpu"
 	"github.com/jtolio/tinyemu-go/cpu/x86"
+	"github.com/jtolio/tinyemu-go/devices"
 	"github.com/jtolio/tinyemu-go/mem"
 	"github.com/jtolio/tinyemu-go/virtio"
 )
@@ -45,6 +46,9 @@ type PC struct {
 	rtc        *CMOSRTC
 	uart       *UART16550
 	kbd        *Keyboard8042
+	ata        *ATAController
+	pciHost    *PCIHost
+	vga        *VGA
 	ramSize    uint64
 	lowRAM     *mem.PhysMemoryRange
 	biosROM    *mem.PhysMemoryRange
@@ -101,8 +105,10 @@ func New(cfg Config) (*PC, error) {
 		return nil, fmt.Errorf("failed to register high BIOS: %w", err)
 	}
 
-	// Create and register devices
-	p.pic = NewPIC8259(p.cpu, 0x20)
+	// Create and register devices. The PC has a master/slave PIC pair:
+	// master at 0x20-0x21 with IRQs 0-7 (timer, kbd, serial, ...), slave
+	// at 0xA0-0xA1 with IRQs 8-15 (RTC, mouse, IDE primary).
+	p.pic = NewPIC8259Cascaded(p.cpu, 0x20, 0xA0)
 	p.pic.Register(p.io)
 
 	p.pit = NewPIT8254(p.pic)
@@ -118,6 +124,57 @@ func New(cfg Config) (*PC, error) {
 
 	p.kbd = NewKeyboard8042()
 	p.kbd.Register(p.io)
+
+	// PCI host bridge. Exposes the 0xCF8 / 0xCFC config-space mechanism.
+	// Devices placed on bus 0 are discoverable by Linux's standard
+	// PCI probe (no more "PCI: Fatal: No config space access function").
+	p.pciHost = NewPCIHost()
+	p.pciHost.Register(p.io)
+
+	// (0,0,0): host bridge. Class 0x060000 = "host bridge"; Intel 440FX
+	// chipset is what QEMU advertises and Linux knows by name.
+	hostBridge := NewPCIDevice("440FX Host Bridge", 0x8086, 0x1237, 0x060000, 0x00)
+	p.pciHost.Bus().AddDevice(0, 0, hostBridge)
+
+	// (0,1,0): ISA bridge (PIIX3). Class 0x060100 = "ISA bridge". Marked
+	// as multi-function (header type bit 7) so Linux scans function 1
+	// (IDE) too.
+	isaBridge := NewPCIDevice("PIIX3 ISA Bridge", 0x8086, 0x7000, 0x060100, 0x80)
+	p.pciHost.Bus().AddDevice(1, 0, isaBridge)
+
+	// (0,1,1): IDE controller. Class 0x010180 = "IDE, ProgIF 0x80
+	// (legacy ports, bus-master capable)". Reports IRQ 14, INT A. The
+	// kernel's IDE/ata_piix driver claims this; the actual port-I/O at
+	// 0x1F0 is handled by the existing ATAController (the PCI device is
+	// just an advertisement so the kernel discovers the controller via
+	// the PCI bus walk).
+	ideDev := NewPCIDevice("PIIX3 IDE", 0x8086, 0x7010, 0x010180, 0x00)
+	ideDev.SetIRQLine(0x0E, 0x01) // IRQ 14, INT A
+	// BMDMA: BAR4 advertised as 16-byte I/O region at 0xC000. On a real
+	// PIIX3 this is the bus-master DMA register file (8 bytes for primary,
+	// 8 for secondary). We don't model DMA; the ports read as zero, writes
+	// are ignored. SetIOBAR implements PCI BAR-sizing so the kernel sees a
+	// 16-byte region (without sizing the kernel logs "BMDMA: BAR4 is zero,
+	// falling back to PIO" and may not dispatch the async ATAPI probe).
+	ideDev.SetIOBAR(4, 0xC000, 16)
+	p.io.RegisterRead(0xC000, 0xC00F, func(uint16) uint32 { return 0 })
+	p.io.RegisterWrite(0xC000, 0xC00F, func(uint16, uint32) {})
+	p.pciHost.Bus().AddDevice(1, 1, ideDev)
+
+	// Stub the secondary IDE channel (0x170-0x177 + 0x376) — see
+	// RegisterEmptySecondary docs.
+	RegisterEmptySecondary(p.io)
+
+	// VGA. Owns the 128 KB framebuffer aperture at 0xA0000-0xBFFFF and
+	// the legacy register ports (0x3C0-0x3CF, 0x3D4-0x3DF). When the
+	// environment variable TINYEMU_X86_VGA_RENDER=1 is set, the
+	// 80×25 text-mode buffer is rendered to stderr as ANSI escape
+	// sequences on each cursor-position update — letting the developer
+	// watch what the VGA console would display on a real monitor.
+	p.vga = NewVGA()
+	if err := p.vga.Register(p.io, p.memMap); err != nil {
+		return nil, fmt.Errorf("register VGA: %w", err)
+	}
 
 	// System Control Port B (0x61): bit 0 enables PIT channel 2 gate; bit 1
 	// is the speaker data line. Linux's quick_pit_calibrate masks this port,
@@ -238,6 +295,35 @@ func (p *PC) LoadBIOS(biosData []byte, kernelData []byte, initrdData []byte, cmd
 	return nil
 }
 
+// AttachBlockDevice attaches a BlockDevice as the primary IDE master at
+// I/O ports 0x1F0-0x1F7 + 0x3F6, IRQ 14. Currently we support exactly one
+// drive — calling this twice replaces the previously-attached device.
+//
+// The kernel then sees the disk as /dev/sda; pass root=/dev/sda1 on the
+// cmdline to mount it.
+func (p *PC) AttachBlockDevice(bd devices.BlockDevice) error {
+	if p.ata != nil {
+		_ = p.ata.Close()
+	}
+	p.ata = NewATAController(p.pic, bd)
+	p.ata.Register(p.io)
+	return nil
+}
+
+// AttachCDROM attaches a BlockDevice as an ATAPI CD-ROM on the primary
+// IDE channel. The kernel sees it as /dev/sr0; mount with -t iso9660.
+// Replaces any previously-attached disk or CD-ROM on the channel
+// (we only model the master position; secondary channel + slave drives
+// would require additional ATAController instances).
+func (p *PC) AttachCDROM(bd devices.BlockDevice) error {
+	if p.ata != nil {
+		_ = p.ata.Close()
+	}
+	p.ata = NewCDROMController(p.pic, bd)
+	p.ata.Register(p.io)
+	return nil
+}
+
 func (p *PC) GetCPU() cpu.Core {
 	return p.cpu
 }
@@ -247,6 +333,9 @@ func (p *PC) MemMap() *mem.PhysMemoryMap {
 }
 
 func (p *PC) Close() {
+	if p.ata != nil {
+		_ = p.ata.Close()
+	}
 	p.memMap.Close()
 }
 
@@ -263,6 +352,18 @@ func (p *PC) CheckTimer() {
 	delta := cycles - p.lastTickCycles
 	p.lastTickCycles = cycles
 	p.pit.Tick(delta)
+}
+
+// AdvanceIdle is called when the CPU is in HLT and no interrupt is pending.
+// It "fast-forwards" virtual time by advancing the PIT enough cycles to
+// fire its next scheduled tick — which then raises IRQ 0 and wakes the
+// CPU from HLT. Without this, a tickless-idle kernel (NOHZ) that HLTs
+// after issuing nanosleep() would block forever because the CPU's
+// cycle counter doesn't advance while halted.
+func (p *PC) AdvanceIdle() {
+	const idleStep uint64 = 10000 // enough cycles to cover a PIT tick boundary
+	p.cpu.AddCycles(idleStep)
+	p.CheckTimer()
 }
 
 func (p *PC) PollDevices() {

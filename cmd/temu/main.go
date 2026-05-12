@@ -64,13 +64,15 @@ var (
 	debugMode   = flag.Bool("debug", false, "enable debug output")
 
 	// Repeatable flags
-	driveFiles stringSlice
-	p9Shares   stringSlice
+	driveFiles  stringSlice
+	cdromFiles  stringSlice
+	p9Shares    stringSlice
 )
 
 func init() {
 	// Register repeatable flags
 	flag.Var(&driveFiles, "drive", "block device image file (can be repeated)")
+	flag.Var(&cdromFiles, "cdrom", "ISO image attached as an ATAPI CD-ROM (PC only)")
 	flag.Var(&p9Shares, "9p", "9P share as path:tag (e.g., /home/user:host, can be repeated)")
 }
 
@@ -171,9 +173,14 @@ func run() int {
 	}
 	defer m.Close()
 
-	// Open block devices (drives)
+	// Open block devices (drives). Each is attached to the machine via
+	// whichever native interface the board supports. Boards that
+	// implement machine.BlockDeviceAttacher (PC → ATA, ARM-virt-future →
+	// virtio-blk-mmio) get the device handed to them directly; legacy
+	// boards (RISC-V) fall through to the generic VirtIO-MMIO path.
 	// Reference: tinyemu-2019-12-21/temu.c:731-749
 	var blockDevs []devices.BlockDevice
+	attacher, hasAttacher := m.(machine.BlockDeviceAttacher)
 	for _, drive := range cfg.Drives {
 		bd, err := openBlockDevice(drive.File, driveMode)
 		if err != nil {
@@ -182,7 +189,15 @@ func run() int {
 		}
 		blockDevs = append(blockDevs, bd)
 
-		// Create VirtIO block device
+		if hasAttacher {
+			if err := attacher.AttachBlockDevice(bd); err != nil {
+				fmt.Fprintf(os.Stderr, "Error attaching drive %s: %v\n", drive.File, err)
+				return 1
+			}
+			continue
+		}
+
+		// Fallback: VirtIO-MMIO (RISC-V today).
 		addr := m.GetVirtIOAddr()
 		irq := m.GetVirtIOIRQ()
 		virtBlock, err := virtio.NewBlockDevice(m.MemMap(), addr, irq, bd)
@@ -200,6 +215,29 @@ func run() int {
 			bd.Close()
 		}
 	}()
+
+	// CD-ROMs (-cdrom). Routed to the board's CDROMAttacher; the PC
+	// implementation creates an ATAPI controller. Each -cdrom flag adds
+	// one image, but currently we only model the IDE primary master
+	// slot — so a second -cdrom replaces the first.
+	cdromAttacher, hasCDROMAttacher := m.(machine.CDROMAttacher)
+	for _, path := range cdromFiles {
+		if !hasCDROMAttacher {
+			fmt.Fprintf(os.Stderr, "-cdrom is not supported on this machine type (%s)\n", *machineType)
+			return 1
+		}
+		// CD-ROMs are read-only regardless of -rw flag.
+		bd, err := openBlockDevice(path, devices.ModeReadOnly)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening CD-ROM %s: %v\n", path, err)
+			return 1
+		}
+		blockDevs = append(blockDevs, bd)
+		if err := cdromAttacher.AttachCDROM(bd); err != nil {
+			fmt.Fprintf(os.Stderr, "Error attaching CD-ROM %s: %v\n", path, err)
+			return 1
+		}
+	}
 
 	// Open filesystems (9P)
 	// Reference: tinyemu-2019-12-21/temu.c:751-781

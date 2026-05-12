@@ -549,6 +549,16 @@ func (c *CPU) GetCycles() uint64 {
 	return c.cycles
 }
 
+// AddCycles advances the virtual cycle counter without executing any
+// instructions. Used by the host loop when the CPU is in HLT idle —
+// real hardware's cycle counter (and the PIT counter via cycle-derived
+// time) keeps advancing during HLT; our emulator stops counting cycles
+// when nothing is executing, so we need an explicit way to push virtual
+// time forward.
+func (c *CPU) AddCycles(n uint64) {
+	c.cycles += n
+}
+
 func (c *CPU) SetPowerDown(flag bool) {
 	c.powerDown = flag
 }

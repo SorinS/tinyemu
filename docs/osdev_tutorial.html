@@ -1,0 +1,2133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OS Development — From Bytes to Filesystems</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=JetBrains+Mono:wght@400;500&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:           #0e1117;
+  --bg-raised:    #141820;
+  --bg-panel:     #1a2030;
+  --bg-hover:     #1f2838;
+  --border:       #2a3448;
+  --border-soft:  #1e2a3a;
+  --text:         #d8d0c4;
+  --text-dim:     #7a8499;
+  --text-faint:   #3d4a5c;
+
+  --amber:        #e8a020;
+  --amber-dim:    #a06010;
+  --green:        #4daa6a;
+  --blue:         #5a9fd4;
+  --rose:         #c46060;
+  --violet:       #8b78d0;
+  --teal:         #4dcfb0;
+
+  --p1:           #e8a020;
+  --p2:           #4daa6a;
+  --p3:           #5a9fd4;
+  --p4:           #8b78d0;
+  --p5:           #c46060;
+  --p6:           #4dcfb0;
+
+  --radius:       6px;
+  --sidebar-w:    300px;
+  --font-serif:   'Libre Baskerville', Georgia, serif;
+  --font-display: 'Crimson Pro', Georgia, serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-behavior: smooth; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: var(--font-serif); font-size: 1rem; line-height: 1.75;
+  min-height: 100vh; display: flex; overflow: hidden;
+}
+
+#sidebar {
+  width: var(--sidebar-w); min-width: var(--sidebar-w);
+  background: var(--bg-raised); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  transition: transform 0.3s ease; z-index: 100;
+}
+#sidebar-header { padding: 24px 20px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#sidebar-header h1 {
+  font-family: var(--font-display); font-size: 1.1rem; font-weight: 600;
+  color: var(--amber); letter-spacing: 0.02em; line-height: 1.3;
+}
+#sidebar-header p {
+  font-family: var(--font-mono); font-size: 0.65rem; color: var(--text-dim);
+  margin-top: 4px; letter-spacing: 0.05em; text-transform: uppercase;
+}
+#progress-bar-wrap { padding: 12px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#progress-label {
+  font-family: var(--font-mono); font-size: 0.65rem; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  margin-bottom: 6px; display: flex; justify-content: space-between;
+}
+#progress-track { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+#progress-fill { height: 100%; background: var(--amber); transition: width 0.4s ease; border-radius: 2px; }
+
+#search-wrap { padding: 10px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#search {
+  width: 100%; background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text);
+  font-family: var(--font-mono); font-size: 0.72rem;
+  padding: 7px 10px; outline: none; transition: border-color 0.2s;
+}
+#search::placeholder { color: var(--text-faint); }
+#search:focus { border-color: var(--amber-dim); }
+
+#lesson-nav { overflow-y: auto; flex: 1; padding: 8px 0 20px; }
+#lesson-nav::-webkit-scrollbar { width: 4px; }
+#lesson-nav::-webkit-scrollbar-track { background: transparent; }
+#lesson-nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.phase-group { margin-bottom: 4px; }
+.phase-header {
+  padding: 10px 20px 6px; font-family: var(--font-mono); font-size: 0.6rem;
+  text-transform: uppercase; letter-spacing: 0.1em; font-weight: 500;
+  display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+}
+.phase-header .phase-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.phase-header .phase-toggle { margin-left: auto; color: var(--text-faint); font-size: 0.7rem; transition: transform 0.2s; }
+.phase-header.collapsed .phase-toggle { transform: rotate(-90deg); }
+.phase-lessons { overflow: hidden; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 20px 7px 28px; cursor: pointer;
+  transition: background 0.15s; border-left: 2px solid transparent;
+  font-size: 0.78rem; color: var(--text-dim); line-height: 1.3;
+}
+.nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.nav-item.active { color: var(--text); background: var(--bg-panel); }
+.nav-item.done .nav-check { opacity: 1; }
+.nav-check {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 1.5px solid var(--border); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.5rem; opacity: 0.4; transition: all 0.2s;
+}
+.nav-item.done .nav-check {
+  opacity: 1; background: var(--green); border-color: var(--green); color: white;
+}
+.nav-num { font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-faint); min-width: 20px; }
+.nav-stub { color: var(--text-faint); font-style: italic; }
+
+#main { flex: 1; overflow-y: auto; height: 100vh; display: flex; flex-direction: column; }
+#main::-webkit-scrollbar { width: 6px; }
+#main::-webkit-scrollbar-track { background: transparent; }
+#main::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+#topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 48px; border-bottom: 1px solid var(--border);
+  background: var(--bg); flex-shrink: 0; position: sticky; top: 0; z-index: 10;
+}
+#topbar-phase { font-family: var(--font-mono); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); }
+#topbar-nav { display: flex; gap: 8px; }
+.nav-btn {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  color: var(--text-dim); padding: 5px 14px; border-radius: var(--radius);
+  cursor: pointer; font-family: var(--font-mono); font-size: 0.7rem;
+  transition: all 0.15s;
+}
+.nav-btn:hover { background: var(--bg-hover); color: var(--text); border-color: var(--text-dim); }
+.nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+#lesson-content {
+  max-width: 820px; width: 100%; margin: 0 auto;
+  padding: 52px 48px 80px; flex: 1; animation: fadeSlide 0.3s ease;
+}
+@keyframes fadeSlide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.lesson-eyebrow {
+  font-family: var(--font-mono); font-size: 0.65rem;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  margin-bottom: 14px; display: flex; align-items: center; gap: 12px;
+}
+.lesson-eyebrow .phase-badge { padding: 2px 8px; border-radius: 3px; font-size: 0.6rem; }
+.lesson-eyebrow .stub-badge {
+  padding: 2px 8px; border-radius: 3px; font-size: 0.6rem;
+  background: #1e1400; color: var(--amber-dim);
+}
+.lesson-number { color: var(--text-faint); }
+.lesson-title {
+  font-family: var(--font-display); font-size: 2.6rem; font-weight: 600;
+  line-height: 1.1; color: #eee; margin-bottom: 8px; letter-spacing: -0.01em;
+}
+.lesson-subtitle {
+  font-family: var(--font-display); font-size: 1.2rem; font-style: italic;
+  color: var(--text-dim); margin-bottom: 36px; line-height: 1.4;
+}
+.lesson-divider { height: 1px; background: linear-gradient(to right, var(--border), transparent); margin-bottom: 36px; }
+
+.lesson-body h2 {
+  font-family: var(--font-display); font-size: 1.5rem; font-weight: 600;
+  color: #ddd; margin: 40px 0 14px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border-soft);
+}
+.lesson-body h3 {
+  font-family: var(--font-display); font-size: 1.15rem; font-weight: 600;
+  color: var(--amber); margin: 28px 0 10px; font-style: italic;
+}
+.lesson-body p { margin-bottom: 16px; color: var(--text); }
+.lesson-body p:last-child { margin-bottom: 0; }
+.lesson-body ul, .lesson-body ol { margin: 8px 0 16px 22px; color: var(--text); }
+.lesson-body li { margin-bottom: 6px; }
+
+.lesson-body code {
+  font-family: var(--font-mono); font-size: 0.82em;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 5px; color: #a8d0f0;
+}
+
+pre {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-left: 3px solid var(--amber-dim); border-radius: var(--radius);
+  padding: 20px 22px; overflow-x: auto; margin: 20px 0;
+  position: relative; font-family: var(--font-mono);
+  font-size: 0.82rem; line-height: 1.65;
+}
+pre::-webkit-scrollbar { height: 4px; }
+pre::-webkit-scrollbar-track { background: transparent; }
+pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+pre .lang-tag {
+  position: absolute; top: 8px; right: 10px;
+  font-size: 0.58rem; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-faint);
+}
+
+.kw  { color: #c792ea; }
+.rg  { color: #82aaff; }
+.fn  { color: #82cfda; }
+.cm  { color: #546e7a; font-style: italic; }
+.st  { color: #c3e88d; }
+.nm  { color: #f78c6c; }
+.op  { color: #89ddff; }
+.dc  { color: #ffcb6b; }
+.ct  { color: #ff5572; }
+.ty  { color: #82aaff; }
+
+.box {
+  border-radius: var(--radius); padding: 16px 20px; margin: 24px 0;
+  border-left: 3px solid; font-size: 0.92rem;
+}
+.box-note   { background: #0d1e2e; border-color: var(--blue);   color: #a8c8e8; }
+.box-think  { background: #1a1400; border-color: var(--amber);  color: #c8a060; }
+.box-key    { background: #0d1e18; border-color: var(--green);  color: #90c8a0; }
+.box-warn   { background: #1e100d; border-color: var(--rose);   color: #c88080; }
+.box-stub   { background: #1a1408; border-color: var(--amber-dim); color: #c8a060; font-style: italic; }
+.box strong { font-weight: 700; display: block; margin-bottom: 4px; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.corr-table {
+  width: 100%; border-collapse: collapse;
+  margin: 20px 0; font-size: 0.88rem;
+}
+.corr-table th {
+  text-align: left; font-family: var(--font-mono);
+  font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-dim); border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+}
+.corr-table td { padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+.corr-table td:first-child { color: var(--blue); font-family: var(--font-mono); font-size: 0.8rem; }
+.corr-table td:last-child  { color: var(--green); font-family: var(--font-mono); font-size: 0.8rem; }
+.corr-table td:nth-child(2){ color: var(--text-dim); }
+.corr-table tr:last-child td { border-bottom: none; }
+
+.exercises { margin-top: 40px; border-top: 1px solid var(--border); padding-top: 28px; }
+.exercises h2 {
+  font-family: var(--font-display); font-size: 1.3rem; color: var(--amber);
+  margin-bottom: 18px; border: none !important; padding: 0 !important;
+}
+.exercise {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 20px; margin-bottom: 14px;
+  position: relative; transition: border-color 0.2s;
+}
+.exercise:hover { border-color: var(--amber-dim); }
+.exercise-num {
+  font-family: var(--font-mono); font-size: 0.65rem; color: var(--amber);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
+}
+.exercise p { font-size: 0.9rem; margin-bottom: 0; }
+
+.complete-wrap { margin-top: 44px; display: flex; align-items: center; gap: 14px; }
+.btn-complete {
+  background: transparent; border: 1.5px solid var(--border); color: var(--text-dim);
+  padding: 10px 24px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem;
+  text-transform: uppercase; letter-spacing: 0.06em; transition: all 0.2s;
+}
+.btn-complete:hover { border-color: var(--green); color: var(--green); }
+.btn-complete.done  { border-color: var(--green); color: var(--green); background: #0d1e18; }
+.btn-next {
+  background: var(--amber); border: none; color: var(--bg);
+  padding: 10px 24px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.06em; transition: all 0.2s;
+}
+.btn-next:hover { background: #f0b848; }
+
+#welcome { max-width: 720px; margin: 60px auto; padding: 0 48px; animation: fadeSlide 0.4s ease; }
+#welcome h1 {
+  font-family: var(--font-display); font-size: 3.2rem; font-weight: 300;
+  line-height: 1.1; color: #eee; margin-bottom: 6px;
+}
+#welcome h1 em { color: var(--amber); font-style: italic; }
+#welcome .tagline {
+  font-family: var(--font-display); font-size: 1.2rem; font-style: italic;
+  color: var(--text-dim); margin-bottom: 36px;
+}
+#welcome .welcome-body { font-size: 0.95rem; }
+#welcome .welcome-body p { margin-bottom: 16px; }
+.phase-overview { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 28px 0; }
+.phase-card {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px;
+  cursor: pointer; transition: all 0.2s;
+}
+.phase-card:hover { border-color: var(--amber-dim); background: var(--bg-hover); }
+.phase-card-num {
+  font-family: var(--font-mono); font-size: 0.6rem;
+  text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 6px;
+}
+.phase-card h3 { font-family: var(--font-display); font-size: 1rem; font-weight: 600; color: #ddd; margin-bottom: 4px; }
+.phase-card p  { font-size: 0.8rem; color: var(--text-dim); margin: 0; }
+.btn-start {
+  background: var(--amber); border: none; color: var(--bg);
+  padding: 12px 32px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.8rem; font-weight: 500;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  transition: background 0.2s; margin-top: 8px;
+}
+.btn-start:hover { background: #f0b848; }
+
+#sidebar-toggle {
+  display: none; position: fixed; bottom: 20px; left: 20px; z-index: 200;
+  background: var(--amber); color: var(--bg); border: none;
+  border-radius: 50%; width: 44px; height: 44px;
+  cursor: pointer; font-size: 1.2rem;
+  align-items: center; justify-content: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+@media (max-width: 900px) {
+  #sidebar { position: fixed; top: 0; left: 0; transform: translateX(-100%); }
+  #sidebar.open { transform: translateX(0); }
+  #sidebar-toggle { display: flex; }
+  #lesson-content { padding: 36px 24px 60px; }
+  #topbar { padding: 12px 24px; }
+  .lesson-title { font-size: 2rem; }
+  .phase-overview { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<nav id="sidebar">
+  <div id="sidebar-header">
+    <h1>OS Development</h1>
+    <p>From Bytes to Filesystems</p>
+  </div>
+  <div id="progress-bar-wrap">
+    <div id="progress-label">
+      <span>Progress</span>
+      <span id="progress-text">0 / 39</span>
+    </div>
+    <div id="progress-track"><div id="progress-fill" style="width:0%"></div></div>
+  </div>
+  <div id="search-wrap">
+    <input type="text" id="search" placeholder="Search lessons…" autocomplete="off">
+  </div>
+  <div id="lesson-nav"></div>
+</nav>
+
+<main id="main">
+  <div id="topbar">
+    <span id="topbar-phase">Overview</span>
+    <div id="topbar-nav">
+      <button class="nav-btn" id="btn-prev" disabled>← Prev</button>
+      <button class="nav-btn" id="btn-next-top">Next →</button>
+    </div>
+  </div>
+  <div id="content-area"></div>
+</main>
+
+<button id="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+
+<script>
+const PHASE_META = {
+  1: { name: "The OS-Hardware Contract",         short: "Phase I",   color: "var(--p1)", lessons: "1–6"   },
+  2: { name: "Buses & Device Discovery",         short: "Phase II",  color: "var(--p2)", lessons: "7–12"  },
+  3: { name: "Storage",                          short: "Phase III", color: "var(--p3)", lessons: "13–20" },
+  4: { name: "Networking",                       short: "Phase IV",  color: "var(--p4)", lessons: "21–25" },
+  5: { name: "virtio",                           short: "Phase V",   color: "var(--p5)", lessons: "26–31" },
+  6: { name: "Building It in tinyemu-go",        short: "Phase VI",  color: "var(--p6)", lessons: "32–39" },
+};
+
+// Lessons marked `stub: true` are placeholders that will be expanded as we
+// implement the corresponding feature in the emulator. They render with
+// a "STUB" badge and a note explaining what they'll cover.
+const LESSONS = [
+
+// ============================================================
+// PHASE 1 — The OS-Hardware Contract
+// ============================================================
+{
+  id: 1, phase: 1,
+  title: "What an Operating System Actually Does",
+  subtitle: "Five jobs, layered into one program",
+  content: `
+<h2>The OS as a thin layer</h2>
+<p>If you've written application code, you know an OS as the thing that gives you files, network sockets, processes, and a console. Underneath, the OS is just <em>another program</em> — bytes in memory, executing on the same CPU your application runs on. What makes it special is that the hardware delegates a small number of <strong>privileged operations</strong> to it: changing memory mappings, talking to devices, switching contexts. Everything else the OS does is implemented in plain code on top of those privileges.</p>
+<p>Five core jobs:</p>
+<ol>
+  <li><strong>Process and thread scheduling.</strong> Decide which user code runs on which CPU and for how long. Implemented by a software timer interrupt and a scheduler queue.</li>
+  <li><strong>Memory management.</strong> Hand out memory to processes; isolate them via page tables; service page faults to implement demand-paging, COW, mmap. Implemented via the MMU.</li>
+  <li><strong>Device I/O.</strong> Talk to disks, network cards, keyboards, sound. Implemented via drivers — code that knows specific device protocols.</li>
+  <li><strong>Filesystems.</strong> Turn block-device byte streams into named, hierarchical files. Implemented as a layer above the block driver.</li>
+  <li><strong>System call interface.</strong> Expose a stable API to user processes that abstracts (1)-(4). Implemented as a privilege-changing instruction (INT 0x80, SYSCALL, SVC).</li>
+</ol>
+<p>That's it. Everything else — networking, audio, GUI, security — is built on these five primitives.</p>
+
+<h2>The privilege boundary</h2>
+<p>The OS runs in <strong>kernel mode</strong> (CPU ring 0 on x86). User programs run in <strong>user mode</strong> (ring 3). The CPU enforces this: kernel-mode code can execute any instruction, modify any register, access any memory; user-mode code is restricted. The transition between modes happens only through controlled gates — interrupts, exceptions, and explicit syscall instructions. This boundary is the most important invariant in the entire system.</p>
+
+<h2>The hardware-software contract</h2>
+<p>For each subsystem, the hardware provides a small interface and the OS builds the rest on top:</p>
+<table class="corr-table">
+  <tr><th>Hardware gives you</th><th>OS implements</th></tr>
+  <tr><td>Timer interrupt</td><td>Scheduling, sleep, jiffies, timekeeping</td></tr>
+  <tr><td>MMU and page faults</td><td>Process isolation, mmap, COW, swap</td></tr>
+  <tr><td>I/O ports / MMIO</td><td>Drivers for every device class</td></tr>
+  <tr><td>Block device (sector read/write)</td><td>Filesystems, block cache, journaling</td></tr>
+  <tr><td>Network frame (raw bytes)</td><td>TCP/IP, sockets, routing</td></tr>
+  <tr><td>Interrupt / system-call gate</td><td>Syscall ABI, signal delivery</td></tr>
+</table>
+<p>The "OS development" half of this tutorial is mostly about how each row's right column is built.</p>
+
+<h2>This course's two halves</h2>
+<p>The companion course (<code>x86_tutorial.html</code>) focuses on what the CPU itself does — instructions, registers, paging, interrupts. This one picks up where that one leaves off: <em>what does the kernel do with those capabilities?</em> The two are designed to be read in parallel.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+An OS is not a magic supervisor program. It's a normal program that happens to be the first thing to run after boot, and which the hardware lets do things user code can't. Every kernel facility — files, processes, sockets — is just code, layered on top of a small set of CPU-provided primitives.
+</div>
+
+<h2>Where this lives in the emulator</h2>
+<p>This course's running example is the same as the x86 tutorial: <code>tinyemu-go</code>. By the end of Phase VI you'll have read every line of the emulator's device, bus, and storage code, and seen how each maps to a real concept.</p>
+`,
+  exercises: [
+    "Of the five OS jobs listed, which does NOT directly require hardware support? Which one is the easiest to implement without HW help?",
+    "On a system without an MMU (e.g. early Linux ports to 80286, or microcontrollers), how would memory isolation work — or wouldn't it?",
+    "Name one OS service in your daily life (file open, TCP socket, etc.) and trace it down to which of the five primitives implement it."
+  ]
+},
+
+{
+  id: 2, phase: 1,
+  title: "Boot: Firmware to Kernel",
+  subtitle: "The first ten thousand instructions on a real PC",
+  content: `
+<h2>What runs first</h2>
+<p>When you press the power button, the CPU starts executing from a fixed address. On x86 that's <code>0xFFFFFFF0</code>; the very first instruction is a far jump into firmware ROM (BIOS or UEFI) which lives at the top of the address space. The firmware:</p>
+<ol>
+  <li>Initialises the chipset and RAM controllers.</li>
+  <li>Probes for storage, USB, video.</li>
+  <li>Tries to find something bootable.</li>
+  <li>Hands off control to a bootloader.</li>
+</ol>
+
+<h2>BIOS vs UEFI</h2>
+<table class="corr-table">
+  <tr><th>BIOS (legacy)</th><th>UEFI (modern)</th></tr>
+  <tr><td>Runs in real mode (16-bit), 1 MB address space</td><td>Runs in protected/long mode from the start</td></tr>
+  <tr><td>Bootloader is the 512-byte MBR + chained stages</td><td>Bootloader is a regular .efi PE executable on a FAT partition</td></tr>
+  <tr><td>Hardware described informally (probing)</td><td>Hardware described via ACPI tables + a Boot Services API</td></tr>
+  <tr><td>No filesystem support — read raw sectors</td><td>Reads FAT directly; bootloader can be a normal file</td></tr>
+  <tr><td>Going away (deprecated since ~2020)</td><td>The default everywhere now</td></tr>
+</table>
+
+<h2>The bootloader's two jobs</h2>
+<p>GRUB, syslinux, systemd-boot, U-Boot — they all do the same two things:</p>
+<ol>
+  <li>Read a kernel image from disk into memory at the right address.</li>
+  <li>Set up CPU state and registers per that kernel's expected boot protocol, then jump to its entry point.</li>
+</ol>
+<p>For Linux i386, the protocol is in <code>Documentation/x86/boot.txt</code>: the kernel expects to start in 32-bit protected mode with a flat GDT, paging off, interrupts off, and a <code>struct boot_params</code> at a known register-pointed address. The bootloader has to deliver that state.</p>
+
+<h2>The kernel takes over</h2>
+<p>Once the kernel's entry assembly runs, it:</p>
+<ul>
+  <li>Sets up a temporary stack and GDT.</li>
+  <li>Enables paging with a minimal page directory mapping the kernel itself.</li>
+  <li>Jumps into <code>start_kernel</code> — the C-language main function.</li>
+</ul>
+<p>From here on it's "just code" — the OS itself, running on the hardware the bootloader prepared for it.</p>
+
+<h2>What tinyemu-go skips</h2>
+<p>Our emulator doesn't model BIOS or UEFI. The harness in <code>machine/pc/bzimage.go</code> reads a Linux <code>bzImage</code> directly, sets up the boot params and a minimal GDT, and starts the CPU at the kernel's protected-mode entry point. This is "we're playing the role of a bootloader." It's enough — Linux boots without noticing.</p>
+
+<div class="box box-note">
+<strong>Note</strong>
+On embedded systems (ARM SBCs, microcontrollers) the boot story is similar but with different names — U-Boot, the SPL, board-specific ROMs. The principle is the same: firmware brings up basic hardware, then hands off to an OS-loader, which hands off to the kernel.
+</div>
+`,
+  exercises: [
+    "Why does the CPU start at <code>0xFFFFFFF0</code> rather than 0? What goes wrong if firmware isn't there?",
+    "GRUB is a multi-stage bootloader: stage 1 fits in 446 bytes of the MBR, stages 1.5/2 are bigger. Why the staging?",
+    "How does UEFI Secure Boot work? Trace what it verifies before launching a kernel."
+  ]
+},
+
+{
+  id: 3, phase: 1,
+  title: "The Kernel's Initialisation Order",
+  subtitle: "What gets brought up, and why the order matters",
+  content: `
+<h2>From entry to first userspace</h2>
+<p>Linux's <code>start_kernel</code> in <code>init/main.c</code> is a 200-line C function that initialises every subsystem in a strict order. Each step depends on the previous. Get it wrong (e.g. allocate memory before the allocator is online) and the kernel panics with a backtrace that doesn't even include printk because <em>printk itself isn't ready yet</em>.</p>
+
+<h2>The canonical sequence</h2>
+<table class="corr-table">
+  <tr><th>Phase</th><th>What's initialised</th><th>Why now?</th></tr>
+  <tr><td>1. Early console</td><td>Emergency printf, e.g. <code>early_serial</code></td><td>So later steps can panic visibly</td></tr>
+  <tr><td>2. CPU detection</td><td>CPUID, feature flags, microcode</td><td>Decide which code paths to enable</td></tr>
+  <tr><td>3. setup_arch</td><td>GDT, IDT, fixmap, e820 parsing</td><td>Establish trap dispatch and parse memory layout</td></tr>
+  <tr><td>4. Page allocator</td><td>Buddy allocator, kmem_cache_init</td><td>Now allocate-anything-anywhere works</td></tr>
+  <tr><td>5. Slab allocator</td><td>SLUB caches, kmalloc</td><td>Small-object allocation</td></tr>
+  <tr><td>6. Scheduler init</td><td>Runqueues, kthreads</td><td>So softirq workers exist</td></tr>
+  <tr><td>7. IRQ subsystem</td><td>IDT entries → handlers, PIC/APIC programming</td><td>Hardware interrupts now serviced</td></tr>
+  <tr><td>8. Timekeeping</td><td>PIT/HPET/TSC calibration, jiffies</td><td>Now we can sleep, time things</td></tr>
+  <tr><td>9. Console drivers</td><td>Real serial/VGA console; printk drains backlog</td><td>Full logging now</td></tr>
+  <tr><td>10. PCI / ACPI probe</td><td>Discover devices on the bus</td><td>Drivers can claim hardware</td></tr>
+  <tr><td>11. Driver init</td><td>Each driver's <code>initcall</code></td><td>Disks, NICs, etc. come online</td></tr>
+  <tr><td>12. VFS / filesystems</td><td>Mount root</td><td>Now we have files</td></tr>
+  <tr><td>13. <code>kernel_init</code></td><td>Fork PID 1, exec /sbin/init</td><td>Userspace begins</td></tr>
+</table>
+
+<h2>Why the order is fragile</h2>
+<p>Each step <em>uses</em> the facilities of the previous. The allocator needs the memory map; drivers need allocator + IRQ + console; mount needs drivers. If a step's prerequisite isn't ready, you get an OOPS at boot — and unlike a userspace bug, an early-boot OOPS is invisible (no console yet). Linux solves this with a series of "early init" mini-steps that boot a minimal version of each subsystem first, then a "real init" that does the full version.</p>
+
+<h2>initcall levels</h2>
+<p>Each driver's init function is tagged with a <em>level</em>:</p>
+<pre><span class="kw">early_initcall</span>     <span class="cm">// before any other initcall</span>
+<span class="kw">core_initcall</span>      <span class="cm">// core kernel facilities</span>
+<span class="kw">postcore_initcall</span>
+<span class="kw">arch_initcall</span>      <span class="cm">// arch-specific setup</span>
+<span class="kw">subsys_initcall</span>    <span class="cm">// subsystems (mm, fs, ...)</span>
+<span class="kw">fs_initcall</span>
+<span class="kw">rootfs_initcall</span>
+<span class="kw">device_initcall</span>    <span class="cm">// most drivers</span>
+<span class="kw">late_initcall</span>      <span class="cm">// last</span>
+<span class="lang-tag">Linux initcall levels</span></pre>
+<p>Within a level, initcalls run in link order. Across levels, strict order. This is how thousands of drivers all get their <code>module_init</code> functions called without ever being in the same source file.</p>
+
+<h2>What our emulator boots through</h2>
+<p>Watching <code>tinyemu-go</code> boot Linux, you can see the progression in dmesg: "Memory:" line (step 4), "RCU:" line (step 6), "IDT:" / "Setting up..." (step 7), "console [ttyS0] enabled" (step 9), "ide-disk: ATA disk" (step 11), "EXT2-fs:" (step 12), "Run /myshell as init process" (step 13).</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+A kernel is essentially a careful waterfall of "X must be ready before Y can run." The whole boot sequence is just executing that DAG in a topologically-valid order. Once you understand the layering, kernel boot logs read like a status update on a building under construction.
+</div>
+`,
+  exercises: [
+    "Why is the early console initialised before the page allocator? What's the dependency?",
+    "Look at Linux's <code>start_kernel</code> source. Find one call that surprises you to be there and explain its dependency.",
+    "What's the difference between an <code>early_initcall</code> and a regular <code>module_init</code>? When would you use each?"
+  ]
+},
+
+{
+  id: 4, phase: 1,
+  title: "Userspace and Syscalls",
+  subtitle: "How the kernel hands off to the first program",
+  content: `
+<h2>The kernel never lets go</h2>
+<p>It's tempting to think of the kernel as "the program that boots and then quits, leaving userspace running." That's wrong. The kernel <em>always</em> runs — every interrupt, every page fault, every syscall puts CPU control back in the kernel. Userspace runs only in the gaps between.</p>
+
+<h2>The first userspace process</h2>
+<p>At the end of boot, the kernel calls <code>run_init_process()</code> which:</p>
+<ol>
+  <li>Opens the init binary (typically <code>/sbin/init</code>, or whatever's passed via <code>rdinit=/foo</code> on the cmdline).</li>
+  <li>Reads its ELF header and program headers.</li>
+  <li>Sets up a new user-mode page-table mapping for it.</li>
+  <li>Copies argv/envp onto the new user stack.</li>
+  <li>Sets registers per the userspace entry-point convention.</li>
+  <li>Does an IRET-style transition from kernel to user mode — at which point the first user instruction runs.</li>
+</ol>
+<p>This is how every process is born; init is just the first. Subsequent processes are forked from init (via <code>execve</code> → kernel re-runs the same setup for a child).</p>
+
+<h2>The syscall handshake</h2>
+<p>Once userspace is running, every interaction with the OS goes through the syscall interface. The Linux i386 ABI:</p>
+<table class="corr-table">
+  <tr><th>Register</th><th>Role</th></tr>
+  <tr><td>EAX</td><td>Syscall number (e.g. 4 = write, 3 = read, 5 = open)</td></tr>
+  <tr><td>EBX, ECX, EDX, ESI, EDI, EBP</td><td>Up to six arguments</td></tr>
+  <tr><td>EAX (after)</td><td>Return value, or -errno</td></tr>
+</table>
+<p>The transition mechanism: <code>INT 0x80</code> (slow but universal), <code>SYSENTER</code> (faster), or <code>SYSCALL</code> on x86-64. The kernel-side handler saves user registers, dispatches based on EAX, runs the actual syscall, restores registers, IRETs back to user mode.</p>
+
+<h2>The system-call table</h2>
+<p>Linux's <code>sys_call_table[]</code> is an array of function pointers indexed by syscall number. Each entry is a <code>SYSCALL_DEFINE3(write, ...)</code> macro expansion in some kernel file. The numbers are stable forever — number 4 will always be <code>write</code>. New syscalls get new numbers; never reused.</p>
+
+<h2>copy_to_user / copy_from_user</h2>
+<p>Inside a syscall, the kernel often needs to read or write user memory. Two rules:</p>
+<ol>
+  <li>Validate the address is in the user half of the address space (no escaping into the kernel).</li>
+  <li>Wrap the access in an "exception table" entry so that a page fault returns -EFAULT instead of OOPSing.</li>
+</ol>
+<p>The kernel functions <code>copy_to_user</code> and <code>copy_from_user</code> bundle this. They're the only correct way for kernel code to touch user memory.</p>
+
+<div class="box box-note">
+<strong>Note</strong>
+On modern CPUs there's also SMAP (Supervisor Mode Access Prevention) — a CPU bit that disallows the kernel from reading user memory at all unless explicitly enabled via STAC/CLAC instructions. Linux uses this as defense in depth: even if a kernel bug tries to dereference a user pointer in an unwrapped path, the CPU traps it.
+</div>
+
+<h2>vDSO — the fast path</h2>
+<p>Some syscalls (gettimeofday, clock_gettime) are called millions of times per second. Even SYSENTER's ~70 cycles is too slow. Linux maps a small read-only page of code into every process — the vDSO — which can compute those values directly from a kernel-maintained data structure without a real syscall. Look at any address ending in <code>...e000</code> in <code>/proc/self/maps</code> on your machine.</p>
+`,
+  exercises: [
+    "Find the syscall number for <code>write</code> on i386 Linux. Why is it different from x86-64?",
+    "What's the difference between a syscall and a function call? List three things.",
+    "Why is there a separate <code>copy_from_user</code> instead of just <code>memcpy</code>? What does it protect against?"
+  ]
+},
+
+{
+  id: 5, phase: 1,
+  title: "Drivers: What and Why",
+  subtitle: "Where the kernel meets the world",
+  content: `
+<h2>The driver as adapter</h2>
+<p>The kernel's higher layers (filesystems, network stack, audio framework) don't know what device they're talking to. A filesystem knows about "block devices that read/write 512-byte sectors"; it doesn't know whether those sectors live on SATA, NVMe, USB, or a virtio-blk paravirtualised device. The driver is the adapter between a hardware-specific protocol and a kernel-internal interface.</p>
+<p>So every driver implements (at minimum) two things:</p>
+<ol>
+  <li><strong>The hardware protocol.</strong> Knowing how to drive the device — write to registers, handle its IRQs, manage its DMA buffers.</li>
+  <li><strong>The kernel interface.</strong> Registering itself as a block device, a network interface, a char device, an input event source, etc. — whatever the kernel's subsystem expects.</li>
+</ol>
+
+<h2>Driver classes</h2>
+<table class="corr-table">
+  <tr><th>Class</th><th>Kernel interface</th><th>Examples</th></tr>
+  <tr><td>Block</td><td>request_queue, struct gendisk</td><td>IDE, SATA, NVMe, virtio-blk</td></tr>
+  <tr><td>Network</td><td>struct net_device, sk_buff</td><td>e1000, ne2k, virtio-net</td></tr>
+  <tr><td>Char</td><td>file_operations</td><td>UART, /dev/random, /dev/null</td></tr>
+  <tr><td>Input</td><td>input_dev, event types</td><td>PS/2 kbd, USB HID</td></tr>
+  <tr><td>Graphics</td><td>DRM/framebuffer</td><td>Intel i915, nouveau, virtio-gpu</td></tr>
+  <tr><td>Sound</td><td>ALSA</td><td>HDA, virtio-sound</td></tr>
+</table>
+
+<h2>The driver lifecycle</h2>
+<p>A driver's life:</p>
+<ol>
+  <li><strong>Probe.</strong> The bus subsystem (PCI, USB, …) finds a device matching the driver's table of supported IDs. It calls the driver's <code>probe()</code> function.</li>
+  <li><strong>Initialise.</strong> <code>probe()</code> requests resources (MMIO region, IRQ line, DMA channel), maps them, configures the device, registers with the appropriate kernel subsystem.</li>
+  <li><strong>Service.</strong> The kernel's subsystem layer routes work to the driver: a block-read request, a packet to transmit, a console-write.</li>
+  <li><strong>IRQ handling.</strong> When the device completes work, it raises an IRQ. The driver's handler is invoked; it usually wakes up a kernel thread or fires a softirq to finish the work.</li>
+  <li><strong>Removal.</strong> If the device disappears (hot-unplug) or the driver is unloaded, the kernel calls <code>remove()</code>. The driver must clean up everything.</li>
+</ol>
+
+<h2>Where the kernel finds drivers</h2>
+<p>A modern Linux kernel has thousands of drivers, but only a handful are <em>built in</em> (compiled into the kernel image). The rest are <em>modules</em> — separate <code>.ko</code> files in <code>/lib/modules/$(uname -r)/</code>. <code>modprobe</code> loads them on demand. <code>udev</code> watches for new devices and triggers <code>modprobe</code> automatically.</p>
+<p>Building in vs modular is a tradeoff: built-in is faster to load and avoids the chicken-and-egg "I need this driver to mount the filesystem the module lives on", but modular lets you ship a smaller kernel image.</p>
+
+<h2>The IRQ → softirq → workqueue pipeline</h2>
+<p>Hardware IRQs run with interrupts disabled, so they must be brief. Drivers typically:</p>
+<ol>
+  <li>In the IRQ handler: acknowledge the device, grab the data, schedule deferred work, return.</li>
+  <li>The deferred work runs as a softirq (still in interrupt context but lower priority) or a workqueue task (in process context, can sleep).</li>
+</ol>
+<p>This split is the reason your laptop can keep typing smoothly while a slow USB device is being polled.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+A driver doesn't know about your filesystem or your TCP stack. It just translates: "here's a sector read request from above" → "let me poke these registers to do it." This loose coupling is what lets Linux support thousands of devices with a finite kernel team.
+</div>
+`,
+  exercises: [
+    "Why are drivers separated from filesystems and network protocols? What would change if they weren't?",
+    "Run <code>lsmod | head -20</code> on a Linux machine. Pick a driver and figure out which device class it serves.",
+    "Why does the IRQ handler have to be brief? What happens if it isn't?"
+  ]
+},
+
+{
+  id: 6, phase: 1,
+  title: "Memory-Mapped I/O vs Port I/O",
+  subtitle: "Two ways to talk to hardware on x86",
+  content: `
+<h2>Two address spaces</h2>
+<p>x86 has two completely separate address spaces for talking to hardware:</p>
+<ul>
+  <li><strong>I/O port space</strong>: 64 K addressable ports, accessed via the <code>IN</code> and <code>OUT</code> instructions. A separate "address space" from main memory — there's no overlap. Originated with the 8086 in 1978.</li>
+  <li><strong>Memory-mapped I/O (MMIO)</strong>: devices appear as memory regions in the regular physical address space. Reads and writes use ordinary <code>MOV</code> instructions.</li>
+</ul>
+<p>Other architectures (ARM, RISC-V) only have MMIO — they don't have a separate port-I/O space. x86 has both because backward compatibility never lets anything die.</p>
+
+<h2>Who uses what</h2>
+<table class="corr-table">
+  <tr><th>Device family</th><th>Usually accessed via</th></tr>
+  <tr><td>Legacy ISA-era (PIT, PIC, UART, IDE, keyboard, RTC)</td><td>I/O ports</td></tr>
+  <tr><td>VGA registers</td><td>I/O ports (CRTC, sequencer, attribute)</td></tr>
+  <tr><td>VGA framebuffer</td><td>MMIO (at 0xA0000 / 0xB8000)</td></tr>
+  <tr><td>PCI devices (anything modern)</td><td>MMIO (BAR-described regions)</td></tr>
+  <tr><td>LAPIC, IOAPIC</td><td>MMIO (0xFEE00000, 0xFEC00000)</td></tr>
+  <tr><td>NVMe</td><td>MMIO + PCIe</td></tr>
+</table>
+
+<h2>Port I/O details</h2>
+<pre><span class="kw">in</span>   <span class="rg">al</span>, <span class="rg">dx</span>      <span class="cm">; read 1 byte from port DX into AL</span>
+<span class="kw">in</span>   <span class="rg">eax</span>, <span class="rg">dx</span>     <span class="cm">; read 4 bytes</span>
+<span class="kw">out</span>  <span class="rg">dx</span>, <span class="rg">al</span>      <span class="cm">; write 1 byte to port DX</span>
+<span class="lang-tag">port I/O</span></pre>
+<p>I/O instructions are privileged: only CPL ≤ IOPL can execute them (Linux runs kernel at CPL=0 with IOPL=0, so kernel can; user can't). The TSS contains a per-port permission bitmap (IOPB) that can grant fine-grained user-mode access to specific ports — used by X servers and some hypervisor tools, rarely by application code.</p>
+
+<h2>MMIO details</h2>
+<p>MMIO regions look like memory but the underlying "RAM" is the device's registers and FIFOs. Reads and writes have side effects: reading a UART RX register dequeues a byte; writing the UART TX register transmits one.</p>
+<p>Three concerns drivers must handle:</p>
+<ul>
+  <li><strong>Caching.</strong> MMIO regions must be marked uncached (PCD=1 in PTE) — caching would break devices whose reads have side effects. Linux's <code>ioremap</code> sets this up.</li>
+  <li><strong>Volatile access.</strong> The compiler must not eliminate or reorder MMIO loads/stores; <code>readl()</code>/<code>writel()</code> wrappers use <code>volatile</code>.</li>
+  <li><strong>Ordering barriers.</strong> Between MMIO and DRAM, between consecutive MMIO writes, the kernel sometimes needs explicit barriers (<code>wmb()</code>, <code>rmb()</code>) so the device sees the writes in the right order.</li>
+</ul>
+
+<h2>The relevance to bus design</h2>
+<p>ISA devices live in port-I/O space; PCI devices live in MMIO space (mostly). When PCI was introduced in 1992, the choice was deliberate: port I/O is a hard cap of 64 K ports for the whole system, which became a real bottleneck. MMIO is unlimited.</p>
+<p>Our tinyemu-go PC board emulates both. <code>machine/pc/io.go</code> dispatches port I/O; <code>mem.PhysMemoryMap</code> dispatches MMIO. The PCI host bridge (coming in lesson 32) bridges the two by exposing config space at I/O ports 0xCF8/0xCFC even though everything else PCI is MMIO.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+Port I/O is a legacy quirk that hasn't died because the legacy chips it talks to (PIT, PIC, UART) also haven't died. New devices are universally MMIO. When you see I/O port numbers in datasheets (0x3F8, 0x1F0, …) you know you're looking at something that originated before 1992.
+</div>
+`,
+  exercises: [
+    "Why is the I/O port space limited to 64 K? Could that have been extended without breaking compatibility?",
+    "An MMIO read that the driver expected to side-effect (e.g. read-to-clear a status register) appears not to take effect. Name three causes.",
+    "On ARM, there's no separate port-I/O space. How do ARM drivers for legacy PC-style chips work in QEMU?"
+  ]
+},
+
+// ============================================================
+// PHASE 2 — Buses & Device Discovery   (stubs, expanded as we implement)
+// ============================================================
+{
+  id: 7, phase: 2,
+  title: "The ISA Bus and Legacy I/O",
+  subtitle: "Why some port numbers are universal across every PC",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>This lesson will cover:</p>
+<ul>
+  <li>What "ISA" means historically</li>
+  <li>Why specific port numbers (0x60, 0x70, 0x1F0, 0x3F8) are fixed and universal</li>
+  <li>How DMA worked on the ISA bus (8237 DMA controller)</li>
+  <li>What "Plug and Play ISA" was (and why we forget it)</li>
+  <li>How emulators model the legacy ISA address space</li>
+</ul>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 8, phase: 2,
+  title: "PCI: The Configuration Space",
+  subtitle: "How the OS finds out what's on the bus",
+  content: `
+<h2>The PCI addressing model</h2>
+<p>Every device on a PCI bus is addressed by three numbers: <strong>bus</strong> (0-255), <strong>device</strong> (0-31), <strong>function</strong> (0-7). Most physical chips are single-function (function 0 only); multi-function chips like the PIIX3 chipset expose several at one device number. Together this is called a "BDF" address — Bus / Device / Function. With 256 buses × 32 devices × 8 functions, the spec allows 65 536 functions per system; in practice you see dozens.</p>
+
+<h2>Each function's configuration space</h2>
+<p>Every function has 256 bytes of <strong>configuration space</strong> — a small private register window the OS uses to learn what the device is and how to talk to it. The first 64 bytes are a <strong>standard header</strong>; the rest is device-specific.</p>
+<table class="corr-table">
+  <tr><th>Offset</th><th>Size</th><th>Field</th><th>Purpose</th></tr>
+  <tr><td>0x00</td><td>2</td><td>Vendor ID</td><td>Who made the chip (8086 = Intel, 10EC = Realtek, …)</td></tr>
+  <tr><td>0x02</td><td>2</td><td>Device ID</td><td>Which model</td></tr>
+  <tr><td>0x04</td><td>2</td><td>Command</td><td>Enable bits: I/O space, memory space, bus master, …</td></tr>
+  <tr><td>0x06</td><td>2</td><td>Status</td><td>Capabilities-list pointer flag, interrupt-status, error bits</td></tr>
+  <tr><td>0x08</td><td>1</td><td>Revision ID</td><td>Chip stepping</td></tr>
+  <tr><td>0x09</td><td>1</td><td>ProgIF</td><td>Programming interface (sub-sub-class)</td></tr>
+  <tr><td>0x0A</td><td>1</td><td>Subclass</td><td>e.g. 0x01 within class 0x01 = IDE controller</td></tr>
+  <tr><td>0x0B</td><td>1</td><td>Class</td><td>Top-level: 0x01 = storage, 0x02 = network, 0x03 = display, 0x06 = bridge</td></tr>
+  <tr><td>0x0E</td><td>1</td><td>Header type</td><td>0 = normal, 1 = PCI-to-PCI bridge, 2 = CardBus. Bit 7 = multi-function.</td></tr>
+  <tr><td>0x10-0x27</td><td>24</td><td>BARs 0-5</td><td>Base Address Registers — see Lesson 9</td></tr>
+  <tr><td>0x2C</td><td>2</td><td>Subsystem Vendor ID</td><td>Board-vendor (different from chip-vendor for OEM cards)</td></tr>
+  <tr><td>0x2E</td><td>2</td><td>Subsystem ID</td><td>Board model</td></tr>
+  <tr><td>0x30</td><td>4</td><td>Expansion ROM Base</td><td>For cards with an option ROM (e.g. VGA BIOS)</td></tr>
+  <tr><td>0x34</td><td>1</td><td>Capabilities pointer</td><td>Offset of a linked list of capabilities (MSI, PCIe, …)</td></tr>
+  <tr><td>0x3C</td><td>1</td><td>Interrupt Line</td><td>Which IRQ this device fires on (BIOS-assigned)</td></tr>
+  <tr><td>0x3D</td><td>1</td><td>Interrupt Pin</td><td>0 = no IRQ, 1-4 = INTA-INTD</td></tr>
+</table>
+
+<h2>The Type-1 access mechanism</h2>
+<p>Configuration space isn't memory-mapped on legacy PC chipsets. Instead it's reached via two I/O ports:</p>
+<ul>
+  <li><strong>0xCF8</strong> — the address-latch register. Write 32 bits with bit 31 set, BDF encoded in bits 23:8, and a dword-aligned register offset in bits 7:2.</li>
+  <li><strong>0xCFC</strong> — the data window. Read or write 1/2/4 bytes; the chipset translates to the function and offset stored in 0xCF8.</li>
+</ul>
+<p>Standard sequence to read the vendor/device ID of function 0 on bus 0, device 1:</p>
+<pre>address = <span class="nm">0x80000800</span>  <span class="cm">; bit31=1, bus=0, dev=1, fn=0, reg=0</span>
+<span class="kw">out</span> <span class="rg">dx</span>, <span class="rg">eax</span>          <span class="cm">; dx=0xCF8, eax=address</span>
+<span class="kw">mov</span> <span class="rg">dx</span>, <span class="nm">0xCFC</span>
+<span class="kw">in</span>  <span class="rg">eax</span>, <span class="rg">dx</span>         <span class="cm">; eax = (device_id << 16) | vendor_id</span>
+<span class="lang-tag">PCI config read</span></pre>
+<p>If no device sits at that BDF, the read returns 0xFFFFFFFF. This is the spec's "no device" indication — and how Linux's PCI enumerator knows when to stop scanning a slot.</p>
+
+<h2>The enumeration walk</h2>
+<p>Linux's PCI subsystem boots by walking the bus:</p>
+<ol>
+  <li>For each device 0-31 on bus 0:</li>
+  <li>  Read function 0's vendor ID. If 0xFFFF, skip.</li>
+  <li>  Read header type. If bit 7 is set (multi-function), also scan functions 1-7.</li>
+  <li>  For each non-empty function: register a <code>struct pci_dev</code>, read class code, find matching driver via the driver's id_table.</li>
+  <li>  If the function is a bridge (header type 1), recursively scan the secondary bus it covers.</li>
+</ol>
+
+<h2>MMCONFIG — the modern alternative</h2>
+<p>The Type-1 mechanism is limited to bus 0-255 and is slow (each access is a port I/O serialised through the chipset). PCIe added <strong>MMCONFIG</strong>: a 256 MB MMIO region at a chipset-defined base, where each function's config space is at offset <code>(bus &lt;&lt; 20) | (dev &lt;&lt; 15) | (fn &lt;&lt; 12)</code>. A regular memory read picks up the right bytes; no port I/O involved. Linux uses MMCONFIG when the ACPI MCFG table advertises it.</p>
+
+<h2>tinyemu-go implementation</h2>
+<p>Our PCI host bridge in <code>machine/pc/pci.go</code> implements Type-1 access only (not MMCONFIG — yet). Look at <code>PCIHost.Register</code> for the I/O port wiring and <code>readData</code>/<code>writeData</code> for the address-decoding logic.</p>
+<p>Devices are placed on bus 0 via <code>host.Bus().AddDevice(dev, fn, dev)</code>. <code>pc.New</code> currently creates two: an Intel 440FX host bridge at (0,0,0) and a PIIX3 IDE controller at (0,1,1). With these in place, Linux's <code>pci_scan_root_bus</code> walk finds devices instead of the "Fatal: No config space access" panic.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+PCI's brilliance is that every device exposes the same standard header. The OS doesn't need to know <em>anything</em> about a device to interrogate it — vendor, model, class, resource requirements all live in a fixed-layout structure. This is why a Linux kernel from 2024 can boot on a PC chipset from 1996.
+</div>
+`,
+  exercises: [
+    "Encode the 32-bit address-latch value to read register 0x10 (BAR 0) of bus 0 / device 2 / function 0.",
+    "Write the code for a 'scan bus 0 and print all device IDs' helper — just the loop using <code>outl 0xCF8</code> / <code>inl 0xCFC</code>.",
+    "Read <code>machine/pc/pci_test.go:TestPCIPCBoardWiring</code> — what sequence does it perform, and how does it map to Linux's real probe?"
+  ]
+},
+
+{
+  id: 9, phase: 2,
+  title: "PCI: BARs, Interrupts, and Capabilities",
+  subtitle: "What a PCI device actually exposes",
+  content: `
+<h2>BARs — Base Address Registers</h2>
+<p>Every PCI function has 6 BARs (Type-0 header) or 2 BARs (bridge header), each 32 bits, at config offsets 0x10-0x27. They describe the address-space windows the device decodes.</p>
+<p>Two formats, distinguished by bit 0:</p>
+<table class="corr-table">
+  <tr><th>Bit 0</th><th>Type</th><th>Rest of low bits</th></tr>
+  <tr><td>0</td><td>Memory BAR</td><td>Bit 1 = "64-bit BAR" (consumes BAR+1 too); bit 2 = "prefetchable"</td></tr>
+  <tr><td>1</td><td>I/O port BAR</td><td>(reserved; usually zero)</td></tr>
+</table>
+<p>The upper bits (32 - log₂(size) bits) are the actual address; the lower bits (log₂(size)) are hardwired to zero. So a device claiming a 4 KB MMIO region has its bottom 12 bits hardwired (the address is 4 KB-aligned), and the top 20 bits are writable.</p>
+
+<h2>The size-detection dance</h2>
+<p>How does the OS know how big a BAR is? It uses the wiring trick: writes 0xFFFFFFFF to the BAR, then reads it back. The hardwired-zero bits stay zero; the writable bits get the 1s. Subtract from 0xFFFFFFFF and add 1 → the size.</p>
+<pre><span class="cm">// Determine BAR0 size:</span>
+orig := <span class="fn">read_bar</span>(<span class="nm">0x10</span>)
+<span class="fn">write_bar</span>(<span class="nm">0x10</span>, <span class="nm">0xFFFFFFFF</span>)
+mask := <span class="fn">read_bar</span>(<span class="nm">0x10</span>) &amp; <span class="nm">0xFFFFFFF0</span>   <span class="cm">// for memory BAR; mask &amp; ~3 for I/O</span>
+size := (^mask) + <span class="nm">1</span>
+<span class="fn">write_bar</span>(<span class="nm">0x10</span>, orig)<span class="lang-tag">BAR size probe</span></pre>
+<p>The OS does this for each BAR during enumeration, then allocates a region of physical address space and writes the chosen base back into the BAR.</p>
+
+<h2>Interrupts: line and pin</h2>
+<p>Each function reports:</p>
+<ul>
+  <li><strong>Interrupt Pin</strong> (offset 0x3D): 0 = no IRQ, 1 = INTA, 2 = INTB, 3 = INTC, 4 = INTD. Hardwired by the device.</li>
+  <li><strong>Interrupt Line</strong> (offset 0x3C): which legacy IRQ (0-15) the chipset routes that pin to. Written by firmware (or by the kernel from the ACPI _PRT routing table).</li>
+</ul>
+<p>The classic PCI IRQ wiring is that all the INTA pins on a bus go to one chipset IRQ, all the INTBs to another, etc. — so devices share IRQs. This is the historical reason Linux's IRQ handlers have to support sharing.</p>
+
+<h2>MSI and MSI-X — escaping IRQ sharing</h2>
+<p>For modern PCIe devices, IRQ sharing is too slow (every shared handler must run on every shared IRQ to figure out who fired). <strong>MSI (Message-Signalled Interrupts)</strong> sidestep this: instead of asserting an IRQ line, the device writes a 4-byte message to a magic memory address. The chipset's interrupt remapper sees the write, converts to a per-device IRQ, and routes it. Each device has its own vector — no sharing.</p>
+<p>MSI is advertised via the <strong>capabilities list</strong>: a linked list of capability descriptors starting at the offset in config offset 0x34, walked via "next pointer" fields. Each entry has a 1-byte capability ID (0x05 = MSI, 0x11 = MSI-X, 0x10 = PCIe-specific, …) and per-capability data.</p>
+
+<h2>The capabilities list</h2>
+<p>Config bytes 0x40-0xFF are available for capabilities. The first one's offset is in config[0x34]; each has a "next pointer" to the following one (0 terminates). Examples:</p>
+<table class="corr-table">
+  <tr><th>Cap ID</th><th>Name</th><th>What's in it</th></tr>
+  <tr><td>0x01</td><td>Power Management</td><td>D0/D1/D2/D3 state control</td></tr>
+  <tr><td>0x05</td><td>MSI</td><td>Address/data the device should write to fire IRQ</td></tr>
+  <tr><td>0x10</td><td>PCIe</td><td>Link width/speed, max payload, AER</td></tr>
+  <tr><td>0x11</td><td>MSI-X</td><td>Per-vector tables in MMIO</td></tr>
+</table>
+
+<h2>tinyemu-go implementation</h2>
+<p>Our PCI implementation today has no capabilities (config[0x34] = 0; status bit 4 cleared). For the IDE controller, we don't need MSI — IRQs are routed through the legacy IRQ-line field (= 14) and delivered via the cascaded 8259. Adding MSI would require modelling the chipset's interrupt remapper, which we skip.</p>
+<p>BARs are present (offsets 0x10-0x27) and writable by default — but our IDE controller doesn't expose any real regions through them, so the kernel's size detection reads 0 and concludes "no resource here," falling back to legacy I/O ports 0x1F0/0x3F6. This is exactly the behaviour of the real PIIX3 in "compatibility mode."</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+The BAR mechanism is the OS's only way to know what address space a device needs. The chipset doesn't pre-allocate anything; the OS reads sizes, picks addresses, writes them back. This is what makes hotplug work: a new device announces its needs via BARs and the OS finds room.
+</div>
+`,
+  exercises: [
+    "If a device reports BAR0 = 0xF000_0000 after the size dance, and your write of 0xFFFFFFFF reads back as 0xF000_0000, what's the size of the region?",
+    "Why are BARs hardwired to alignment that matches their size? What would go wrong if any address were allowed?",
+    "Sketch the data structures the kernel keeps for one enumerated PCI device. What does <code>/proc/bus/pci/devices</code> on Linux list?"
+  ]
+},
+
+{
+  id: 10, phase: 2,
+  title: "PCIe: What Changed",
+  subtitle: "From parallel bus to high-speed serial links",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: the PCIe link/lane/generation model, transaction-layer packets, extended config space, MMCONFIG, AER, hot-plug. Why software-visible the difference from PCI is minimal but the physical layer is completely redesigned.</p>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 11, phase: 2,
+  title: "The IRQ Routing Problem",
+  subtitle: "From 8 IRQ lines to thousands",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>The legacy 8259 pair gives 15 IRQ lines for the entire system. Modern systems with many PCI devices need many more. Topics: shared IRQs, the IOAPIC, MSI (Message-Signalled Interrupts), MSI-X (per-vector), the IRQ-router-on-Intel chipsets, the kernel's IRQ-domain abstraction.</p>
+<div class="box box-stub">
+<strong>Stub</strong>
+Paired with the eventual LAPIC/IOAPIC implementation in <code>machine/pc/</code>.
+</div>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 12, phase: 2,
+  title: "ACPI and Hardware Description",
+  subtitle: "Tables and AML — how firmware tells the OS what's there",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: RSDP, RSDT/XSDT, FADT, MADT, DSDT, AML interpretation, GPE handling. Why "acpi=off" is a sledgehammer that disables enormous amounts of modern hardware enumeration. The role of UEFI in providing ACPI tables.</p>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+// ============================================================
+// PHASE 3 — Storage
+// ============================================================
+{
+  id: 13, phase: 3,
+  title: "The Block-Device Interface",
+  subtitle: "The contract every disk-like device honours",
+  content: `
+<h2>What is a block device?</h2>
+<p>A block device is anything that:</p>
+<ul>
+  <li>Has a fixed total size (in bytes), divisible by a fixed block size.</li>
+  <li>Lets you read or write whole blocks at random offsets.</li>
+  <li>Doesn't care what bytes you put in it.</li>
+</ul>
+<p>Hard disks, SSDs, USB sticks, CD-ROMs, loop-mounted files, RAM disks, network block devices — all block devices. The kernel manages them all through one abstraction.</p>
+
+<h2>Block size vs sector size</h2>
+<table class="corr-table">
+  <tr><th>Term</th><th>Means</th></tr>
+  <tr><td>Sector</td><td>The smallest unit the hardware reads/writes. Historically 512 bytes; modern "Advanced Format" drives use 4096.</td></tr>
+  <tr><td>Block (logical)</td><td>The size the kernel batches in. Often equals the sector size; can be larger.</td></tr>
+  <tr><td>Filesystem block</td><td>The size the filesystem uses. Independent — often 4 KB regardless of sector size.</td></tr>
+  <tr><td>Page</td><td>The MMU page size, 4 KB on x86. Block-cache pages.</td></tr>
+</table>
+
+<h2>tinyemu-go's interface</h2>
+<p>Our generic block-device interface lives in <code>devices/block.go</code>:</p>
+<pre><span class="kw">type</span> <span class="ty">BlockDevice</span> <span class="kw">interface</span> {
+    <span class="fn">GetSectorCount</span>() <span class="kw">int64</span>
+    <span class="fn">ReadSectors</span>(sectorNum <span class="kw">uint64</span>, buf []<span class="kw">byte</span>, n <span class="kw">int</span>) (<span class="kw">int</span>, <span class="kw">error</span>)
+    <span class="fn">WriteSectors</span>(sectorNum <span class="kw">uint64</span>, buf []<span class="kw">byte</span>, n <span class="kw">int</span>) (<span class="kw">int</span>, <span class="kw">error</span>)
+    <span class="fn">Flush</span>() <span class="kw">error</span>
+    <span class="fn">Close</span>() <span class="kw">error</span>
+}<span class="lang-tag">devices/block.go</span></pre>
+<p>This is the same conceptual shape as Linux's <code>request_queue</code>, just simpler. Three implementations:</p>
+<ul>
+  <li><code>MemoryBlockDevice</code> — backed by a byte slice. Used by tests.</li>
+  <li>A file-backed implementation (in cmd/temu) — backed by an OS file via <code>os.File</code>.</li>
+  <li>Future: a snapshot-mode wrapper (writes go to overlay memory, source file unchanged).</li>
+</ul>
+
+<h2>The kernel side</h2>
+<p>Linux's block layer exposes:</p>
+<ul>
+  <li><strong>The bio</strong> (<em>block I/O</em>) — a contiguous-in-LBA, possibly scatter-gather-in-RAM request. Smallest unit of work.</li>
+  <li><strong>The request</strong> — a coalesced set of bios for the same operation. The IO scheduler can merge adjacent bios.</li>
+  <li><strong>The request_queue</strong> — per-device queue that drivers pull from.</li>
+</ul>
+<p>The IO scheduler sits between filesystems and drivers, deciding the order in which requests are dispatched. Modern Linux uses MQ (multi-queue) for SSDs — one queue per CPU — and noop/Kyber for very fast devices.</p>
+
+<h2>Three "kinds" of block device drivers</h2>
+<ol>
+  <li><strong>"Real" block drivers</strong> — talk to actual hardware: SATA, NVMe, virtio-blk, MMC.</li>
+  <li><strong>Stacking drivers</strong> — take an underlying block device and present a different one: dm-crypt (encryption), LVM (volume management), mdraid (RAID).</li>
+  <li><strong>Synthetic drivers</strong> — backed by something that isn't really a block device: loop (file as block device), nbd (network), zram (compressed RAM).</li>
+</ol>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+The block-device abstraction is one of the kernel's biggest wins for engineering economy. A filesystem written in 1991 can mount a block device served by an NVMe driver written in 2019 because they both agree on the abstraction. The interface hasn't changed materially in three decades.
+</div>
+`,
+  exercises: [
+    "Why does Linux's block layer have its own scheduling, separate from the disk's internal queue? Couldn't we just hand requests directly to the device?",
+    "Look at <code>devices/block.go</code>. Why does <code>MemoryBlockDevice</code> implement the interface explicitly via <code>var _ BlockDevice = (*MemoryBlockDevice)(nil)</code>?",
+    "What would change in our BlockDevice interface to support trim (informing the device that some sectors are no longer used)?"
+  ]
+},
+
+{
+  id: 14, phase: 3,
+  title: "ATA / IDE: Programming the Disk",
+  subtitle: "The protocol every PC has spoken since 1986",
+  content: `
+<h2>The PIO programming model</h2>
+<p>IDE / ATA PIO ("Programmed I/O") is the universal lowest-common-denominator way to talk to a disk. Every Linux kernel has built-in support; no driver to load. The cost is that the CPU does all the data transfer — every byte passes through it. Modern systems use DMA modes (UDMA), but every drive supports falling back to PIO, and emulators almost always implement PIO only.</p>
+
+<h2>The task-file registers</h2>
+<p>The primary IDE channel exposes 8 task-file registers at I/O port base 0x1F0 + a control port at 0x3F6:</p>
+<table class="corr-table">
+  <tr><th>Port</th><th>Read</th><th>Write</th></tr>
+  <tr><td>0x1F0</td><td>data (16 bits per pop)</td><td>data</td></tr>
+  <tr><td>0x1F1</td><td>error</td><td>features</td></tr>
+  <tr><td>0x1F2</td><td>sector count</td><td>sector count</td></tr>
+  <tr><td>0x1F3</td><td>LBA[7:0]</td><td>LBA[7:0]</td></tr>
+  <tr><td>0x1F4</td><td>LBA[15:8]</td><td>LBA[15:8]</td></tr>
+  <tr><td>0x1F5</td><td>LBA[23:16]</td><td>LBA[23:16]</td></tr>
+  <tr><td>0x1F6</td><td>drive/head + LBA[27:24]</td><td>drive/head</td></tr>
+  <tr><td>0x1F7</td><td>status</td><td>command</td></tr>
+  <tr><td>0x3F6</td><td>alternate status</td><td>device control</td></tr>
+</table>
+
+<h2>A READ SECTORS in seven steps</h2>
+<ol>
+  <li>Write LBA bytes to 0x1F3-0x1F5 (and bits 27:24 to 0x1F6 with LBA mode bit set).</li>
+  <li>Write sector count to 0x1F2.</li>
+  <li>Write command 0x20 (READ SECTORS) to 0x1F7.</li>
+  <li>Poll 0x1F7 (or 0x3F6) until status bit BSY = 0 and DRQ = 1.</li>
+  <li>Read 256 16-bit words from 0x1F0 — that's one sector.</li>
+  <li>If more sectors remain, the device automatically signals DRQ again; repeat.</li>
+  <li>An IRQ 14 fires after each sector is ready (host can use it instead of polling).</li>
+</ol>
+
+<h2>Status register decoding</h2>
+<table class="corr-table">
+  <tr><th>Bit</th><th>Name</th><th>Meaning</th></tr>
+  <tr><td>7</td><td>BSY</td><td>Device is busy; no other reg is meaningful</td></tr>
+  <tr><td>6</td><td>DRDY</td><td>Device ready to accept a command</td></tr>
+  <tr><td>5</td><td>DF</td><td>Drive write fault</td></tr>
+  <tr><td>4</td><td>DSC</td><td>Drive seek complete</td></tr>
+  <tr><td>3</td><td>DRQ</td><td>Data request — device wants the host to transfer</td></tr>
+  <tr><td>0</td><td>ERR</td><td>Last command produced an error; details in error register</td></tr>
+</table>
+
+<h2>IDENTIFY DEVICE — learning who you're talking to</h2>
+<p>Command 0xEC. The device responds with 256 16-bit words of metadata: serial number, model, firmware revision, LBA28/LBA48 capacity, supported features, geometry. Linux reads this once at boot to set up the gendisk for /dev/sda.</p>
+
+<h2>tinyemu-go's implementation</h2>
+<p>Our IDE controller is in <code>machine/pc/ata.go</code> (about 350 lines). It supports a single drive (master), LBA28, READ_SECTORS / WRITE_SECTORS / IDENTIFY / CACHE_FLUSH / SET_FEATURES / soft reset. The 16-bit data-port semantics are critical: <code>inw 0x1F0</code> reads 2 bytes from the sector buffer and advances the position by 2. We registered a 16-bit-specific handler in <code>machine/pc/io.go</code> for this.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+ATA PIO is one of the most beautifully simple protocols you can find: nine registers, a handful of commands, no DMA, no scatter-gather. Every storage interface since (SATA, SAS, NVMe) is a more elaborate version of "tell the device what to do, then transfer the data." Reading the ATA-5 spec teaches you what "talking to a disk" really means at the bottom.
+</div>
+
+<h2>Where this lives</h2>
+<p>Code: <code>machine/pc/ata.go</code> (controller), <code>machine/pc/ata_test.go</code> (tests). Wiring: <code>pc.PC.AttachBlockDevice</code> creates the controller and the kernel discovers it at port 0x1F0.</p>
+`,
+  exercises: [
+    "Trace by hand the port-I/O sequence to read 4 consecutive sectors starting at LBA 100 from disk 0. Include the polling loop.",
+    "Why is the data port 16 bits wide? Could the spec have specified 32?",
+    "Look at <code>cpu/x86/exec.go</code>'s string instructions REP INSW. How does it interact with a port that auto-advances?"
+  ]
+},
+
+{
+  id: 15, phase: 3,
+  title: "ATAPI: SCSI Over the IDE Bus",
+  subtitle: "How a CD-ROM pretends to be a hard disk",
+  content: `
+<h2>Why ATAPI exists</h2>
+<p>By 1995, every PC had IDE for hard disks. CD-ROMs needed an interface too. Adding a whole separate bus seemed wasteful. ATAPI ("AT Attachment Packet Interface") was the answer: reuse the IDE wires and registers, but tunnel SCSI commands through them. CD-ROMs, tape drives, ZIP drives — all ATAPI.</p>
+<p>Result: a single bus serves both disks and removable optical drives. Operating systems treat them as completely different devices internally (CD-ROMs go through the SCSI driver framework even though they're on the IDE bus), but the wires don't care.</p>
+
+<h2>The PACKET command</h2>
+<p>The host issues command 0xA0 (PACKET) to the device. The device responds with DRQ set, indicating it's ready to receive 12 bytes via the data port. The host pushes those 12 bytes — the SCSI command — and the device parses them.</p>
+
+<h2>The SCSI command set (MMC subset)</h2>
+<p>For a CD-ROM, the kernel issues a small set of MMC ("Multi-Media Commands") commands:</p>
+<table class="corr-table">
+  <tr><th>Op</th><th>Name</th><th>Use</th></tr>
+  <tr><td>0x00</td><td>TEST UNIT READY</td><td>"Is the drive online?"</td></tr>
+  <tr><td>0x03</td><td>REQUEST SENSE</td><td>Get extended error info after a failed command</td></tr>
+  <tr><td>0x12</td><td>INQUIRY</td><td>Get device type / vendor / model strings</td></tr>
+  <tr><td>0x25</td><td>READ CAPACITY</td><td>Get total CD-sector count + block size</td></tr>
+  <tr><td>0x28</td><td>READ (10)</td><td>Read N sectors at LBA</td></tr>
+  <tr><td>0x43</td><td>READ TOC</td><td>Get table of contents</td></tr>
+  <tr><td>0x46</td><td>GET CONFIGURATION</td><td>Feature descriptors (CD-ROM / CD-R / DVD / …)</td></tr>
+  <tr><td>0x5A</td><td>MODE SENSE (10)</td><td>Read mode parameter pages</td></tr>
+</table>
+
+<h2>The data-transfer phase</h2>
+<p>After the PACKET command, the device may have data to send. It signals byte count via the LBA-mid (0x1F4) and LBA-high (0x1F5) registers ("interrupt reason" in ATAPI terminology). The host reads those, then reads <code>byteCount/2</code> words from the data port.</p>
+<p>For multi-phase transfers (large reads), the device cycles DRQ — the host drains the current phase, the device queues the next chunk, fires IRQ. For READ (10) of one 2048-byte CD-sector, this is one phase.</p>
+
+<h2>CD-sectors vs disk-sectors</h2>
+<p>CD-ROM sectors are 2048 bytes (raw Mode 1 data). Linux's block layer doesn't care about the sector size in principle, but the ATAPI device announces 2048 via READ CAPACITY. Our tinyemu-go ATAPI controller does 4 underlying-512-byte BlockDevice reads to satisfy a 2048-byte CD read.</p>
+
+<h2>The ATAPI signature</h2>
+<p>How does the kernel know whether a connected device is an ATA disk or an ATAPI device? Probes the IDENTIFY DEVICE command first. On a CD-ROM, that command <em>aborts</em> with the task-file registers set to a specific signature: lba_low=1, lba_mid=0x14, lba_high=0xEB, sector_count=1. Seeing that signature, the kernel knows to use IDENTIFY PACKET DEVICE (0xA1) instead and to drive the device via PACKET commands.</p>
+
+<h2>tinyemu-go implementation</h2>
+<p>Same file as plain ATA: <code>machine/pc/ata.go</code>. The controller has an <code>isCDROM</code> flag; commands branch on it. <code>NewCDROMController</code> creates the ATAPI variant; the signature is set in <code>applyATAPISignature</code>. The MMC subset is in <code>dispatchPacketCommand</code>. Tests are in <code>ata_test.go</code> (TestATAPIInquiry, TestATAPIReadCapacity, TestATAPIRead10, …).</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+ATAPI is a brilliant piece of bridging: "We can't change the bus, but we can tunnel a different protocol over it." Same physical layer, completely different software stack. The same trick happens at higher levels — SCSI over USB (BOT), SCSI over Fibre Channel, iSCSI over TCP — all variations of "package up a SCSI command and pretend the transport is a SCSI bus."
+</div>
+`,
+  exercises: [
+    "Why does ATA IDENTIFY DEVICE abort on a CD-ROM (instead of returning valid identify data)? What does that signal to the kernel?",
+    "Look at <code>machine/pc/ata.go:dispatchPacketCommand</code>. Which MMC commands are implemented? Which ones would you need to add to support DVDs?",
+    "Trace a complete READ(10) of 2 CD-sectors: what port operations does the host execute? Count the IRQs."
+  ]
+},
+
+{
+  id: 16, phase: 3,
+  title: "AHCI / SATA: The Modern PCI Storage Controller",
+  subtitle: "When IDE wasn't enough anymore",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: SATA replaces IDE physically (point-to-point serial instead of shared parallel); AHCI (Advanced Host Controller Interface) replaces the task-file model with command lists in MMIO; how AHCI exposes itself as a PCI device with a single MMIO BAR; NCQ (Native Command Queuing) lets the device reorder commands; modern multi-port AHCI controllers.</p>
+<div class="box box-stub">
+<strong>Stub</strong>
+We don't plan to implement AHCI in tinyemu-go — IDE PIO + ATAPI covers the disk-boot use case. This lesson will be a "reference" rather than tied to emulator code.
+</div>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 17, phase: 3,
+  title: "NVMe: The Lesson from PCIe",
+  subtitle: "What happens when storage is faster than your protocol",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: NVMe submission/completion queues; PCIe Gen 4+ bandwidth; doorbell registers; namespaces vs partitions; why NVMe collapsed AHCI's 30 K commands per second limit; modern multi-queue I/O scheduling.</p>
+<div class="box box-stub">
+<strong>Stub</strong>
+Reference lesson; we won't implement NVMe in tinyemu-go.
+</div>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 18, phase: 3,
+  title: "Filesystems: From Sector to File",
+  subtitle: "How byte arrays become named hierarchies",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: superblock, inode, directory entry; ext2 as the canonical simple filesystem; the VFS layer; how files are looked up; the page cache; journaling (ext4) and copy-on-write (btrfs, ZFS) at a conceptual level.</p>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 19, phase: 3,
+  title: "Disk Partitioning: MBR and GPT",
+  subtitle: "Tables of contents on the disk itself",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: the 512-byte MBR (Master Boot Record) layout; primary/extended/logical partitions; the 2 TB MBR limit and why; GPT (GUID Partition Table); how Linux's <code>/dev/sda1</code> is constructed from partition-table data; how UEFI knows where to load the bootloader.</p>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 20, phase: 3,
+  title: "initramfs and Early-Userspace",
+  subtitle: "What runs before your real root filesystem",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: why initramfs exists (load drivers needed to mount real root); how the kernel unpacks a cpio archive into a tmpfs; the <code>/init</code> contract; switch_root vs pivot_root; how dracut/mkinitcpio build distro-specific initramfses.</p>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+// ============================================================
+// PHASE 4 — Networking (all stubs for now)
+// ============================================================
+{
+  id: 21, phase: 4,
+  title: "Ethernet at the Frame Level",
+  subtitle: "What a NIC actually sends and receives",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: Ethernet frame layout (preamble, dest MAC, src MAC, type/length, payload, FCS); collision detection and CSMA/CD on the historical shared coax; modern switched Ethernet (no collisions); MTU; jumbo frames; VLAN tagging.</p>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 22, phase: 4,
+  title: "NE2000 / RTL8139: The Classic NICs",
+  subtitle: "How a simple Ethernet card actually works",
+  stub: true,
+  content: `
+<h2>Coming soon — paired with NIC implementation</h2>
+<p>Topics: the NE2000 register layout; transmit/receive buffer rings; programmed-I/O packet copying; receive completion interrupts; MAC address EEPROM; multicast filters; why RTL8139 came along (PCI, slightly better) and then was itself superseded by virtio-net.</p>
+<div class="box box-stub">
+<strong>Stub</strong>
+Will be expanded when we add NE2000 (or virtio-net) to tinyemu-go.
+</div>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 23, phase: 4,
+  title: "TCP/IP at the Kernel Level",
+  subtitle: "Sockets, sk_buff, the routing table",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: the sk_buff structure (Linux's universal packet container); the netfilter hooks; the routing-table lookup; segment offload (TSO/GRO) and why it matters; the rise of XDP for fast-path bypass.</p>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 24, phase: 4,
+  title: "ARP, DHCP, and the First Packet",
+  subtitle: "How a freshly-booted machine learns who its neighbours are",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: ARP request/reply (resolving an IP to a MAC on the local LAN); DHCP handshake (DISCOVER/OFFER/REQUEST/ACK); how a network namespace gets its first IP; the "ARP cache" and its staleness rules.</p>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 25, phase: 4,
+  title: "User-Mode Networking",
+  subtitle: "Slirp and how emulators give VMs internet without root",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: slirp's user-mode TCP/IP stack; why VMs can have networking without TAP devices or root privileges; the cost (TCP-over-TCP if a VPN is in the way); how QEMU / tinyemu-go integrate it.</p>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+// ============================================================
+// PHASE 5 — virtio
+// ============================================================
+{
+  id: 26, phase: 5,
+  title: "virtio: A Protocol, Not a Device",
+  subtitle: "The standard for paravirtualised I/O",
+  content: `
+<h2>What virtio is</h2>
+<p>virtio is a standardised paravirtualisation protocol — a set of conventions for how a guest OS and a hypervisor exchange I/O. Not a specific device. There's <strong>virtio-blk</strong> (block storage), <strong>virtio-net</strong> (network), <strong>virtio-9p</strong> (filesystem), <strong>virtio-console</strong>, <strong>virtio-gpu</strong>, <strong>virtio-sound</strong>, and many more — all built on the same underlying queue mechanism.</p>
+<p>The OSS spec (OASIS Committee Specification) defines the protocol; Linux's drivers are in <code>drivers/virtio/</code> and per-class subdirectories. Every hypervisor that wants Linux to perform well implements virtio.</p>
+
+<h2>Why bother with virtio?</h2>
+<p>The naive approach to virtualising hardware is to perfectly emulate a real device (e.g. an Intel e1000 NIC). The guest is happy — its drivers work unchanged. But every interaction goes through expensive trap-and-emulate: the guest writes a register, the hypervisor traps, decodes, simulates side effects, returns. Hundreds of cycles per packet.</p>
+<p>virtio's bargain: design a device specifically for virtualisation, optimised for batched access. Guest drivers know they're talking to a hypervisor and use shared-memory ring buffers — far fewer trap-and-emulates per unit of work. Result: 10× the throughput at a fraction of the CPU.</p>
+
+<h2>Three layers</h2>
+<table class="corr-table">
+  <tr><th>Layer</th><th>Concerned with</th></tr>
+  <tr><td>Transport</td><td>How the guest talks to the device's control registers: virtio-mmio (memory-mapped) or virtio-pci (as a PCI device)</td></tr>
+  <tr><td>Common features</td><td>Feature bits, device-status state machine, virtqueues, descriptors</td></tr>
+  <tr><td>Device class</td><td>What the data on the queue means — block requests, ethernet frames, console bytes, …</td></tr>
+</table>
+
+<h2>The big-picture picture</h2>
+<pre>     Guest OS                Host (hypervisor)
+   ┌──────────┐              ┌──────────────┐
+   │ Driver   │  ╭────────╮  │  Backend     │
+   │          │←─┤ vring  ├─→│  process     │
+   │          │  ╰────────╯  │              │
+   └──────────┘   (shared    └──────┬───────┘
+                  memory)           │
+                                    ↓
+                             real disk / network
+<span class="lang-tag">virtio data plane</span></pre>
+<p>The vring (virtqueue) is the heart of it. Both sides see the same memory; the guest puts descriptors in, the host processes them, the guest reads back the results. Doorbell registers signal "new work to do" / "work complete." We'll dig into that machinery in the next lesson.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+virtio is the I/O equivalent of what hardware extensions (VT-x, EPT) did for CPU virtualisation: redesign the interface so it cooperates with the hypervisor rather than fighting it. Anywhere you see "para-" in computing, that's the pattern.
+</div>
+`,
+  exercises: [
+    "Why doesn't virtio reuse an existing standard like SCSI or AHCI? What's special about being virtio-native?",
+    "If virtio is so much faster than emulated hardware, why does anyone emulate hardware? When does it make sense?",
+    "Browse the Linux kernel <code>drivers/virtio/</code> directory. What files are common to all virtio devices? What's per-class?"
+  ]
+},
+
+{
+  id: 27, phase: 5,
+  title: "virtqueues and Descriptors",
+  subtitle: "The shared-memory ring at the heart of virtio",
+  content: `
+<h2>What a virtqueue is</h2>
+<p>A virtqueue is a ring buffer in shared memory consisting of three components:</p>
+<ol>
+  <li><strong>The descriptor table.</strong> An array of entries; each entry describes one memory range (address, length, flags). Forms chains for scatter-gather.</li>
+  <li><strong>The available ring (driver → device).</strong> The driver writes here when it has work. Each entry is the index of the head of a descriptor chain.</li>
+  <li><strong>The used ring (device → driver).</strong> The device writes here when work is done. Each entry is the head index plus a "bytes written" count.</li>
+</ol>
+<p>The three areas are placed in shared guest memory; both guest and hypervisor can read and write them. Doorbell MMIO registers signal "new available entries" (kick) and "new used entries" (interrupt).</p>
+
+<h2>A read request, end to end</h2>
+<p>Imagine the guest issues a virtio-blk READ:</p>
+<ol>
+  <li>Guest driver allocates 3 buffers: a request header (16 bytes), a data buffer (4096 bytes), a status byte.</li>
+  <li>Driver fills 3 descriptors pointing at those buffers; chains them via the NEXT flag.</li>
+  <li>Driver writes the head index into the available ring; bumps the ring's index field.</li>
+  <li>Driver writes to the doorbell MMIO register — this notifies the hypervisor.</li>
+  <li>Hypervisor reads available ring, walks the descriptor chain, performs the read, fills the data buffer, writes the status byte.</li>
+  <li>Hypervisor writes head index into the used ring; bumps the index.</li>
+  <li>Hypervisor raises an interrupt.</li>
+  <li>Guest's IRQ handler reads the used ring, finds the completed request, wakes whoever was waiting.</li>
+</ol>
+
+<h2>Why this is fast</h2>
+<p>One doorbell write per batch of requests. The hypervisor can process multiple in-flight requests with one syscall to its real backend. The guest can submit multiple before sleeping. No per-instruction trap-and-emulate; the only "expensive" step is the doorbell + IRQ pair.</p>
+
+<h2>Indirect descriptors</h2>
+<p>For large requests with many scatter-gather elements, virtio supports "indirect" descriptors: one entry in the table points to <em>another</em> descriptor table in guest memory. The hypervisor walks the inner table to find the real buffers. Lets a single ring entry describe arbitrarily many segments.</p>
+
+<h2>tinyemu-go's virtqueue</h2>
+<p>Our implementation in <code>virtio/queue.go</code> models a single queue: descriptor table + avail ring + used ring, all backed by guest-physical memory. When the guest writes the doorbell, the hypervisor (us) reads avail, walks descriptors, calls into the device-specific backend (e.g. virtio-blk handler that calls <code>BlockDevice.ReadSectors</code>), then writes back to used and raises IRQ.</p>
+
+<div class="box box-note">
+<strong>Note</strong>
+The exact wire format of the rings is fixed by the spec (and slightly different in virtio 1.0 vs 1.1 — the "packed virtqueue" in 1.1 collapses the three rings into one, sacrificing a bit of complexity for memory locality). We implement the 1.0 (split) format.
+</div>
+`,
+  exercises: [
+    "Why have three separate rings (descriptor, avail, used) instead of one combined ring? What's the design rationale?",
+    "Read <code>virtio/queue.go</code> in tinyemu-go. Find where the doorbell triggers descriptor processing.",
+    "If the guest crashes mid-request (after writing avail, before reading used), what does the device see? How does recovery work?"
+  ]
+},
+
+{
+  id: 28, phase: 5,
+  title: "virtio-blk: A Block Device, virtio-Style",
+  subtitle: "Disk I/O in three ring entries",
+  content: `
+<h2>The device class</h2>
+<p>virtio-blk is one of the simplest virtio devices. The device exposes a single virtqueue; each request on the queue is one block operation (read or write).</p>
+
+<h2>The request format</h2>
+<p>Each virtio-blk request is a 3-descriptor chain:</p>
+<table class="corr-table">
+  <tr><th>Descriptor</th><th>Direction</th><th>Contents</th></tr>
+  <tr><td>Header (16 bytes)</td><td>Driver → device</td><td>type (READ/WRITE/FLUSH), priority (unused), sector (LBA)</td></tr>
+  <tr><td>Data buffer (N×512 bytes)</td><td>Both</td><td>Either source bytes (write) or destination (read)</td></tr>
+  <tr><td>Status (1 byte)</td><td>Device → driver</td><td>0 = OK, 1 = IO error, 2 = unsupported</td></tr>
+</table>
+<p>So a 4 KB block read is one ring entry with 3 descriptors: an outbound header, an inbound 4 KB buffer, an inbound status byte.</p>
+
+<h2>The device side</h2>
+<p>The hypervisor's backend:</p>
+<ol>
+  <li>Pulls an avail-ring entry.</li>
+  <li>Walks the descriptor chain to find header, data, status.</li>
+  <li>Reads the header to learn type, sector.</li>
+  <li>For READ: calls the host's actual storage backend; copies bytes into the guest's data buffer; writes 0 to status.</li>
+  <li>For WRITE: copies bytes from the guest buffer to the storage backend; writes 0 to status.</li>
+  <li>Writes a used-ring entry, raises an IRQ.</li>
+</ol>
+
+<h2>tinyemu-go implementation</h2>
+<p>Our virtio-blk is in <code>virtio/block.go</code>. It implements the spec's wire format on top of our generic <code>devices.BlockDevice</code> interface. The same BlockDevice (file-backed, memory-backed, etc.) can serve via ATA OR via virtio-blk depending on which transport the board uses — the device-level interface is identical, only the transport differs.</p>
+<p>Today's wiring:</p>
+<ul>
+  <li>RISC-V virt board: virtio-blk over virtio-mmio (the existing path).</li>
+  <li>PC board: ATA via legacy ports (just built last session).</li>
+  <li>Future ARM virt board: virtio-blk over virtio-mmio (would just work).</li>
+  <li>Future PC board with virtio-pci: same virtio-blk, different transport — pending PCI host bridge.</li>
+</ul>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+virtio-blk shows the strength of the layered design: one wire format works over MMIO, PCI, or even channel I/O on s390. The same kernel driver handles all of them via a transport adapter. This is the dream every standards committee chases; virtio achieved it.
+</div>
+`,
+  exercises: [
+    "Why doesn't virtio-blk support flush as a flag on a write, instead of a separate FLUSH op? Look at the spec for the answer.",
+    "Compare virtio-blk's protocol to NVMe's. Both are queue-based; what differs? Why?",
+    "Trace the path of a 8-sector READ through <code>virtio/block.go</code>. Where does the backend BlockDevice get called?"
+  ]
+},
+
+{
+  id: 29, phase: 5,
+  title: "virtio-net",
+  subtitle: "Ethernet without the Ethernet card",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: virtio-net's two virtqueues (TX and RX); the per-packet 12-byte virtio header; offload features (TSO, checksum offload); the receive-buffer-pool model.</p>
+<div class="box box-stub">
+<strong>Stub</strong>
+tinyemu-go already has virtio-net for RISC-V; will be expanded when documenting it and porting to PC.
+</div>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 30, phase: 5,
+  title: "Transport: virtio-mmio vs virtio-pci",
+  subtitle: "Same protocol, two ways to mount it",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: virtio-mmio (one device per fixed memory region; used on virt-platform boards like RISC-V virt, ARM virt); virtio-pci (devices appear in PCI config space; used on PC and modern hypervisors); how the same driver works over both via a small transport adapter; the legacy-vs-modern (virtio 0.95 vs 1.0+) split and why it matters.</p>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+{
+  id: 31, phase: 5,
+  title: "Features Negotiation and Versioning",
+  subtitle: "How drivers and devices agree on what they can do",
+  stub: true,
+  content: `
+<h2>Coming soon</h2>
+<p>Topics: feature bits as a 64-bit (now 128-bit) bitmap; the negotiation handshake on device startup; per-class features (e.g. virtio-blk's GEOMETRY, BLK_SIZE, MQ); backwards compatibility and "transitional" devices.</p>
+`,
+  exercises: ["(filled in when this lesson is expanded)"]
+},
+
+// ============================================================
+// PHASE 6 — Building It in tinyemu-go
+// ============================================================
+{
+  id: 32, phase: 6,
+  title: "The devices Package",
+  subtitle: "Where CPU-agnostic device interfaces live",
+  content: `
+<h2>The architectural split</h2>
+<p>tinyemu-go's source is laid out so that hardware abstractions are reusable across CPU architectures:</p>
+<table class="corr-table">
+  <tr><th>Package</th><th>Purpose</th><th>CPU-agnostic?</th></tr>
+  <tr><td><code>cpu/x86/</code></td><td>x86-32 decoder/executor</td><td>No (per arch)</td></tr>
+  <tr><td><code>cpu/riscv/</code></td><td>RISC-V decoder/executor</td><td>No</td></tr>
+  <tr><td><code>mem/</code></td><td>Physical memory map, device-MMIO registry</td><td>Yes</td></tr>
+  <tr><td><code>devices/</code></td><td>BlockDevice, EthernetDevice, FIFO, etc.</td><td>Yes</td></tr>
+  <tr><td><code>virtio/</code></td><td>virtio protocol over MMIO; class drivers (blk, net, p9)</td><td>Yes (transport-agnostic at the protocol level)</td></tr>
+  <tr><td><code>machine/</code></td><td>RISC-V virt board (legacy "Machine" name)</td><td>No (board)</td></tr>
+  <tr><td><code>machine/pc/</code></td><td>x86 PC board: PIC, PIT, RTC, UART, ATA, …</td><td>No</td></tr>
+  <tr><td><code>cmd/temu/</code></td><td>The CLI; picks a board and wires drives/nets to it</td><td>Yes (branches via interface assertions)</td></tr>
+</table>
+
+<h2>The BlockDevice interface</h2>
+<p>In <code>devices/block.go</code>:</p>
+<pre><span class="kw">type</span> <span class="ty">BlockDevice</span> <span class="kw">interface</span> {
+    <span class="fn">GetSectorCount</span>() <span class="kw">int64</span>
+    <span class="fn">ReadSectors</span>(sectorNum <span class="kw">uint64</span>, buf []<span class="kw">byte</span>, n <span class="kw">int</span>) (<span class="kw">int</span>, <span class="kw">error</span>)
+    <span class="fn">WriteSectors</span>(sectorNum <span class="kw">uint64</span>, buf []<span class="kw">byte</span>, n <span class="kw">int</span>) (<span class="kw">int</span>, <span class="kw">error</span>)
+    <span class="fn">Flush</span>() <span class="kw">error</span>
+    <span class="fn">Close</span>() <span class="kw">error</span>
+}<span class="lang-tag">devices/block.go</span></pre>
+<p>This single interface is used by all backends:</p>
+<ul>
+  <li><code>devices.MemoryBlockDevice</code> — for tests</li>
+  <li>cmd/temu's file-backed implementation (with ReadOnly / Snapshot modes)</li>
+  <li>Hypothetical: a CoW overlay implementation, an iSCSI client implementation, etc.</li>
+</ul>
+<p>And consumed by:</p>
+<ul>
+  <li><code>virtio.BlockDevice</code> — virtio-blk protocol layer</li>
+  <li><code>pc.ATAController</code> — IDE/ATA protocol layer</li>
+  <li><code>pc.ATAController</code> in CD-ROM mode — ATAPI layer</li>
+</ul>
+
+<h2>The dispatch in cmd/temu</h2>
+<p>cmd/temu opens drives generically (via <code>openBlockDevice</code>) and asks the board "how do you want me to attach this?" The board implements a capability interface:</p>
+<pre><span class="kw">type</span> <span class="ty">BlockDeviceAttacher</span> <span class="kw">interface</span> {
+    <span class="fn">AttachBlockDevice</span>(bd devices.<span class="ty">BlockDevice</span>) <span class="kw">error</span>
+}<span class="lang-tag">machine/board.go</span></pre>
+<p>PC implements it via ATA. A future ARM-virt board would implement it via virtio-blk-mmio. RISC-V doesn't implement it (today) — cmd/temu falls back to virtio-blk for that board. No cmd/temu code branches on a specific board type; it just asks "do you support this capability?"</p>
+
+<div class="box box-key">
+<strong>Architectural Discipline</strong>
+The single most important rule in this codebase: anything in <code>devices/</code> or <code>virtio/</code> must not import <code>cpu/x86</code> or <code>machine/pc</code>. Devices know about their protocol and the BlockDevice interface; nothing else. That discipline is what will let us add ARM and x86-64 without re-doing storage and networking.
+</div>
+`,
+  exercises: [
+    "Look at <code>cmd/temu/main.go</code>'s drive-opening loop. How does it decide between ATA and virtio-blk? Where is the branching?",
+    "Implement (sketch) a <code>FileBackedBlockDevice</code> that satisfies the interface using <code>os.File</code>'s ReadAt/WriteAt. How does Snapshot mode complicate this?",
+    "What would change if we wanted to support trim (telling the device some sectors are no longer used)? Trace through the interface, the protocol, the backend."
+  ]
+},
+
+{
+  id: 33, phase: 6,
+  title: "The IDE/ATA Controller",
+  subtitle: "machine/pc/ata.go, line by line",
+  content: `
+<h2>The full picture</h2>
+<p>The ATA controller in <code>machine/pc/ata.go</code> is one struct with two modes (disk + ATAPI CD-ROM), one method per I/O port, plus command/data handlers. Around 700 lines total.</p>
+
+<h2>The state machine</h2>
+<p>The controller's life cycle, from the kernel's perspective:</p>
+<ol>
+  <li><strong>Idle.</strong> Status = DRDY | DSC. Kernel can issue any command.</li>
+  <li><strong>Command received.</strong> Controller validates; if invalid, sets ERR + ABRT, raises IRQ. If valid, proceeds.</li>
+  <li><strong>Preparing data.</strong> (Status briefly BSY in real hardware; we skip this and go directly to ready.)</li>
+  <li><strong>Data ready.</strong> Status = DRDY | DSC | DRQ. IRQ raised. Kernel must drain (or fill) the data buffer.</li>
+  <li><strong>Data drained.</strong> If more sectors, loop back to step 4 with next sector. If done, status returns to DRDY | DSC; final IRQ raised.</li>
+  <li><strong>Idle.</strong> Repeat.</li>
+</ol>
+
+<h2>Key methods</h2>
+<ul>
+  <li><code>NewATAController(pic, bd)</code> — disk variant.</li>
+  <li><code>NewCDROMController(pic, bd)</code> — ATAPI variant; sets the signature.</li>
+  <li><code>Register(io)</code> — wires the controller into the I/O dispatcher. 8 task-file ports + control port. The data port also gets a 16-bit-specific handler (Lesson 14).</li>
+  <li><code>writeCommand(cmd)</code> — the giant switch on what command was issued. Branches on isCDROM.</li>
+  <li><code>readDataByte/readDataWord</code> — fetches bytes from the in-flight buffer (or ATAPI data slice).</li>
+  <li><code>writeDataByte/writeDataWord</code> — drains incoming bytes. In ATAPI's PACKET-command phase, these consume the 12-byte SCSI command.</li>
+  <li><code>raiseIRQ/readStatusAndClearIRQ</code> — IRQ 14 lifecycle.</li>
+  <li><code>fillIdentifyBuffer/fillIdentifyPacketBuffer</code> — the 256-word identify responses (Lesson 14).</li>
+  <li><code>dispatchPacketCommand</code> — the SCSI command parser for ATAPI (Lesson 15).</li>
+</ul>
+
+<h2>The IRQ lifecycle subtlety</h2>
+<p>An IRQ is asserted on each "data ready" boundary and on command completion. The kernel acknowledges by reading the status register at 0x1F7 — which also returns the status value. Reading the <em>alternate</em> status at 0x3F6 returns the same byte but does NOT clear the IRQ. This is so polling loops can read status without side effects.</p>
+<p>Our implementation: <code>readStatusAndClearIRQ</code> is bound to 0x1F7 reads; the alternate-status handler at 0x3F6 just returns the byte.</p>
+
+<h2>What's intentionally missing</h2>
+<ul>
+  <li>Slave drive (drive 1). Single-drive is enough for boot.</li>
+  <li>LBA48 (large disks). LBA28 covers up to 128 GiB.</li>
+  <li>UDMA modes. PIO is universally supported; UDMA is a performance optimisation.</li>
+  <li>Cylinder/Head/Sector (CHS) addressing. Linux uses LBA exclusively for modern disks.</li>
+  <li>Secondary IDE channel (0x170-0x177 + 0x376). Same shape; would be a second controller instance.</li>
+</ul>
+
+<div class="box box-key">
+<strong>Reading order</strong>
+Open <code>machine/pc/ata.go</code> alongside <code>machine/pc/ata_test.go</code>. Read each command handler; then read the matching test. The tests are the executable spec for what each port operation does.
+</div>
+`,
+  exercises: [
+    "Trace <code>TestATAReadOneSector</code> by hand. List every port write/read in order, alongside the controller's internal state.",
+    "How would you add LBA48 support? Identify the registers that change and the new commands (0x24, 0x34).",
+    "Implement a 'read with retry on bad sector' command in the controller. Where would the retry counter live?"
+  ]
+},
+
+{
+  id: 34, phase: 6,
+  title: "The ATAPI Extension",
+  subtitle: "How we layered CD-ROM onto the same controller",
+  content: `
+<h2>The minimal addition</h2>
+<p>ATAPI is one flag and a parallel set of handlers, sharing the underlying state machine with plain ATA. The struct grew by ~5 fields; the constructor became <code>NewCDROMController</code>; <code>writeCommand</code> grew an <code>if isCDROM</code> branch; we added <code>dispatchPacketCommand</code> for SCSI parsing.</p>
+
+<h2>The control-flow shape</h2>
+<pre>writeCommand(cmd):
+  if cdrom:
+    switch cmd:
+      IDENTIFY      → abort with ATAPI signature
+      IDENTIFY_PKT  → return ATAPI identify data
+      PACKET        → enter "awaiting 12-byte SCSI command" state
+      …
+  else:
+    [original ATA disk path]
+
+writeDataByte/Word(b):
+  if awaitingPacket:
+    append to 12-byte packet command buffer
+    if full → dispatchPacketCommand()
+  else if cdrom and have atapiData:
+    [unused; ATAPI writes go to packet command phase]
+  else:
+    [original sector-write path]<span class="lang-tag">control flow</span></pre>
+
+<h2>The MMC subset</h2>
+<p>Twelve SCSI commands implemented (see Lesson 15 for the full list). Each one builds a small response buffer and hands it to <code>startATAPIDataIn</code>, which sets the byte-count registers (lba_mid / lba_high) and asserts DRQ. The host drains; we advance.</p>
+
+<h2>The 2048-byte sector wrinkle</h2>
+<p>CD-ROM sectors are 2048 bytes. Our <code>BlockDevice</code> interface uses 512-byte sectors. For READ(10), each CD-sector translates to 4 underlying-sector reads:</p>
+<pre><span class="kw">func</span> (a *<span class="ty">ATAController</span>) <span class="fn">loadNextATAPISector</span>() {
+    buf := <span class="fn">make</span>([]<span class="kw">byte</span>, cdSectorSize)        <span class="cm">// 2048</span>
+    baseLBA := <span class="kw">uint64</span>(a.atapiCurrentLBA) * <span class="nm">4</span>  <span class="cm">// underlying 512-byte LBA</span>
+    a.device.<span class="fn">ReadSectors</span>(baseLBA, buf, <span class="nm">4</span>)
+    <span class="cm">// ... hand buf to startATAPIDataIn ...</span>
+}<span class="lang-tag">machine/pc/ata.go</span></pre>
+<p>This way the ISO file passed in by the user is read as-is — sector 0 of the CD is offset 0 in the file, sector 1 is offset 2048, etc. — and the BlockDevice abstraction is preserved.</p>
+
+<h2>What ATAPI doesn't do (yet)</h2>
+<ul>
+  <li>Write support (CD-R / CD-RW). MMC has a whole separate command family for burning.</li>
+  <li>DVD. Different feature descriptors; mostly the same protocol.</li>
+  <li>Subchannel data (CD-DA, raw audio frames).</li>
+  <li>Multi-session discs.</li>
+</ul>
+<p>None of these matter for booting from a single-session data CD ISO, which is the use case we're targeting.</p>
+
+<h2>Tests</h2>
+<p><code>machine/pc/ata_test.go</code> has dedicated ATAPI tests covering INQUIRY, READ_CAPACITY, READ(10), READ(10) multi-sector, TEST_UNIT_READY, and the ATAPI signature check. They cover the full command path end to end.</p>
+
+<div class="box box-key">
+<strong>Reading order</strong>
+Read the ATAPI code in this order: (1) <code>applyATAPISignature</code> + the <code>if isCDROM</code> branch in <code>writeCommand</code>; (2) <code>dispatchPacketCommand</code>'s switch — pick one case (INQUIRY is the simplest) and follow it; (3) the matching test in <code>ata_test.go</code>.
+</div>
+`,
+  exercises: [
+    "Why does <code>dispatchPacketCommand</code> not raise IRQ at the start of a transfer for TEST_UNIT_READY? Trace a successful TEST_UNIT_READY through the code.",
+    "Add support for the <code>READ DISC INFORMATION</code> (0x51) MMC command (it's optional; some kernels probe it). What response would you return?",
+    "Why are CD sectors 2048 bytes when the underlying disk LBA is 512? What does the format hide / show?"
+  ]
+},
+
+{
+  id: 35, phase: 6,
+  title: "The PCI Host Bridge",
+  subtitle: "machine/pc/pci.go, line by line",
+  content: `
+<h2>The two halves</h2>
+<p>Our PCI implementation has two layers:</p>
+<ol>
+  <li><strong>The host bridge</strong> (<code>PCIHost</code>) — the chip that translates I/O port accesses at 0xCF8/0xCFC into reads and writes against device config space.</li>
+  <li><strong>The bus and devices</strong> (<code>PCIBus</code>, <code>PCIDevice</code>) — the data: a 32×8 grid of devices, each carrying 256 bytes of config space.</li>
+</ol>
+
+<h2>PCIDevice</h2>
+<pre><span class="kw">type</span> <span class="ty">PCIDevice</span> <span class="kw">struct</span> {
+    name   <span class="kw">string</span>
+    config [<span class="nm">256</span>]<span class="kw">byte</span>
+    onWrite <span class="kw">func</span>(d *<span class="ty">PCIDevice</span>, off <span class="kw">uint32</span>, val <span class="kw">uint32</span>, size <span class="kw">int</span>)
+}<span class="lang-tag">machine/pc/pci.go</span></pre>
+<p>The <code>config</code> array is the whole device-visible state. <code>NewPCIDevice(name, vendor, device, classCode, headerType)</code> fills in the mandatory fields at construction time. <code>SetIRQLine(line, pin)</code> sets the interrupt fields. Devices needing custom write semantics (e.g. BAR size-detection) install <code>onWrite</code>; our two simple devices don't.</p>
+
+<h2>The address-latch</h2>
+<p>The 32-bit value the kernel writes to 0xCF8 is decoded in <code>PCIHost.lookup</code>:</p>
+<pre>bit31:  must be 1 (enable)
+bits 23:16: bus number
+bits 15:11: device number (0-31)
+bits 10:8:  function number (0-7)
+bits 7:2:   register offset (dword-aligned)
+bits 1:0:   reserved (zero)<span class="lang-tag">0xCF8 layout</span></pre>
+<p>The host extracts these, looks up <code>bus.devices[dev][fn]</code>, and returns the device + offset, or signals "no device."</p>
+
+<h2>The data window</h2>
+<p>Reads and writes through 0xCFC, 0xCFD, 0xCFE, 0xCFF (one-byte resolution) all go to the same backing config space, indexed by <code>(latched_register | port&amp;3)</code>. 16-bit accesses at 0xCFC or 0xCFE use width-aware handlers we added to the I/O dispatcher specifically for ATA's data port (Lesson 14, same mechanism).</p>
+<p>The CPU's 32-bit-OUT splits into two Write16s; my host bridge handles both halves correctly because the 0xCFE handler ORs in port&amp;3 = 2, fetching the upper 16 bits of the targeted dword.</p>
+
+<h2>What's writable</h2>
+<p><code>defaultWrite</code> implements the PCI spec's default rules for "what's writable when the device doesn't override":</p>
+<ul>
+  <li>Command (0x04) and Cache Line / Latency Timer (0x0C, 0x0D) → writable.</li>
+  <li>BARs (0x10-0x27) → writable (devices without resources read back 0 anyway).</li>
+  <li>Expansion ROM base (0x30-0x33) and IRQ line (0x3C) → writable.</li>
+  <li>Vendor / Device / Revision / Class / Header Type → silently discarded (read-only).</li>
+</ul>
+<p>Devices needing different rules (e.g. a real PCI NIC with a BAR that returns the size mask on a 0xFFFFFFFF write) install an <code>onWrite</code> callback.</p>
+
+<h2>The two devices we add today</h2>
+<p>In <code>pc.New</code>:</p>
+<table class="corr-table">
+  <tr><th>Slot</th><th>Device</th><th>Vendor:Device</th><th>Class</th></tr>
+  <tr><td>(0, 0, 0)</td><td>Intel 440FX Host Bridge</td><td>8086:1237</td><td>0x060000 (Host bridge)</td></tr>
+  <tr><td>(0, 1, 0)</td><td>PIIX3 ISA Bridge (multi-fn)</td><td>8086:7000</td><td>0x060100 (ISA bridge)</td></tr>
+  <tr><td>(0, 1, 1)</td><td>PIIX3 IDE Controller</td><td>8086:7010</td><td>0x010180 (IDE, ProgIF 0x80)</td></tr>
+</table>
+<p>These three are the canonical "QEMU/i440FX" topology that Linux has known by name since the late 1990s. Our IDE PCI device is paired with the actual ATA controller already living at port 0x1F0 — the PCI device is the "announcement," the ATA controller is the actual port-I/O behaviour.</p>
+
+<h2>What changes from Linux's perspective</h2>
+<p>Before this change, the kernel emitted:</p>
+<pre>PCI: Fatal: No config space access function found
+PCI: Probing PCI hardware<span class="lang-tag">old dmesg</span></pre>
+<p>and PCI was disabled. After: the kernel walks the bus, sees the three devices, registers them with their drivers (or ignores them gracefully if no driver is built in). The IDE controller is discoverable via PCI now in addition to legacy port-scanning.</p>
+
+<h2>What's not yet here</h2>
+<ul>
+  <li>MMCONFIG (the PCIe MMIO config-space mechanism)</li>
+  <li>BAR size-detection masking (we don't need it for the IDE-in-compatibility-mode case)</li>
+  <li>The capabilities list (no MSI, no PCIe, no power management)</li>
+  <li>Bridge enumeration (we only model bus 0)</li>
+  <li>Hotplug</li>
+</ul>
+<p>None block real distros from booting; they're features that matter for performance or for unusual hardware. The standard "small i386 PC with IDE + serial + maybe VGA" target is fully covered by what we have.</p>
+
+<div class="box box-key">
+<strong>Reading order</strong>
+Open <code>machine/pc/pci.go</code> + <code>machine/pc/pci_test.go</code> side by side. Start with the host's <code>Register</code> method to see all the port-I/O wiring; then <code>lookup</code> for address decoding; then <code>readData</code>/<code>writeData</code> for the dispatch. The tests walk through every register Linux's <code>pci_scan_root_bus</code> reads during enumeration.
+</div>
+`,
+  exercises: [
+    "If the kernel writes 0x80000800 to 0xCF8, then reads 4 bytes from 0xCFC — what does it get back from our setup? Trace through <code>PCIHost.readData</code>.",
+    "Add a fourth PCI device — say a virtio-net at (0,2,0). What constructor call would you make? What class code (network controller, ProgIF 0)?",
+    "MMCONFIG would let the kernel access config space via a single MMIO read. Why is it faster than 0xCF8/0xCFC? Where in the chipset would the address get translated?"
+  ]
+},
+
+{
+  id: 36, phase: 6,
+  title: "VGA Text Mode",
+  subtitle: "machine/pc/vga.go, line by line",
+  content: `
+<h2>The two halves of a VGA emulation</h2>
+<p>To make a PC's VGA work for the boot console, we need two things:</p>
+<ol>
+  <li><strong>Stop the kernel from page-faulting</strong> when it writes to the 128 KB aperture at 0xA0000-0xBFFFF, where the text-mode framebuffer at 0xB8000 lives. We register that region as a device.</li>
+  <li><strong>Accept the legacy register writes</strong> the kernel makes to ports 0x3C0-0x3CF and 0x3D4-0x3DF — CRTC, sequencer, attribute controller, graphics controller, miscellaneous-output, input-status-1.</li>
+</ol>
+<p>Optionally — and this is where it becomes useful for development — render the 80×25 text-mode buffer to a developer-visible terminal as ANSI escape codes.</p>
+
+<h2>The text-mode framebuffer</h2>
+<p>Text mode is 80 columns × 25 rows. Each cell is 2 bytes:</p>
+<table class="corr-table">
+  <tr><th>Byte</th><th>Field</th><th>Range</th></tr>
+  <tr><td>0</td><td>Character (code page 437)</td><td>0-255</td></tr>
+  <tr><td>1</td><td>Attribute: low nibble = fg, high nibble = bg (top bit = blink)</td><td>0-255</td></tr>
+</table>
+<p>So row 5, column 10 lives at offset <code>(5*80 + 10) * 2 = 820</code> from the framebuffer base. The kernel's <code>vga_con</code> driver just writes characters directly there.</p>
+
+<h2>The CRTC registers</h2>
+<p>The CRT Controller has ~25 registers, accessed via a 2-port indirect interface:</p>
+<ul>
+  <li><strong>0x3D4</strong> — index register. Write the register number you want to access.</li>
+  <li><strong>0x3D5</strong> — data register. Reads or writes the register selected by 0x3D4.</li>
+</ul>
+<p>Of these registers, the only ones the kernel touches per character output are:</p>
+<ul>
+  <li><strong>0x0E</strong> — Cursor Position high byte</li>
+  <li><strong>0x0F</strong> — Cursor Position low byte</li>
+</ul>
+<p>Cursor position is a 16-bit linear offset into the text buffer. Programming it moves the hardware cursor. After writing a chunk of text, the kernel updates these — which makes them the natural trigger for "render the framebuffer now."</p>
+
+<h2>The other register groups</h2>
+<table class="corr-table">
+  <tr><th>Ports</th><th>Group</th><th>What it controls</th></tr>
+  <tr><td>0x3C4 / 0x3C5</td><td>Sequencer</td><td>Clock, character mode, plane masks</td></tr>
+  <tr><td>0x3CE / 0x3CF</td><td>Graphics Controller</td><td>Plane selection, write masks (matters for graphics, not text)</td></tr>
+  <tr><td>0x3C0 / 0x3C1</td><td>Attribute Controller</td><td>Palette mapping, blink/overscan</td></tr>
+  <tr><td>0x3C2 / 0x3CC</td><td>Misc Output</td><td>I/O address select, clock select</td></tr>
+  <tr><td>0x3DA</td><td>Input Status 1 (read)</td><td>Vertical retrace + AC flip-flop reset</td></tr>
+</table>
+<p>For a serial-console boot, the kernel programs all of these once at vga_con's init, then leaves them alone. Our emulation accepts every write, stores it, returns it on read. Mode-setting doesn't affect our rendering since we always render the text-mode buffer at 0xB8000 regardless of what the kernel's mode bits say.</p>
+
+<h2>The AC flip-flop quirk</h2>
+<p>The Attribute Controller is the strangest of the VGA registers. Index <em>and</em> data go through the same port (0x3C0), and an internal flip-flop decides which is which: first write is the index, second is the data, third is the next index, etc. Reading port 0x3DA resets the flip-flop to "index" mode — which is what every well-behaved VGA driver does before each AC access.</p>
+
+<h2>The rendering trick</h2>
+<p>Our <code>Render(w io.Writer)</code> method walks the 80×25 buffer and emits ANSI escape sequences:</p>
+<ol>
+  <li><code>\x1b[H</code> at the start — move cursor to home (top-left).</li>
+  <li>For each cell, emit a colour change (<code>\x1b[3Nm</code> for foreground, <code>\x1b[4Nm</code> for background) only if the colour differs from the previous cell.</li>
+  <li>Output the character (or a space if it's outside printable ASCII).</li>
+  <li>At end of row, <code>\x1b[0m</code> reset + newline.</li>
+</ol>
+<p>Non-blocking: the framebuffer is snapshotted into a local buffer under the lock, then the lock is released before writing to the sink. So a slow stderr doesn't stall the emulator.</p>
+
+<h2>The VGA-vs-ANSI colour-order quirk</h2>
+<p>VGA and ANSI both have 16 colours but they're <em>indexed differently</em>:</p>
+<table class="corr-table">
+  <tr><th>Index</th><th>VGA</th><th>ANSI</th></tr>
+  <tr><td>1</td><td>Blue</td><td>Red</td></tr>
+  <tr><td>3</td><td>Cyan</td><td>Yellow</td></tr>
+  <tr><td>4</td><td>Red</td><td>Blue</td></tr>
+  <tr><td>6</td><td>Brown</td><td>Cyan</td></tr>
+</table>
+<p>Without remapping, a VGA "red" message would appear blue on your terminal. We have a <code>vgaColorMap</code> array that translates: VGA index → ANSI index. The test <code>TestVGAFgAnsiColors</code> locks down a few key mappings (VGA blue → ANSI 4, VGA red → ANSI 1).</p>
+
+<h2>The rendering trigger</h2>
+<p>When does <code>Render</code> get called? Two paths:</p>
+<ul>
+  <li><strong>Automatic:</strong> on every write to CRTC register 0x0F (cursor low byte). Linux's vga_con drains a chunk of buffered output, ends with a cursor update — so this catches every meaningful screen refresh without flooding stderr.</li>
+  <li><strong>Manual:</strong> external code can call <code>vga.Render(&buf)</code> at any time to snapshot the current state.</li>
+</ul>
+<p>Rendering is opt-in: set <code>TINYEMU_X86_VGA_RENDER=1</code> in the environment and the auto-render path activates. Off by default — when we already have <code>console=ttyS0</code> producing serial output to stdout, also rendering VGA to stderr would just duplicate the noise. The env-var switch keeps it quiet unless you specifically want it.</p>
+
+<h2>Scope deliberately excluded</h2>
+<ul>
+  <li><strong>VGA graphics modes</strong> (the 4-plane / chained 256-color layouts). Linux only uses these for framebuffer console (<code>fbcon</code>), which we don't model.</li>
+  <li><strong>Mode programming via CRTC.</strong> The actual display timing the CRTC describes is irrelevant when we render in software.</li>
+  <li><strong>Palette programming via the DAC</strong> (ports 0x3C6-0x3C9). We accept the writes but ignore the values; rendering uses our fixed VGA→ANSI mapping.</li>
+  <li><strong>VBE / VESA BIOS Extensions.</strong> Used by Linux's fbcon for high-resolution console; out of scope.</li>
+</ul>
+
+<div class="box box-key">
+<strong>Reading order</strong>
+Open <code>machine/pc/vga.go</code> + <code>machine/pc/vga_test.go</code>. Start with the struct fields to see all the register state we maintain; then <code>Register</code> for the port wiring; then <code>readMem</code>/<code>writeMem</code> for the framebuffer; finally <code>Render</code> + <code>vgaColorMap</code> for the rendering. Each test exercises one register group.
+</div>
+`,
+  exercises: [
+    "Compute the byte offset in the text-mode framebuffer for row 12, column 40. What two bytes make up that cell?",
+    "Why does reading port 0x3DA reset the attribute controller flip-flop? What software pattern relies on this?",
+    "If you set <code>TINYEMU_X86_VGA_RENDER=1</code> AND <code>console=tty0</code> (VGA console), what would you see in your terminal during boot?"
+  ]
+},
+
+{
+  id: 37, phase: 6,
+  title: "Drive Wiring in cmd/temu",
+  subtitle: "How drives flow from CLI to controller",
+  content: `
+<h2>The CLI handshake</h2>
+<p>The user invokes:</p>
+<pre>cmd/temu -machine x86 -kernel bzImage -drive disk.img \\
+         -append "console=ttyS0 root=/dev/sda1 rw ..."<span class="lang-tag">CLI</span></pre>
+<p>What happens inside <code>cmd/temu/main.go</code>:</p>
+<ol>
+  <li>Parse <code>-drive disk.img</code> into <code>cfg.Drives</code> (a slice). Repeatable flag.</li>
+  <li>Parse <code>-machine x86</code>. Decide which board to create.</li>
+  <li>Call <code>pc.New(cfg)</code> (or RISC-V equivalent). Get back a <code>machine.Board</code>.</li>
+  <li>For each drive: <code>openBlockDevice(path, mode)</code> → a <code>devices.BlockDevice</code>.</li>
+  <li>Check if the board implements <code>machine.BlockDeviceAttacher</code>. If yes: hand the device over. If no: wire via virtio-blk-mmio.</li>
+  <li>Load the kernel + initrd into memory; build boot params.</li>
+  <li>Run.</li>
+</ol>
+
+<h2>The dispatch code</h2>
+<pre>attacher, ok := m.(machine.<span class="ty">BlockDeviceAttacher</span>)
+<span class="kw">for</span> _, drive := <span class="kw">range</span> cfg.Drives {
+    bd, err := <span class="fn">openBlockDevice</span>(drive.File, driveMode)
+    <span class="cm">// ...</span>
+    <span class="kw">if</span> ok {
+        attacher.<span class="fn">AttachBlockDevice</span>(bd)
+        <span class="kw">continue</span>
+    }
+    <span class="cm">// Fallback: VirtIO-MMIO</span>
+    virtBlock, _ := virtio.<span class="fn">NewBlockDevice</span>(m.<span class="fn">MemMap</span>(), addr, irq, bd)
+    m.<span class="fn">AddVirtIODevice</span>(virtBlock.<span class="fn">Device</span>())
+}<span class="lang-tag">cmd/temu/main.go</span></pre>
+
+<h2>The PC implementation of AttachBlockDevice</h2>
+<pre><span class="kw">func</span> (p *<span class="ty">PC</span>) <span class="fn">AttachBlockDevice</span>(bd devices.<span class="ty">BlockDevice</span>) <span class="kw">error</span> {
+    <span class="kw">if</span> p.ata != <span class="kw">nil</span> {
+        _ = p.ata.<span class="fn">Close</span>()
+    }
+    p.ata = <span class="fn">NewATAController</span>(p.pic, bd)
+    p.ata.<span class="fn">Register</span>(p.io)
+    <span class="kw">return</span> <span class="kw">nil</span>
+}<span class="lang-tag">machine/pc/pc.go</span></pre>
+<p>The PC creates an ATA controller, attaches the BlockDevice to it, and registers the controller with the I/O dispatcher. The kernel discovers the disk during its ATA probe at boot.</p>
+
+<h2>What's missing for full CD-ROM dispatch</h2>
+<p>Today the flag is <code>-drive</code> and the PC always uses ATA disk mode. To attach a CD-ROM, we need:</p>
+<ul>
+  <li>A new <code>-cdrom path.iso</code> flag (or per-drive media-type hint).</li>
+  <li>An <code>AttachCDROM</code> method on PC that creates <code>NewCDROMController</code>.</li>
+  <li>Coordination with <code>-drive</code> so the same channel doesn't get both.</li>
+</ul>
+<p>This is a 30-line addition pending — bundled with the PCI work where we'll also let a single channel serve master (disk) + slave (CD-ROM).</p>
+`,
+  exercises: [
+    "Why is the BlockDeviceAttacher interface in <code>machine/</code> rather than in <code>machine/pc/</code>? What does it gain us?",
+    "What changes if <code>cmd/temu</code> wants to support two drives: -drive disk1.img -drive disk2.img? Trace through.",
+    "Compare cmd/temu's dispatch logic to QEMU's. Where does each draw the line between generic and machine-specific?"
+  ]
+},
+
+{
+  id: 38, phase: 6,
+  title: "The IRQ 14 Cascade",
+  subtitle: "How ATA's interrupts reach the kernel",
+  content: `
+<h2>The PIC-of-two-PICs</h2>
+<p>The 8259 PIC has 8 IRQ lines. The PC architecture wants 15. The fix in 1984 was to chain two 8259s: master at I/O 0x20-0x21 with IRQs 0-7, slave at 0xA0-0xA1 with IRQs 8-15. The slave's INT line is wired to master's IRQ 2 — when any slave IRQ fires, master sees IRQ 2 asserted.</p>
+<p>This is why "IRQ 2" is reserved as the cascade input and effectively unusable for devices.</p>
+
+<h2>The chain in our emulator</h2>
+<p>Originally our PIC only supported IRQs 0-7. ATA uses IRQ 14, which lives on the slave. We had to extend the PIC to model the cascade:</p>
+<pre><span class="kw">type</span> <span class="ty">PIC8259</span> <span class="kw">struct</span> {
+    <span class="cm">// ... task-file registers ...</span>
+    slave  *<span class="ty">PIC8259</span>   <span class="cm">// master holds slave</span>
+    master *<span class="ty">PIC8259</span>   <span class="cm">// slave holds back-ref</span>
+}
+
+<span class="kw">func</span> <span class="fn">NewPIC8259Cascaded</span>(cpu *x86.<span class="ty">CPU</span>, masterBase, slaveBase <span class="kw">uint16</span>) *<span class="ty">PIC8259</span> {
+    master := <span class="fn">NewPIC8259</span>(cpu, masterBase)
+    slave := <span class="fn">NewPIC8259</span>(<span class="kw">nil</span>, slaveBase)
+    master.slave = slave
+    slave.master = master
+    <span class="kw">return</span> master
+}<span class="lang-tag">machine/pc/pic.go</span></pre>
+
+<h2>The routing logic</h2>
+<p>When something calls <code>master.RaiseIRQ(14)</code>:</p>
+<ol>
+  <li>Master sees IRQ ≥ 8; routes to <code>slave.RaiseIRQ(6)</code> (= 14 - 8).</li>
+  <li>Slave sets bit 6 of its IRR.</li>
+  <li>Slave's <code>updateINTR()</code> checks: any pending unmasked? Yes (bit 6). Asserts the cascade line — which means setting bit 2 of master's IRR.</li>
+  <li>Master's <code>updateINTR()</code>: bit 2 pending unmasked. Asserts the CPU's INTR line.</li>
+</ol>
+<p>The CPU acknowledges; <code>master.DeliverInterrupt()</code> sees IRQ 2 is highest priority, recognises the cascade, asks the slave for the actual vector. Slave returns its <code>icw2 + 6</code> (= 0x28 + 6 = 0x2E = vector 46) and updates its own IRR/ISR. Master marks its IRQ 2 in-service.</p>
+
+<h2>EOI propagation</h2>
+<p>On end-of-interrupt: kernel writes EOI to slave AND master (in that order). The slave clears its in-service bit; master clears bit 2.</p>
+
+<h2>The result</h2>
+<p>From the device's point of view, "RaiseIRQ(14)" just works. The cascade machinery is invisible. From the kernel's point of view, the standard "two PICs chained" arrangement Linux has known about since 1991 works correctly.</p>
+
+<div class="box box-key">
+<strong>Reading order</strong>
+Open <code>machine/pc/pic.go</code>. Read <code>NewPIC8259Cascaded</code>, then <code>RaiseIRQ</code> (the route-to-slave branch), then <code>updateINTR</code> (the slave's back-pressure), then <code>DeliverInterrupt</code> (the cascade resolution). The tests in <code>pic_test.go</code> exercise both single-PIC and cascaded behaviour.
+</div>
+`,
+  exercises: [
+    "Trace through what happens if IRQ 14 fires while the kernel is handling IRQ 0 (timer). How does priority work across the cascade?",
+    "Why must the kernel send EOI to <em>both</em> PICs on a slave-side IRQ? What's stored where that requires it?",
+    "What goes wrong if you forget the cascade and just raise master IRQ 14 directly? Walk through the failure."
+  ]
+},
+
+{
+  id: 39, phase: 6,
+  title: "Putting It All Together",
+  subtitle: "Booting Alpine Linux from a CD-ROM in tinyemu-go",
+  stub: true,
+  content: `
+<h2>Coming when ATAPI + PCI + VGA all land</h2>
+<p>The endgame: boot the existing <code>bin/alpine-standard-3.19.0-x86.iso</code> end-to-end. This lesson will narrate the boot, exactly like the x86 tutorial's final lesson, but focused on the device path:</p>
+<ol>
+  <li>Harness creates PC board with PCI host bridge, ATAPI CD-ROM, VGA console.</li>
+  <li>Kernel boots; Linux enumerates PCI, finds IDE controller, claims IRQ 14.</li>
+  <li>IDE probe sends IDENTIFY DEVICE to drive 0 — gets ATAPI abort.</li>
+  <li>Sends IDENTIFY PACKET DEVICE — gets CD-ROM identify.</li>
+  <li>Mounts ISO9660 from /dev/sr0 as initial root.</li>
+  <li>Drops to a shell, displays VGA text-mode output.</li>
+  <li>Each step references the relevant emulator code.</li>
+</ol>
+<div class="box box-stub">
+<strong>Stub</strong>
+This will be the capstone after PCI + VGA land. Until then, see the x86 tutorial's final lesson (50) for the kernel-and-initramfs equivalent.
+</div>
+`,
+  exercises: ["(filled in once the end-to-end boot works)"]
+},
+
+];
+
+// ============================================================
+// APP STATE
+// ============================================================
+let currentLesson = null;
+let completed = JSON.parse(localStorage.getItem('osdev_done') || '[]');
+
+function isComplete(id) { return completed.includes(id); }
+function markComplete(id) {
+  if (!completed.includes(id)) completed.push(id);
+  localStorage.setItem('osdev_done', JSON.stringify(completed));
+  updateProgress(); renderNav();
+}
+function unmarkComplete(id) {
+  completed = completed.filter(x => x !== id);
+  localStorage.setItem('osdev_done', JSON.stringify(completed));
+  updateProgress(); renderNav();
+}
+function updateProgress() {
+  const pct = LESSONS.length ? Math.round(completed.length / LESSONS.length * 100) : 0;
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('progress-text').textContent = `${completed.length} / ${LESSONS.length}`;
+}
+
+let collapsedPhases = new Set(JSON.parse(localStorage.getItem('osdev_collapsed') || '[]'));
+
+function renderNav(filter = '') {
+  const nav = document.getElementById('lesson-nav');
+  nav.innerHTML = '';
+  const f = filter.toLowerCase();
+  for (let ph = 1; ph <= 6; ph++) {
+    const meta = PHASE_META[ph];
+    const lessons = LESSONS.filter(l => l.phase === ph && (
+      !f || l.title.toLowerCase().includes(f) || l.subtitle.toLowerCase().includes(f)
+    ));
+    if (lessons.length === 0) continue;
+    const collapsed = collapsedPhases.has(ph);
+    const group = document.createElement('div');
+    group.className = 'phase-group';
+    group.innerHTML = `
+      <div class="phase-header ${collapsed ? 'collapsed' : ''}" data-phase="${ph}"
+           style="color:${meta.color}">
+        <span class="phase-dot" style="background:${meta.color}"></span>
+        ${meta.short}: ${meta.name}
+        <span class="phase-toggle">▾</span>
+      </div>
+      <div class="phase-lessons" ${collapsed ? 'style="display:none"' : ''}>
+        ${lessons.map(l => `
+          <div class="nav-item ${currentLesson === l.id ? 'active' : ''} ${isComplete(l.id) ? 'done' : ''}"
+               data-id="${l.id}"
+               style="${currentLesson === l.id ? `border-left-color:${meta.color}` : ''}">
+            <span class="nav-check">${isComplete(l.id) ? '✓' : ''}</span>
+            <span class="nav-num">${l.id}</span>
+            <span class="${l.stub ? 'nav-stub' : ''}">${l.title}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+    nav.appendChild(group);
+  }
+  nav.querySelectorAll('.phase-header').forEach(h => {
+    h.addEventListener('click', () => {
+      const ph = parseInt(h.dataset.phase);
+      const lessons = h.nextElementSibling;
+      if (collapsedPhases.has(ph)) {
+        collapsedPhases.delete(ph);
+        h.classList.remove('collapsed');
+        lessons.style.display = '';
+      } else {
+        collapsedPhases.add(ph);
+        h.classList.add('collapsed');
+        lessons.style.display = 'none';
+      }
+      localStorage.setItem('osdev_collapsed', JSON.stringify([...collapsedPhases]));
+    });
+  });
+  nav.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', () => showLesson(parseInt(item.dataset.id)));
+  });
+}
+
+function showLesson(id) {
+  const lesson = LESSONS.find(l => l.id === id);
+  if (!lesson) return;
+  currentLesson = id;
+  const phase = PHASE_META[lesson.phase];
+  const prev = LESSONS.find(l => l.id === id - 1);
+  const next = LESSONS.find(l => l.id === id + 1);
+
+  document.getElementById('topbar-phase').textContent = `${phase.short} — ${phase.name}`;
+  const prevBtn = document.getElementById('btn-prev');
+  const nextBtn = document.getElementById('btn-next-top');
+  prevBtn.disabled = !prev;
+  nextBtn.disabled = !next;
+  prevBtn.onclick = () => prev && showLesson(prev.id);
+  nextBtn.onclick = () => next && showLesson(next.id);
+
+  const done = isComplete(id);
+  const stubBadge = lesson.stub ? `<span class="stub-badge">STUB</span>` : '';
+  document.getElementById('content-area').innerHTML = `
+    <div id="lesson-content">
+      <div class="lesson-eyebrow">
+        <span class="phase-badge" style="background:${phase.color}22;color:${phase.color}">${phase.short}</span>
+        <span class="lesson-number">Lesson ${lesson.id} of ${LESSONS.length}</span>
+        ${stubBadge}
+      </div>
+      <h1 class="lesson-title">${lesson.title}</h1>
+      <p class="lesson-subtitle">${lesson.subtitle}</p>
+      <div class="lesson-divider"></div>
+      <div class="lesson-body">${lesson.content}</div>
+      <div class="exercises">
+        <h2>Exercises</h2>
+        ${lesson.exercises.map((ex, i) => `
+          <div class="exercise">
+            <div class="exercise-num">Exercise ${i + 1}</div>
+            <p>${ex}</p>
+          </div>
+        `).join('')}
+      </div>
+      <div class="complete-wrap">
+        <button class="btn-complete ${done ? 'done' : ''}" id="btn-done">
+          ${done ? '✓ Completed' : 'Mark Complete'}
+        </button>
+        ${next ? `<button class="btn-next" id="btn-next-lesson">Next: ${next.title} →</button>` : ''}
+      </div>
+    </div>
+  `;
+  document.getElementById('btn-done').onclick = () => {
+    if (isComplete(id)) unmarkComplete(id); else markComplete(id);
+    renderNav();
+    document.getElementById('btn-done').className = `btn-complete ${isComplete(id) ? 'done' : ''}`;
+    document.getElementById('btn-done').textContent = isComplete(id) ? '✓ Completed' : 'Mark Complete';
+  };
+  const nl = document.getElementById('btn-next-lesson');
+  if (nl) nl.onclick = () => showLesson(next.id);
+  renderNav();
+  document.getElementById('main').scrollTo(0, 0);
+  if (window.innerWidth < 900) document.getElementById('sidebar').classList.remove('open');
+}
+
+function showWelcome() {
+  currentLesson = null;
+  document.getElementById('topbar-phase').textContent = 'Overview';
+  document.getElementById('btn-prev').disabled = true;
+  document.getElementById('btn-next-top').disabled = false;
+  document.getElementById('btn-next-top').onclick = () => showLesson(1);
+  const stubsCount = LESSONS.filter(l => l.stub).length;
+  const filledCount = LESSONS.length - stubsCount;
+  document.getElementById('content-area').innerHTML = `
+    <div id="welcome">
+      <h1>OS <em>Development</em></h1>
+      <p class="tagline">From bytes to filesystems — a hands-on tour of what an operating system does and how its drivers work.</p>
+      <div class="welcome-body">
+        <p>This course is the companion to <code>x86_tutorial.html</code>. Where that one focuses on the CPU itself — instructions, paging, interrupts — this one focuses on what the kernel does with those primitives: drivers, buses, storage, networking, virtualisation.</p>
+        <p>Every concept anchors to working code in the <code>tinyemu-go</code> emulator that lives alongside this file. Pages on already-implemented features (IDE/ATA, ATAPI, virtio-blk, the PIC cascade) walk you through the actual source. Pages on features still in flight (PCI, VGA, virtio-net on PC, AHCI, NVMe) are <strong>stubs</strong> that get expanded as the implementation lands.</p>
+        <p>${LESSONS.length} lessons across six phases (${filledCount} filled, ${stubsCount} stubs). Progress is saved in your browser.</p>
+        <div class="phase-overview">
+          ${[1,2,3,4,5,6].map(ph => {
+            const m = PHASE_META[ph];
+            const done = LESSONS.filter(l => l.phase === ph && isComplete(l.id)).length;
+            const total = LESSONS.filter(l => l.phase === ph).length;
+            return `
+              <div class="phase-card" onclick="showLesson(${(LESSONS.find(l=>l.phase===ph)||{id:1}).id})">
+                <div class="phase-card-num" style="color:${m.color}">${m.short} — Lessons ${m.lessons}</div>
+                <h3>${m.name}</h3>
+                <p>${done}/${total} complete</p>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <button class="btn-start" onclick="showLesson(${completed.length > 0 ? Math.max(...completed) + 1 : 1})">
+          ${completed.length > 0 ? 'Continue →' : 'Start from Lesson 1 →'}
+        </button>
+      </div>
+    </div>
+  `;
+  renderNav();
+}
+
+document.getElementById('search').addEventListener('input', e => renderNav(e.target.value));
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowRight' || e.key === 'j') {
+    const next = currentLesson && LESSONS.find(l => l.id === currentLesson + 1);
+    if (next) showLesson(next.id);
+  }
+  if (e.key === 'ArrowLeft' || e.key === 'k') {
+    const prev = currentLesson && LESSONS.find(l => l.id === currentLesson - 1);
+    if (prev) showLesson(prev.id);
+  }
+  if (e.key === 'h') showWelcome();
+});
+
+function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
+document.getElementById('sidebar-header').style.cursor = 'pointer';
+document.getElementById('sidebar-header').onclick = showWelcome;
+
+updateProgress();
+showWelcome();
+</script>
+</body>
+</html>

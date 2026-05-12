@@ -2,7 +2,11 @@ package pc
 
 import "github.com/jtolio/tinyemu-go/cpu/x86"
 
-// PIC8259 implements a minimal 8259 Programmable Interrupt Controller.
+// PIC8259 implements a single 8259 Programmable Interrupt Controller.
+// The standard PC AT has two of these chained: master at 0x20-0x21 with
+// IRQs 0-7, slave at 0xA0-0xA1 with IRQs 8-15, slave's INT output wired to
+// master's IRQ 2. The cascade is modelled by attaching a slave PIC to a
+// master via NewPIC8259Cascaded.
 type PIC8259 struct {
 	cpu        *x86.CPU
 	basePort   uint16
@@ -16,11 +20,18 @@ type PIC8259 struct {
 	isr        uint8 // In-Service Register
 	readISR    bool  // OCW3: read ISR instead of IRR
 	raiseCount [8]uint64
+
+	// Cascade. The master holds a pointer to the slave; the slave holds
+	// a back-pointer to the master. RaiseIRQ(n) for n>=8 routes to the
+	// slave's local IRQ (n-8); when the slave has any unmasked pending
+	// IRQ, the master sees IRQ 2 asserted.
+	slave  *PIC8259
+	master *PIC8259
 }
 
-// NewPIC8259 creates a new PIC. IMR defaults to 0xFF (all masked) so the
-// pre-programmed PIT does not deliver IRQ0 before the kernel sets up its IDT
-// and explicitly unmasks the timer.
+// NewPIC8259 creates a single (master) PIC. IMR defaults to 0xFF (all
+// masked) so devices that fire before the kernel programs them don't
+// deliver early IRQs.
 func NewPIC8259(cpu *x86.CPU, basePort uint16) *PIC8259 {
 	return &PIC8259{
 		cpu:      cpu,
@@ -29,7 +40,21 @@ func NewPIC8259(cpu *x86.CPU, basePort uint16) *PIC8259 {
 	}
 }
 
-// Register registers the PIC's I/O ports.
+// NewPIC8259Cascaded creates a master/slave pair. The master sits at
+// `masterBase` (typically 0x20); the slave at `slaveBase` (0xA0). RaiseIRQ
+// on the master accepts 0..15: 0-7 are local, 8-15 are routed to the
+// slave. Use this in the PC board's setup if you want IDE/RTC/PS2-mouse
+// (IRQs 8-15) to work.
+func NewPIC8259Cascaded(cpu *x86.CPU, masterBase, slaveBase uint16) *PIC8259 {
+	master := NewPIC8259(cpu, masterBase)
+	slave := NewPIC8259(nil, slaveBase) // slave doesn't drive the CPU directly
+	master.slave = slave
+	slave.master = master
+	return master
+}
+
+// Register registers the PIC's I/O ports. If this PIC has a slave, the
+// slave's ports get registered too.
 func (p *PIC8259) Register(io *IOPortDispatcher) {
 	io.RegisterRead(p.basePort, p.basePort, func(port uint16) uint32 {
 		if p.readISR {
@@ -46,6 +71,9 @@ func (p *PIC8259) Register(io *IOPortDispatcher) {
 	io.RegisterWrite(p.basePort+1, p.basePort+1, func(port uint16, val uint32) {
 		p.writeData(uint8(val))
 	})
+	if p.slave != nil {
+		p.slave.Register(io)
+	}
 }
 
 func (p *PIC8259) writeCommand(val uint8) {
@@ -100,10 +128,21 @@ func (p *PIC8259) writeData(val uint8) {
 	}
 }
 
-// updateINTR asserts or clears the CPU INTR line based on whether any unmasked
-// IRQ is pending and not currently in service.
+// updateINTR asserts or clears the CPU INTR line based on whether any
+// unmasked IRQ is pending. Called on master only; slave updates the master
+// indirectly through the cascade (IRQ 2).
 func (p *PIC8259) updateINTR() {
 	if p.cpu == nil {
+		// Slave: refresh master's view of the cascade line (IRQ 2).
+		if p.master != nil {
+			slavePending := p.irr &^ p.imr
+			if slavePending != 0 {
+				p.master.irr |= 1 << 2
+			} else {
+				p.master.irr &^= 1 << 2
+			}
+			p.master.updateINTR()
+		}
 		return
 	}
 	pending := p.irr &^ p.imr
@@ -114,13 +153,19 @@ func (p *PIC8259) updateINTR() {
 	}
 }
 
-// RaiseIRQ raises an IRQ line.
+// RaiseIRQ raises an IRQ line. Accepts 0-7 for local IRQs and 8-15 for
+// slave-side IRQs (master-side only — calling with 8-15 on a slave PIC is
+// undefined).
 func (p *PIC8259) RaiseIRQ(irq uint8) {
-	if irq < 8 {
-		p.irr |= 1 << irq
-		p.raiseCount[irq]++
-		p.updateINTR()
+	if irq >= 8 {
+		if p.slave != nil {
+			p.slave.RaiseIRQ(irq - 8)
+		}
+		return
 	}
+	p.irr |= 1 << irq
+	p.raiseCount[irq]++
+	p.updateINTR()
 }
 
 // RaiseCount returns the cumulative number of times the given IRQ has been
@@ -141,22 +186,28 @@ func (p *PIC8259) IRR() uint8 { return p.irr }
 // ISR returns the In-Service Register. Exposed for tests.
 func (p *PIC8259) ISR() uint8 { return p.isr }
 
-// LowerIRQ lowers an IRQ line.
+// LowerIRQ lowers an IRQ line. Accepts 0-7 for local IRQs and 8-15 for
+// slave-side IRQs.
 func (p *PIC8259) LowerIRQ(irq uint8) {
-	if irq < 8 {
-		p.irr &^= 1 << irq
-		p.updateINTR()
+	if irq >= 8 {
+		if p.slave != nil {
+			p.slave.LowerIRQ(irq - 8)
+		}
+		return
 	}
+	p.irr &^= 1 << irq
+	p.updateINTR()
 }
 
-// PeekInterrupt returns the vector of the highest priority pending interrupt
-// without modifying PIC state. Returns -1 if no interrupt is pending.
+// PeekInterrupt returns the vector of the highest priority pending
+// interrupt without modifying PIC state. Returns -1 if none is pending.
+// If the highest priority is the cascade IRQ (2), the slave's vector is
+// returned instead.
 func (p *PIC8259) PeekInterrupt() int {
 	pending := p.irr &^ p.imr
 	if pending == 0 {
 		return -1
 	}
-	// Find lowest IRQ number (highest priority)
 	irq := uint8(0)
 	for irq < 8 && (pending&(1<<irq)) == 0 {
 		irq++
@@ -164,18 +215,52 @@ func (p *PIC8259) PeekInterrupt() int {
 	if irq >= 8 {
 		return -1
 	}
-	vector := p.icw2 + irq
-	return int(vector)
+	if irq == 2 && p.slave != nil {
+		// Peek through the cascade. The slave's vector takes priority.
+		return p.slave.PeekInterrupt()
+	}
+	return int(p.icw2 + irq)
 }
 
-// DeliverInterrupt delivers the highest priority pending interrupt to the CPU.
-// Returns the interrupt vector, or -1 if no interrupt is pending.
+// DeliverInterrupt delivers the highest priority pending interrupt to the
+// CPU. If the cascade IRQ is highest, the slave is asked for its vector
+// and both ISRs are updated. Returns the interrupt vector, or -1.
 func (p *PIC8259) DeliverInterrupt() int {
 	pending := p.irr &^ p.imr
 	if pending == 0 {
 		return -1
 	}
-	// Find lowest IRQ number (highest priority)
+	irq := uint8(0)
+	for irq < 8 && (pending&(1<<irq)) == 0 {
+		irq++
+	}
+	if irq >= 8 {
+		return -1
+	}
+	if irq == 2 && p.slave != nil {
+		// Cascade: mark master's IRQ2 in-service and dispatch through slave.
+		vec := p.slave.deliverLocal()
+		if vec < 0 {
+			// Race: slave's pending cleared between peek and deliver.
+			return -1
+		}
+		p.isr |= 1 << 2
+		p.updateINTR()
+		return vec
+	}
+	p.irr &^= 1 << irq
+	p.isr |= 1 << irq
+	p.updateINTR()
+	return int(p.icw2 + irq)
+}
+
+// deliverLocal services a local IRQ (slave-side variant of
+// DeliverInterrupt that does not recurse into the cascade).
+func (p *PIC8259) deliverLocal() int {
+	pending := p.irr &^ p.imr
+	if pending == 0 {
+		return -1
+	}
 	irq := uint8(0)
 	for irq < 8 && (pending&(1<<irq)) == 0 {
 		irq++
@@ -185,7 +270,6 @@ func (p *PIC8259) DeliverInterrupt() int {
 	}
 	p.irr &^= 1 << irq
 	p.isr |= 1 << irq
-	vector := p.icw2 + irq
 	p.updateINTR()
-	return int(vector)
+	return int(p.icw2 + irq)
 }
