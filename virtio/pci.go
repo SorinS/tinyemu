@@ -73,6 +73,16 @@ func (t *LegacyTransport) IORead(off uint16, size int) uint32 {
 	dev := t.dev
 	dev.mu.Lock()
 	defer dev.mu.Unlock()
+	val := t.ioReadLocked(off, size)
+	if pciTransportDebug {
+		fmt.Fprintf(os.Stderr, "[vpci] R off=%02x sz=%d -> %x  status=%02x intStatus=%x\n",
+			off, size, val, dev.Status, dev.IntStatus)
+	}
+	return val
+}
+
+func (t *LegacyTransport) ioReadLocked(off uint16, size int) uint32 {
+	dev := t.dev
 
 	// Device-specific config space.
 	if uint32(off) >= pciConfigOffset {
@@ -135,6 +145,9 @@ func (t *LegacyTransport) IORead(off uint16, size int) uint32 {
 // IOWrite handles an I/O port write at byte offset `off` into the BAR for
 // `size` bytes (1, 2, or 4).
 func (t *LegacyTransport) IOWrite(off uint16, val uint32, size int) {
+	if pciTransportDebug {
+		fmt.Fprintf(os.Stderr, "[vpci] W off=%02x sz=%d <- %x\n", off, size, val)
+	}
 	dev := t.dev
 	dev.mu.Lock()
 	defer dev.mu.Unlock()

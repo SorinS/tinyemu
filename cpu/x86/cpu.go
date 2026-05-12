@@ -249,6 +249,13 @@ type CPU struct {
 	// real, alias mm[i] to st[i].mantissa.
 	mm [8]uint64
 
+	// SSE/SSE2 register file: 8 × 128-bit (XMM0..XMM7). Stored as two
+	// uint64s, [0] = bits 0-63 (low), [1] = bits 64-127 (high). MXCSR
+	// is the SSE control/status word; we keep it simple — set to
+	// the default 0x1F80 on init and write-only otherwise.
+	xmm   [8][2]uint64
+	mxcsr uint32
+
 	// Interrupt state
 	intrLineState     int
 	interruptsBlocked bool

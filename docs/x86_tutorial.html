@@ -3715,6 +3715,84 @@ You've walked from "what is a register" to "how Linux boots." The same path coul
   ]
 },
 
+{
+  id: 51, phase: 5,
+  title: "MMX — the SIMD that wasn't going away",
+  subtitle: "Why even your minimal libc needs 64-bit packed moves",
+  content: `
+<h2>The setup</h2>
+<p>You've built a complete 32-bit x86 emulator that boots a busybox shell. You try to boot Alpine 3.19 — same kernel family, "just" a different userspace. The Alpine init script starts, prints a banner, then crashes inside <code>ld-musl-i386.so</code> with a segfault you can't explain.</p>
+
+<p>The error in your emulator is more revealing than the kernel panic that follows:</p>
+<pre>ERROR in Run: unimplemented 0F opcode: 6E at EIP=B7E5F0B2</pre>
+
+<p><code>0F 6E</code> is <strong>MOVD</strong>: "move doubleword to an MMX register." musl libc's <code>memcpy</code> and <code>strlen</code> implementations were compiled with MMX as the baseline. Even though we cleared the MMX bit in CPUID, musl was built unconditionally with <code>-mmmx</code>, so it uses the instructions anyway. CPUID is advisory; the binary doesn't actually check.</p>
+
+<h2>What MMX actually is</h2>
+<p>MMX was Intel's 1997 attempt at SIMD before SSE existed. The big constraint was that introducing new architectural state would have broken every OS context-switch routine on the planet. Their workaround: <strong>alias the eight MMX registers onto the mantissa fields of the eight x87 floating-point registers.</strong> Same physical bits, two interpretations:</p>
+<ul>
+  <li>x87 sees <code>ST(0..7)</code>: 80 bits each, structured as sign + exponent + 64-bit mantissa.</li>
+  <li>MMX sees <code>MM0..MM7</code>: 64-bit integers — the mantissa half of <code>ST(0..7)</code>.</li>
+</ul>
+<p>Writing to MM0 stamps the low 64 bits of ST(0). Writing to ST(0) clobbers MM0. To prevent code from confusing itself, Intel added an opcode <code>EMMS</code> (Empty MMX State, <code>0F 77</code>) which marks all FPU registers as "empty" in the FPU's tag word. MMX-using code is expected to call EMMS before returning to any FPU-using caller.</p>
+
+<p>For our emulator, we don't have x87 (we stubbed it). So we just maintain <code>mm[8] uint64</code> as a standalone register file. EMMS becomes a no-op.</p>
+
+<h2>The 5-opcode spike</h2>
+<p>Faced with a multi-day implementation of the full MMX integer set, we asked: what is musl libc actually <em>doing</em> with MMX? Looking at the asm, musl's <code>memcpy</code> hot loop is essentially:</p>
+<pre>movq mm0, [esi]      ; 0F 6F 06   load 8 bytes
+movq [edi], mm0      ; 0F 7F 07   store 8 bytes
+add esi, 8
+add edi, 8
+loop ...</pre>
+<p>It treats MMX as a 64-bit move primitive — like a 32-bit GPR but twice as wide. No actual SIMD math. So you only need <em>five</em> opcodes to unblock musl:</p>
+<ul>
+  <li><code>0F 6E</code> MOVD &nbsp;mm, r/m32 &nbsp;— load 32 bits, zero-extend</li>
+  <li><code>0F 7E</code> MOVD &nbsp;r/m32, mm &nbsp;— store low 32 bits</li>
+  <li><code>0F 6F</code> MOVQ &nbsp;mm, mm/m64 &nbsp;— load 64 bits</li>
+  <li><code>0F 7F</code> MOVQ &nbsp;mm/m64, mm &nbsp;— store 64 bits</li>
+  <li><code>0F 77</code> EMMS &nbsp;— mark FPU empty (no-op for us)</li>
+</ul>
+<p>An hour's work. Alpine boots past musl and runs Alpine's <code>/init</code> script — Alpine Init 3.9.1-r0 prints to the console, loads the squashfs and loop drivers, gets all the way to "Mounting boot media…" before the next bug.</p>
+
+<h2>The next bug — packed integer math</h2>
+<p>The Yocto kernel uses MMX too, but differently — for checksum loops, integer comparisons, and so on. It hits <code>0F EF</code>: <strong>PXOR</strong> — packed XOR of two MMX registers. That's bitwise; just <code>mm[reg] ^= src</code>. Then <code>0F FC</code>: <strong>PADDB</strong> — packed byte add, where eight independent bytes get added in parallel <em>without</em> carrying between lanes.</p>
+
+<p>The "no carry between lanes" is the entire point of SIMD. A regular ADD on a 64-bit value would propagate carries from bit 7 to bit 8, corrupting the high byte. Packed add does each byte separately:</p>
+<pre>func packedAdd(a, b uint64, elemSize int) uint64 {
+    var out uint64
+    for i := 0; i &lt; 8; i++ {
+        s := byte(a >> (uint(i)*8)) + byte(b >> (uint(i)*8))
+        out |= uint64(s) &lt;&lt; (uint(i)*8)
+    }
+    return out
+}</pre>
+<p>Plus PSUB (subtract), PCMPEQ (compare-equal, returns all-1s per matching lane), PCMPGT (signed greater-than). And PAND / POR / PXOR / PANDN — bitwise on the full 64 bits, no per-lane semantics needed.</p>
+
+<p>Once those land, the Yocto kernel boots through to userspace where it loads <em>all</em> the virtio modules: virtio_pci, virtio_pci_modern_dev, virtio_pci_legacy_dev, virtio_blk, virtio_net, net_failover, failover, virtio_ring. Suddenly your emulator looks like a real VM.</p>
+
+<h2>What's still missing</h2>
+<p>The integer subset (move + arith + compare + logical + a few packs/unpacks) covers ~30 of MMX's ~50 instructions. The rest are mostly things modern code doesn't use:</p>
+<ul>
+  <li>Saturating arith (PADDS/PADDUS/PSUBS/PSUBUS) — clamps to min/max instead of wrapping. Used in audio/video codecs.</li>
+  <li>Multiplies (PMULLW / PMULHW / PMULHUW / PMADDWD).</li>
+  <li>Pack/unpack between byte/word/dword granularities (PACKSSWB, PUNPCKLBW, …).</li>
+  <li>Variable-count shifts (PSLL/PSRA/PSRL on word/dword/qword lanes).</li>
+</ul>
+<p>SSE (1999) and SSE2 (2001) added 128-bit XMM registers and floating-point packed ops. AVX (2011) widened to 256/512 bits with YMM/ZMM. Each is its own register file — no more aliasing tricks. If you wanted to boot a glibc-i686 distribution today, you'd probably need at least SSE2 because glibc is built with it as the baseline.</p>
+
+<div class="box box-key">
+<strong>Takeaway</strong>
+You don't have to implement everything to make progress. Real binaries use a long-tail distribution of instructions — most of the work in any module is done by 10 % of the opcode space. Find which opcodes a binary uses by letting it crash, add those, watch how much further it gets, repeat. The five MOVD/MOVQ opcodes unlocked all of Alpine's musl libc; eight more opcodes (packed XOR/add/sub/compare/and/or/andn) unlocked the Yocto kernel's optimised checksum and zero-init paths.
+</div>
+`,
+  exercises: [
+    "Implement PADDUSB (0F DC) — packed add of unsigned bytes with saturation (clamp to 0xFF instead of wrapping). Test by adding 0xFF + 0xFF in each lane and verifying the result is 0xFF, not 0xFE.",
+    "musl libc's strlen could be implemented with PCMPEQB — load 8 bytes into MM0, compare each byte against 0, and use PMOVMSKB to extract the comparison result as an 8-bit GPR mask. We don't implement PMOVMSKB. Read its Intel SDM entry and propose an implementation.",
+    "Find a kernel binary in /usr/lib/modules on a Linux host. Run objdump -d on it and grep for opcodes starting with 0F 6N or 0F 7N. Count how many distinct MMX opcodes the kernel uses in practice."
+  ]
+},
+
 ];
 
 // ============================================================

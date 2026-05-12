@@ -145,6 +145,18 @@ func (c *CPU) writeMem64(addr uint32, val uint64) {
 	c.writeMem32(addr+4, uint32(val>>32))
 }
 
+// readMem128 reads a 128-bit value as [lo, hi] uint64s. Used by SSE
+// move instructions.
+func (c *CPU) readMem128(addr uint32) [2]uint64 {
+	return [2]uint64{c.readMem64(addr), c.readMem64(addr + 8)}
+}
+
+// writeMem128 writes a 128-bit value.
+func (c *CPU) writeMem128(addr uint32, val [2]uint64) {
+	c.writeMem64(addr, val[0])
+	c.writeMem64(addr+8, val[1])
+}
+
 // fetchMem8 reads a code byte from the given linear address. Faults during
 // instruction fetch get bit 4 set in the #PF error code, and the U/S bit
 // reflects whether the fetch happens at CPL=3.
@@ -2486,8 +2498,15 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F:
 			return c.handleCMOVcc(opcode2, operandSize)
 
-		// Multi-byte NOP `0F 1F /n` and 0F 0D (prefetch hints; treat as NOP).
-		case 0x1F, 0x0D:
+		// Multi-byte NOP and prefetch family — all decode as ModR/M
+		// + ignore. Includes:
+		//   0F 1F /n  multi-byte NOP
+		//   0F 0D     3DNow! prefetch
+		//   0F 18 /n  PREFETCHNTA / PREFETCHT0/T1/T2 (SSE prefetch hints)
+		//   0F 19..1E various reserved 0F XX /n NOPs (Intel reserved
+		//             these as future-NOP encodings to satisfy
+		//             prefixing by future SSE instructions).
+		case 0x1F, 0x0D, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E:
 			c.parseModRM()
 
 		// 0F AE — group encoding for FXSAVE/FXRSTOR (and LFENCE/MFENCE/SFENCE
@@ -2698,6 +2717,8 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 		// 0F 77  EMMS                    no-op (we have no x87 state
 		//                                to tag-as-empty, but EMMS
 		//                                still needs to be a valid op)
+		// 0F 6E: no prefix → MOVD mm, r/m32  (MMX)
+		//        66 prefix → MOVD xmm, r/m32 (SSE2, zero-extends to 128)
 		case 0x6E:
 			mr := c.parseModRM()
 			var v uint32
@@ -2706,38 +2727,144 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			} else {
 				v = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
 			}
-			c.mm[mr.reg] = uint64(v)
+			if operandSize == 2 {
+				c.xmm[mr.reg][0] = uint64(v)
+				c.xmm[mr.reg][1] = 0
+			} else {
+				c.mm[mr.reg] = uint64(v)
+			}
 
+		// 0F 6F: no prefix → MOVQ mm, mm/m64       (MMX)
+		//        66 prefix → MOVDQA xmm, xmm/m128 (SSE2 aligned)
+		//        F3 prefix → MOVDQU xmm, xmm/m128 (SSE2 unaligned)
 		case 0x6F:
 			mr := c.parseModRM()
-			var v uint64
-			if mr.isReg {
-				v = c.mm[mr.rm]
+			if operandSize == 2 || repPrefix == 1 {
+				var v [2]uint64
+				if mr.isReg {
+					v = c.xmm[mr.rm]
+				} else {
+					v = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+				}
+				c.xmm[mr.reg] = v
 			} else {
-				v = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+				var v uint64
+				if mr.isReg {
+					v = c.mm[mr.rm]
+				} else {
+					v = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+				}
+				c.mm[mr.reg] = v
 			}
-			c.mm[mr.reg] = v
 
+		// 0F 7E: no prefix → MOVD r/m32, mm  (MMX)
+		//        66 prefix → MOVD r/m32, xmm (SSE2, low 32 bits)
+		//        F3 prefix → MOVQ xmm, xmm/m64 (SSE2)
 		case 0x7E:
 			mr := c.parseModRM()
-			lo := uint32(c.mm[mr.reg])
-			if mr.isReg {
-				c.SetReg32(int(mr.rm), lo)
+			if repPrefix == 1 {
+				var v uint64
+				if mr.isReg {
+					v = c.xmm[mr.rm][0]
+				} else {
+					v = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+				}
+				c.xmm[mr.reg][0] = v
+				c.xmm[mr.reg][1] = 0
+			} else if operandSize == 2 {
+				lo := uint32(c.xmm[mr.reg][0])
+				if mr.isReg {
+					c.SetReg32(int(mr.rm), lo)
+				} else {
+					c.writeMem32(c.segBaseForModRM(mr) + mr.ea, lo)
+				}
 			} else {
-				c.writeMem32(c.segBaseForModRM(mr) + mr.ea, lo)
+				lo := uint32(c.mm[mr.reg])
+				if mr.isReg {
+					c.SetReg32(int(mr.rm), lo)
+				} else {
+					c.writeMem32(c.segBaseForModRM(mr) + mr.ea, lo)
+				}
 			}
 
+		// 0F 7F: no prefix → MOVQ mm/m64, mm        (MMX)
+		//        66 prefix → MOVDQA xmm/m128, xmm  (SSE2)
+		//        F3 prefix → MOVDQU xmm/m128, xmm  (SSE2)
 		case 0x7F:
 			mr := c.parseModRM()
-			v := c.mm[mr.reg]
-			if mr.isReg {
-				c.mm[mr.rm] = v
+			if operandSize == 2 || repPrefix == 1 {
+				v := c.xmm[mr.reg]
+				if mr.isReg {
+					c.xmm[mr.rm] = v
+				} else {
+					c.writeMem128(c.segBaseForModRM(mr) + mr.ea, v)
+				}
 			} else {
-				c.writeMem64(c.segBaseForModRM(mr) + mr.ea, v)
+				v := c.mm[mr.reg]
+				if mr.isReg {
+					c.mm[mr.rm] = v
+				} else {
+					c.writeMem64(c.segBaseForModRM(mr) + mr.ea, v)
+				}
+			}
+
+		// 0F D6: 66 prefix → MOVQ xmm/m64, xmm (SSE2 store low qword)
+		//        F2 prefix → MOVDQ2Q mm, xmm   (SSE2 lower 64 to MMX)
+		//        F3 prefix → MOVQ2DQ xmm, mm   (SSE2 MMX to lower 64)
+		case 0xD6:
+			mr := c.parseModRM()
+			switch {
+			case operandSize == 2:
+				v := c.xmm[mr.reg][0]
+				if mr.isReg {
+					c.xmm[mr.rm][0] = v
+					c.xmm[mr.rm][1] = 0
+				} else {
+					c.writeMem64(c.segBaseForModRM(mr) + mr.ea, v)
+				}
+			case repPrefix == 2:
+				c.mm[mr.reg] = c.xmm[mr.rm][0]
+			case repPrefix == 1:
+				c.xmm[mr.reg][0] = c.mm[mr.rm]
+				c.xmm[mr.reg][1] = 0
+			default:
+				return fmt.Errorf("0F D6 without 66/F2/F3 prefix at EIP=%08X", c.eip-2)
 			}
 
 		case 0x77:
 			// EMMS: tag word ← all-empty. We don't track tag state.
+
+		// SSE/SSE2 128-bit moves. These are unconditional 128-bit
+		// load/store between XMM registers and memory. The prefix
+		// byte (none / 66 / F3 / F2) selects MOVAPS / MOVAPD /
+		// MOVSS / MOVSD respectively in the spec — but since none
+		// of them actually do math on the bits (all are just moves),
+		// we handle them identically: copy 128 bits.
+		//
+		// 0F 28  MOVAPS/MOVAPD/MOVSS/MOVSD  xmm, xmm/m128
+		// 0F 29  MOVAPS/MOVAPD/MOVSS/MOVSD  xmm/m128, xmm
+		// 0F 10  MOVUPS/MOVUPD              xmm, xmm/m128 (unaligned)
+		// 0F 11  MOVUPS/MOVUPD              xmm/m128, xmm (unaligned)
+		// 0F 6F  (with 66 prefix) MOVDQA    xmm, xmm/m128
+		// 0F 7F  (with 66 prefix) MOVDQA    xmm/m128, xmm
+		case 0x28, 0x10:
+			mr := c.parseModRM()
+			var v [2]uint64
+			if mr.isReg {
+				v = c.xmm[mr.rm]
+			} else {
+				v = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+			}
+			c.xmm[mr.reg] = v
+
+		case 0x29, 0x11:
+			mr := c.parseModRM()
+			v := c.xmm[mr.reg]
+			if mr.isReg {
+				c.xmm[mr.rm] = v
+			} else {
+				c.writeMem128(c.segBaseForModRM(mr) + mr.ea, v)
+			}
 
 		// MMX packed-integer instructions. Each operates on the full
 		// 64-bit MMX register, optionally splitting it into smaller
@@ -2810,6 +2937,140 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				size = 8
 			}
 			c.mm[mr.reg] = packedSub(dst, src, size)
+
+		// Saturating add: 0F DC PADDUSB, 0F DD PADDUSW,
+		//                 0F EC PADDSB,  0F ED PADDSW
+		case 0xDC, 0xDD, 0xEC, 0xED:
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			elem := 2
+			if opcode2 == 0xDC || opcode2 == 0xEC {
+				elem = 1
+			}
+			signed := opcode2 >= 0xEC
+			c.mm[mr.reg] = packedAddSat(dst, src, elem, signed)
+
+		// Saturating sub: 0F D8 PSUBUSB, 0F D9 PSUBUSW,
+		//                 0F E8 PSUBSB,  0F E9 PSUBSW
+		case 0xD8, 0xD9, 0xE8, 0xE9:
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			elem := 2
+			if opcode2 == 0xD8 || opcode2 == 0xE8 {
+				elem = 1
+			}
+			signed := opcode2 >= 0xE8
+			c.mm[mr.reg] = packedSubSat(dst, src, elem, signed)
+
+		// Unpack low halves: PUNPCKL{BW,WD,DQ}
+		case 0x60, 0x61, 0x62:
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			c.mm[mr.reg] = packedUnpackLow(dst, src, 1<<(opcode2-0x60))
+
+		// Unpack high halves: PUNPCKH{BW,WD,DQ}
+		case 0x68, 0x69, 0x6A:
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			c.mm[mr.reg] = packedUnpackHigh(dst, src, 1<<(opcode2-0x68))
+
+		// Pack with signed saturation: PACKSSWB (0F 63), PACKSSDW (0F 6B)
+		case 0x63, 0x6B:
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			srcSize := 2
+			if opcode2 == 0x6B {
+				srcSize = 4
+			}
+			c.mm[mr.reg] = packSignedSat(dst, src, srcSize)
+
+		// Pack with unsigned saturation: PACKUSWB (0F 67)
+		case 0x67:
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			c.mm[mr.reg] = packUnsignedSat(dst, src)
+
+		// Multiplies: PMULLW (0F D5), PMULHW (0F E5)
+		case 0xD5, 0xE5:
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			if opcode2 == 0xD5 {
+				c.mm[mr.reg] = packedMulLow(dst, src)
+			} else {
+				c.mm[mr.reg] = packedMulHigh(dst, src, true)
+			}
+
+		// PMADDWD (0F F5)
+		case 0xF5:
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			c.mm[mr.reg] = packedMaddWord(dst, src)
+
+		// Variable-count shifts (register or memory source supplies count).
+		// 0F D1/D2/D3 PSRLW/PSRLD/PSRLQ
+		// 0F E1/E2     PSRAW/PSRAD
+		// 0F F1/F2/F3 PSLLW/PSLLD/PSLLQ
+		case 0xD1, 0xD2, 0xD3, 0xE1, 0xE2, 0xF1, 0xF2, 0xF3:
+			mr := c.parseModRM()
+			count := int(c.mmxSrc64(mr) & 0xFF)
+			dst := c.mm[mr.reg]
+			var elem int
+			switch opcode2 & 0x0F {
+			case 0x01:
+				elem = 2
+			case 0x02:
+				elem = 4
+			case 0x03:
+				elem = 8
+			}
+			switch {
+			case opcode2 >= 0xF1:
+				c.mm[mr.reg] = packedShiftLeft(dst, count, elem)
+			case opcode2 >= 0xE1:
+				c.mm[mr.reg] = packedShiftRightArith(dst, count, elem)
+			default:
+				c.mm[mr.reg] = packedShiftRightLogical(dst, count, elem)
+			}
+
+		// Immediate-count shifts: 0F 71/72/73 are group-encoded; the
+		// subopcode lives in the reg field of the following ModR/M byte.
+		// 0F 71 /6 PSLLW, /4 PSRAW, /2 PSRLW
+		// 0F 72 /6 PSLLD, /4 PSRAD, /2 PSRLD
+		// 0F 73 /6 PSLLQ, /2 PSRLQ
+		case 0x71, 0x72, 0x73:
+			mr := c.parseModRM()
+			imm := int(c.fetch8())
+			dst := c.mm[mr.rm]
+			var elem int
+			switch opcode2 {
+			case 0x71:
+				elem = 2
+			case 0x72:
+				elem = 4
+			case 0x73:
+				elem = 8
+			}
+			switch mr.reg {
+			case 6: // PSLL
+				c.mm[mr.rm] = packedShiftLeft(dst, imm, elem)
+			case 4: // PSRA (W/D only; not Q)
+				if opcode2 == 0x73 {
+					return fmt.Errorf("PSRAQ does not exist in MMX (0F 73 /4)")
+				}
+				c.mm[mr.rm] = packedShiftRightArith(dst, imm, elem)
+			case 2: // PSRL
+				c.mm[mr.rm] = packedShiftRightLogical(dst, imm, elem)
+			default:
+				return fmt.Errorf("unsupported MMX 0F %02X /%d at EIP=%08X", opcode2, mr.reg, c.eip-3)
+			}
 
 		default:
 			return fmt.Errorf("unimplemented 0F opcode: %02X at EIP=%08X", opcode2, c.eip-2)

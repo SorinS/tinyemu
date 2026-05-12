@@ -528,11 +528,13 @@ func (c *CPU) updateCPLFromCR0() {
 // so "no FPU" → panic). x87 handlers are stubs (NOPs that consume ModRM);
 // Linux's early-boot FPU usage is limited to FNINIT + a feature probe.
 // We do NOT advertise SEP (forces INT 0x80 instead of SYSENTER), APIC,
-// MTRR, SSE, or SSE2 — none of which are implemented. MMX is partially
-// supported: we have the move instructions (MOVD/MOVQ) and EMMS but no
-// packed arithmetic. Userspace musl's memcpy/strlen uses MMX as a
-// 64-bit move primitive — for that, moves alone are enough. If we
-// ever hit a packed-add we'll need to widen the implementation.
+// or MTRR. MMX has the full integer-arithmetic set (moves, packed
+// add/sub/cmp/logical/pack/unpack/shift/mul). SSE/SSE2 currently
+// provide ONLY 128-bit move instructions (MOVAPS/MOVUPS/MOVDQA on the
+// XMM register file) — enough to satisfy musl libc's memcpy / TLS
+// setup paths but not actual packed FP/integer arithmetic. Userspace
+// binaries that compute on XMM (e.g. zlib's CRC32) will still hit
+// unimplemented opcodes; SSE arith is the next layer to add.
 const (
 	cpuidFeat1EDX = (1 << 0) | // FPU (x87)
 		(1 << 3) | // PSE
@@ -543,8 +545,10 @@ const (
 		(1 << 13) | // PGE
 		(1 << 15) | // CMOV
 		(1 << 16) | // PAT
-		(1 << 23) | // MMX (moves + EMMS only — packed arith not implemented)
-		(1 << 24) // FXSR (FXSAVE/FXRSTOR) — kernel uses for save/restore
+		(1 << 23) | // MMX (full integer set)
+		(1 << 24) | // FXSR (FXSAVE/FXRSTOR)
+		(1 << 25) | // SSE  (moves only — arith not implemented)
+		(1 << 26) //   SSE2 (moves only — arith not implemented)
 )
 
 // cpuidTrace logs each CPUID invocation (leaf + EIP) to stderr. Enable with
