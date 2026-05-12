@@ -2834,20 +2834,88 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 		case 0x77:
 			// EMMS: tag word ← all-empty. We don't track tag state.
 
-		// SSE/SSE2 128-bit moves. These are unconditional 128-bit
-		// load/store between XMM registers and memory. The prefix
-		// byte (none / 66 / F3 / F2) selects MOVAPS / MOVAPD /
-		// MOVSS / MOVSD respectively in the spec — but since none
-		// of them actually do math on the bits (all are just moves),
-		// we handle them identically: copy 128 bits.
+		// Non-temporal stores (cache-bypass hint, semantically just
+		// stores — we don't model caches).
 		//
-		// 0F 28  MOVAPS/MOVAPD/MOVSS/MOVSD  xmm, xmm/m128
-		// 0F 29  MOVAPS/MOVAPD/MOVSS/MOVSD  xmm/m128, xmm
-		// 0F 10  MOVUPS/MOVUPD              xmm, xmm/m128 (unaligned)
-		// 0F 11  MOVUPS/MOVUPD              xmm/m128, xmm (unaligned)
-		// 0F 6F  (with 66 prefix) MOVDQA    xmm, xmm/m128
-		// 0F 7F  (with 66 prefix) MOVDQA    xmm/m128, xmm
-		case 0x28, 0x10:
+		// 0F E7    MOVNTQ   m64, mm
+		// 0F 2B    MOVNTPS  m128, xmm    (66 prefix → MOVNTPD)
+		// 0F C3    MOVNTI   m32, r32     (SSE2 integer non-temporal)
+		case 0xE7:
+			mr := c.parseModRM()
+			if mr.isReg {
+				return fmt.Errorf("MOVNTQ requires memory dest at EIP=%08X", c.eip-2)
+			}
+			c.writeMem64(c.segBaseForModRM(mr)+mr.ea, c.mm[mr.reg])
+
+		case 0x2B:
+			mr := c.parseModRM()
+			if mr.isReg {
+				return fmt.Errorf("MOVNTPS/PD requires memory dest at EIP=%08X", c.eip-2)
+			}
+			c.writeMem128(c.segBaseForModRM(mr)+mr.ea, c.xmm[mr.reg])
+
+		case 0xC3:
+			// MOVNTI: special-case — needs no prefix to differ from
+			// MMX/SSE ops at this opcode. It's r32 → m32.
+			mr := c.parseModRM()
+			if mr.isReg {
+				return fmt.Errorf("MOVNTI requires memory dest at EIP=%08X", c.eip-2)
+			}
+			c.writeMem32(c.segBaseForModRM(mr)+mr.ea, c.GetReg32(int(mr.reg)))
+
+		// SSE/SSE2 floating-point bitwise. These operate on the full
+		// 128 bits — packed-FP semantics are identical to "bitwise"
+		// because the bits don't propagate carries across lanes.
+		//
+		// 0F 54  ANDPS  xmm, xmm/m128       (66 → ANDPD)
+		// 0F 55  ANDNPS xmm, xmm/m128       (66 → ANDNPD)
+		// 0F 56  ORPS   xmm, xmm/m128       (66 → ORPD)
+		// 0F 57  XORPS  xmm, xmm/m128       (66 → XORPD)
+		case 0x54, 0x55, 0x56, 0x57:
+			mr := c.parseModRM()
+			var src [2]uint64
+			if mr.isReg {
+				src = c.xmm[mr.rm]
+			} else {
+				src = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+			}
+			dst := c.xmm[mr.reg]
+			switch opcode2 {
+			case 0x54: // AND
+				dst[0] &= src[0]
+				dst[1] &= src[1]
+			case 0x55: // ANDN (NOT dst) AND src
+				dst[0] = (^dst[0]) & src[0]
+				dst[1] = (^dst[1]) & src[1]
+			case 0x56: // OR
+				dst[0] |= src[0]
+				dst[1] |= src[1]
+			case 0x57: // XOR
+				dst[0] ^= src[0]
+				dst[1] ^= src[1]
+			}
+			c.xmm[mr.reg] = dst
+
+		// SSE/SSE2 moves between XMM, memory, and GPR. Prefix encoding
+		// per Intel SDM §C.2: width and zero-extension differ
+		// significantly across prefix variants and we MUST honor
+		// each — a missing zero-extend leaves garbage in the high
+		// lanes which gets stored as a struct-field "value" and
+		// crashes the kernel a few instructions later when the
+		// struct's vtable pointer is interpreted as code.
+		//
+		//   no prefix  0F 28/29  MOVAPS  xmm <-> m128 (aligned)
+		//   66 prefix  0F 28/29  MOVAPD  xmm <-> m128 (aligned)
+		//   no prefix  0F 10/11  MOVUPS  xmm <-> m128 (unaligned)
+		//   66 prefix  0F 10/11  MOVUPD  xmm <-> m128 (unaligned)
+		//   F3 prefix  0F 10     MOVSS  xmm <- m32: zero-extend
+		//                               xmm <- xmm:  copy low 32, keep high
+		//   F3 prefix  0F 11     MOVSS  m32 <- xmm: low 32 only
+		//   F2 prefix  0F 10     MOVSD  xmm <- m64: zero-extend
+		//                               xmm <- xmm:  copy low 64, keep high
+		//   F2 prefix  0F 11     MOVSD  m64 <- xmm: low 64 only
+		case 0x28:
+			// MOVAPS / MOVAPD: full 128-bit load.
 			mr := c.parseModRM()
 			var v [2]uint64
 			if mr.isReg {
@@ -2857,13 +2925,68 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			}
 			c.xmm[mr.reg] = v
 
-		case 0x29, 0x11:
+		case 0x29:
+			// MOVAPS / MOVAPD store: full 128-bit.
 			mr := c.parseModRM()
 			v := c.xmm[mr.reg]
 			if mr.isReg {
 				c.xmm[mr.rm] = v
 			} else {
 				c.writeMem128(c.segBaseForModRM(mr) + mr.ea, v)
+			}
+
+		case 0x10:
+			mr := c.parseModRM()
+			switch repPrefix {
+			case 1: // F3 → MOVSS
+				if mr.isReg {
+					c.xmm[mr.reg][0] = (c.xmm[mr.reg][0] &^ 0xFFFFFFFF) |
+						(c.xmm[mr.rm][0] & 0xFFFFFFFF)
+				} else {
+					v := uint64(c.readMem32(c.segBaseForModRM(mr) + mr.ea))
+					c.xmm[mr.reg][0] = v
+					c.xmm[mr.reg][1] = 0
+				}
+			case 2: // F2 → MOVSD
+				if mr.isReg {
+					c.xmm[mr.reg][0] = c.xmm[mr.rm][0]
+				} else {
+					c.xmm[mr.reg][0] = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+					c.xmm[mr.reg][1] = 0
+				}
+			default: // none/66 → MOVUPS/MOVUPD
+				var v [2]uint64
+				if mr.isReg {
+					v = c.xmm[mr.rm]
+				} else {
+					v = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+				}
+				c.xmm[mr.reg] = v
+			}
+
+		case 0x11:
+			mr := c.parseModRM()
+			switch repPrefix {
+			case 1: // F3 → MOVSS store
+				if mr.isReg {
+					c.xmm[mr.rm][0] = (c.xmm[mr.rm][0] &^ 0xFFFFFFFF) |
+						(c.xmm[mr.reg][0] & 0xFFFFFFFF)
+				} else {
+					c.writeMem32(c.segBaseForModRM(mr) + mr.ea, uint32(c.xmm[mr.reg][0]))
+				}
+			case 2: // F2 → MOVSD store
+				if mr.isReg {
+					c.xmm[mr.rm][0] = c.xmm[mr.reg][0]
+				} else {
+					c.writeMem64(c.segBaseForModRM(mr) + mr.ea, c.xmm[mr.reg][0])
+				}
+			default: // none/66 → MOVUPS/MOVUPD store
+				v := c.xmm[mr.reg]
+				if mr.isReg {
+					c.xmm[mr.rm] = v
+				} else {
+					c.writeMem128(c.segBaseForModRM(mr) + mr.ea, v)
+				}
 			}
 
 		// MMX packed-integer instructions. Each operates on the full

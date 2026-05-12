@@ -1,17 +1,23 @@
 #!/bin/sh
-# Boot Alpine Linux 3.19 directly from the ISO.
+# Boot Alpine Linux 3.19 from its ISO image.
 #
-# The ISO is attached as virtio-blk (kernel sees /dev/vda); Alpine's
-# init script picks it up via `alpine_dev=vda:iso9660`.
+# Uses the Yocto qemux86 kernel (which has virtio_pci_modern/_legacy
+# built-in — Alpine's own kernel separates them into modules that
+# trip a kernel oops in our emulator) combined with the Alpine
+# initramfs. The ISO is attached as virtio-blk (kernel sees /dev/vda
+# with vda1/vda2 partitions); Alpine's init picks it up via
+# `alpine_dev=vda:iso9660`.
 #
 # Console is the 16550 UART at COM1, routed to stdin/stdout. Ctrl-A x
-# exits the emulator.
+# exits the emulator. nlplug-findfs may segfault inside musl libc
+# (open SSE/MMX issue) and Alpine drops into the emergency recovery
+# shell after `usbdelay=10` seconds — that's where you currently land.
 set -e
 exec bin/temu.darwin-arm64.bin \
     -machine x86 \
     -m 512 \
-    -kernel bin/vmlinuz-alpine-x86 \
+    -kernel bin/bzImage-qemux86.bin \
     -initrd bin/initrd-alpine-x86 \
     -drive bin/alpine-standard-3.19.0-x86.iso -ro \
     -net-user \
-    -append "console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable alpine_dev=vda:iso9660 modules=loop,squashfs,sd-mod,usb-storage,virtio_blk,virtio_net,virtio_pci"
+    -append "console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable alpine_dev=vda:iso9660 usbdelay=10 modules=virtio_pci,virtio_blk,virtio_net,loop,squashfs"
