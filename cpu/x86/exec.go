@@ -129,6 +129,22 @@ func (c *CPU) writeMem32(addr uint32, val uint32) {
 	c.writePhys32(c.translateAddress(addr, true, c.cpl == 3, false), val)
 }
 
+// readMem64 reads a qword from the given linear address. Used for MMX
+// MOVQ. Issues two 32-bit reads — if either page-faults the panic
+// unwinds normally; we don't attempt to roll back the first read.
+func (c *CPU) readMem64(addr uint32) uint64 {
+	lo := uint64(c.readMem32(addr))
+	hi := uint64(c.readMem32(addr + 4))
+	return lo | hi<<32
+}
+
+// writeMem64 writes a qword to the given linear address. Used for MMX
+// MOVQ store.
+func (c *CPU) writeMem64(addr uint32, val uint64) {
+	c.writeMem32(addr, uint32(val))
+	c.writeMem32(addr+4, uint32(val>>32))
+}
+
 // fetchMem8 reads a code byte from the given linear address. Faults during
 // instruction fetch get bit 4 set in the #PF error code, and the U/S bit
 // reflects whether the fetch happens at CPL=3.
@@ -2669,6 +2685,59 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					c.SetReg32(int(mr.reg), uint32(i))
 				}
 			}
+
+		// MMX move/EMMS spike: just enough to get musl libc past its
+		// MMX-using memcpy/strlen paths. No actual SIMD math — just
+		// MOVD/MOVQ between registers + memory, and EMMS to mark the
+		// MMX state empty.
+		//
+		// 0F 6E  MOVD mm, r/m32          load 32 bits, zero-extend
+		// 0F 6F  MOVQ mm, mm/m64         load 64 bits
+		// 0F 7E  MOVD r/m32, mm          store low 32 bits
+		// 0F 7F  MOVQ mm/m64, mm         store 64 bits
+		// 0F 77  EMMS                    no-op (we have no x87 state
+		//                                to tag-as-empty, but EMMS
+		//                                still needs to be a valid op)
+		case 0x6E:
+			mr := c.parseModRM()
+			var v uint32
+			if mr.isReg {
+				v = c.GetReg32(int(mr.rm))
+			} else {
+				v = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
+			}
+			c.mm[mr.reg] = uint64(v)
+
+		case 0x6F:
+			mr := c.parseModRM()
+			var v uint64
+			if mr.isReg {
+				v = c.mm[mr.rm]
+			} else {
+				v = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+			}
+			c.mm[mr.reg] = v
+
+		case 0x7E:
+			mr := c.parseModRM()
+			lo := uint32(c.mm[mr.reg])
+			if mr.isReg {
+				c.SetReg32(int(mr.rm), lo)
+			} else {
+				c.writeMem32(c.segBaseForModRM(mr) + mr.ea, lo)
+			}
+
+		case 0x7F:
+			mr := c.parseModRM()
+			v := c.mm[mr.reg]
+			if mr.isReg {
+				c.mm[mr.rm] = v
+			} else {
+				c.writeMem64(c.segBaseForModRM(mr) + mr.ea, v)
+			}
+
+		case 0x77:
+			// EMMS: tag word ← all-empty. We don't track tag state.
 
 		default:
 			return fmt.Errorf("unimplemented 0F opcode: %02X at EIP=%08X", opcode2, c.eip-2)

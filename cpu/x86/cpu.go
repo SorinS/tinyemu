@@ -243,6 +243,12 @@ type CPU struct {
 	// Power-down (HLT) state
 	powerDown bool
 
+	// MMX register file: 8 × 64-bit. Per Intel SDM, MMX shares physical
+	// state with the x87 ST(0..7) mantissas. Since our x87 is stubbed
+	// (no real ST registers), we maintain mm[] standalone. Once x87 is
+	// real, alias mm[i] to st[i].mantissa.
+	mm [8]uint64
+
 	// Interrupt state
 	intrLineState     int
 	interruptsBlocked bool
