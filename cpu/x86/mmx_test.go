@@ -93,8 +93,158 @@ func TestMMX_EMMS(t *testing.T) {
 	if err := runCode(t, c, code, 0x1000); err != nil {
 		t.Fatalf("runCode: %v", err)
 	}
-	// mm[0] is unchanged — we don't actually reset the register file.
 	if c.mm[0] != 0xDEADBEEFCAFEBABE {
 		t.Errorf("EMMS modified mm0 = %016X", c.mm[0])
+	}
+}
+
+// TestMMX_PXOR covers 0F EF — the most common kernel-side use of MMX,
+// found in memset/optimised checksum loops.
+func TestMMX_PXOR(t *testing.T) {
+	c := newTestCPU(t)
+	c.mm[0] = 0xFF00FF00FF00FF00
+	c.mm[1] = 0x00FF00FF00FF00FF
+	// PXOR MM0, MM1  =  0F EF C1
+	code := []byte{0x0F, 0xEF, 0xC1, 0xF4}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("runCode: %v", err)
+	}
+	if c.mm[0] != 0xFFFFFFFFFFFFFFFF {
+		t.Errorf("PXOR result = %016X, want all-1s", c.mm[0])
+	}
+}
+
+// TestMMX_PandPorPandn covers PAND, POR, PANDN as a single
+// table-driven round-trip — each is bitwise on the full 64-bit value.
+func TestMMX_PandPorPandn(t *testing.T) {
+	cases := []struct {
+		name    string
+		opcode2 byte
+		a, b    uint64
+		want    uint64
+	}{
+		{"PAND", 0xDB, 0xF0F0F0F0F0F0F0F0, 0x0F0F0F0F0F0F0F0F, 0x0000000000000000},
+		{"POR", 0xEB, 0xF0F0F0F0F0F0F0F0, 0x0F0F0F0F0F0F0F0F, 0xFFFFFFFFFFFFFFFF},
+		// PANDN: (NOT a) AND b
+		{"PANDN", 0xDF, 0xFF00FF00FF00FF00, 0xFFFFFFFFFFFFFFFF, 0x00FF00FF00FF00FF},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newTestCPU(t)
+			c.mm[0] = tc.a
+			c.mm[1] = tc.b
+			// op MM0, MM1
+			code := []byte{0x0F, tc.opcode2, 0xC1, 0xF4}
+			if err := runCode(t, c, code, 0x1000); err != nil {
+				t.Fatalf("runCode: %v", err)
+			}
+			if c.mm[0] != tc.want {
+				t.Errorf("got %016X want %016X", c.mm[0], tc.want)
+			}
+		})
+	}
+}
+
+// TestMMX_PCMPEQ covers byte/word/dword equality compare.
+func TestMMX_PCMPEQ(t *testing.T) {
+	cases := []struct {
+		name    string
+		opcode2 byte
+		a, b    uint64
+		want    uint64
+	}{
+		// 8 byte lanes; lanes 0,2,4,6 equal; 1,3,5,7 differ.
+		{"PCMPEQB", 0x74,
+			0xAABBCCDDEEFF1122, 0xAABBCCDDEEFF1122,
+			0xFFFFFFFFFFFFFFFF},
+		// Half the bytes match (every other byte equals; the rest differ).
+		// Lane order is little-endian: byte 0 is the LSB of `a`/`b`.
+		// a bytes: 11 00 33 00 55 00 77 00
+		// b bytes: 11 22 33 44 55 66 77 88
+		// → matches at lanes 0,2,4,6 → 0x00FF00FF00FF00FF
+		{"PCMPEQB partial", 0x74,
+			0x0077005500330011, 0x8877665544332211,
+			0x00FF00FF00FF00FF},
+		// 4 word lanes
+		{"PCMPEQW", 0x75,
+			0x1111222233334444, 0x1111ABCD33334444,
+			0xFFFF0000FFFFFFFF},
+		// 2 dword lanes
+		{"PCMPEQD", 0x76,
+			0xDEADBEEF11223344, 0xDEADBEEF99887766,
+			0xFFFFFFFF00000000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newTestCPU(t)
+			c.mm[2] = tc.a
+			c.mm[3] = tc.b
+			// op MM2, MM3
+			code := []byte{0x0F, tc.opcode2, 0xD3, 0xF4}
+			if err := runCode(t, c, code, 0x1000); err != nil {
+				t.Fatalf("runCode: %v", err)
+			}
+			if c.mm[2] != tc.want {
+				t.Errorf("got %016X want %016X", c.mm[2], tc.want)
+			}
+		})
+	}
+}
+
+// TestMMX_PADD covers packed add with byte/word/dword/qword sizing —
+// crucially verifying that carry does NOT propagate across element
+// boundaries.
+func TestMMX_PADD(t *testing.T) {
+	cases := []struct {
+		name    string
+		opcode2 byte
+		a, b    uint64
+		want    uint64
+	}{
+		// PADDB: byte 0xFF + byte 0x01 = 0x00 (wraps, no carry out).
+		{"PADDB wrap", 0xFC,
+			0xFFFFFFFFFFFFFFFF, 0x0101010101010101,
+			0x0000000000000000},
+		// PADDW: 0xFFFF + 1 = 0 per word.
+		{"PADDW wrap", 0xFD,
+			0xFFFFFFFFFFFFFFFF, 0x0001000100010001,
+			0x0000000000000000},
+		// PADDD: 0xFFFFFFFF + 1 = 0 per dword.
+		{"PADDD wrap", 0xFE,
+			0xFFFFFFFFFFFFFFFF, 0x0000000100000001,
+			0x0000000000000000},
+		// PADDQ: full 64-bit add, single carry chain.
+		{"PADDQ", 0xD4,
+			0x00000000FFFFFFFF, 0x0000000000000001,
+			0x0000000100000000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newTestCPU(t)
+			c.mm[0] = tc.a
+			c.mm[1] = tc.b
+			code := []byte{0x0F, tc.opcode2, 0xC1, 0xF4}
+			if err := runCode(t, c, code, 0x1000); err != nil {
+				t.Fatalf("runCode: %v", err)
+			}
+			if c.mm[0] != tc.want {
+				t.Errorf("got %016X want %016X", c.mm[0], tc.want)
+			}
+		})
+	}
+}
+
+// TestMMX_PSUB sanity-checks packed subtraction.
+func TestMMX_PSUB(t *testing.T) {
+	c := newTestCPU(t)
+	c.mm[0] = 0x0000000000000000
+	c.mm[1] = 0x0101010101010101
+	// PSUBB MM0, MM1 = 0F F8 C1 — each byte 0 - 1 wraps to 0xFF.
+	code := []byte{0x0F, 0xF8, 0xC1, 0xF4}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("runCode: %v", err)
+	}
+	if c.mm[0] != 0xFFFFFFFFFFFFFFFF {
+		t.Errorf("PSUBB got %016X, want all-FF", c.mm[0])
 	}
 }

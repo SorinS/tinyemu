@@ -2739,6 +2739,78 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 		case 0x77:
 			// EMMS: tag word ← all-empty. We don't track tag state.
 
+		// MMX packed-integer instructions. Each operates on the full
+		// 64-bit MMX register, optionally splitting it into smaller
+		// elements based on the suffix encoded in the opcode:
+		//   B = packed bytes        (8 × 8-bit)
+		//   W = packed words        (4 × 16-bit)
+		//   D = packed doublewords  (2 × 32-bit)
+		//   Q = quadword            (1 × 64-bit)
+		// Source operand is always r/m (another MMX register or a
+		// 64-bit memory operand); destination is always an MMX
+		// register encoded in the `reg` field.
+		case 0xDB, 0xDF, 0xEB, 0xEF: // PAND, PANDN, POR, PXOR
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			switch opcode2 {
+			case 0xDB:
+				dst = dst & src
+			case 0xDF:
+				dst = (^dst) & src
+			case 0xEB:
+				dst = dst | src
+			case 0xEF:
+				dst = dst ^ src
+			}
+			c.mm[mr.reg] = dst
+
+		case 0x74, 0x75, 0x76: // PCMPEQB/W/D
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			c.mm[mr.reg] = packedCmpEq(dst, src, 1<<(opcode2-0x74))
+
+		case 0x64, 0x65, 0x66: // PCMPGTB/W/D (signed)
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			c.mm[mr.reg] = packedCmpGt(dst, src, 1<<(opcode2-0x64))
+
+		case 0xFC, 0xFD, 0xFE, 0xD4: // PADDB/W/D/Q
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			var size int
+			switch opcode2 {
+			case 0xFC:
+				size = 1
+			case 0xFD:
+				size = 2
+			case 0xFE:
+				size = 4
+			case 0xD4:
+				size = 8
+			}
+			c.mm[mr.reg] = packedAdd(dst, src, size)
+
+		case 0xF8, 0xF9, 0xFA, 0xFB: // PSUBB/W/D/Q
+			mr := c.parseModRM()
+			src := c.mmxSrc64(mr)
+			dst := c.mm[mr.reg]
+			var size int
+			switch opcode2 {
+			case 0xF8:
+				size = 1
+			case 0xF9:
+				size = 2
+			case 0xFA:
+				size = 4
+			case 0xFB:
+				size = 8
+			}
+			c.mm[mr.reg] = packedSub(dst, src, size)
+
 		default:
 			return fmt.Errorf("unimplemented 0F opcode: %02X at EIP=%08X", opcode2, c.eip-2)
 		}

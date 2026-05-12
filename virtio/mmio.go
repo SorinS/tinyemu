@@ -125,13 +125,30 @@ type Device struct {
 	IntStatus         uint32               // Interrupt status bits
 	Status            uint32               // Device status
 	DeviceFeaturesSel uint32               // Features selector (0 or 1)
+	GuestFeaturesSel  uint32               // Driver-side features selector (0 or 1)
 	QueueSel          uint32               // Currently selected queue
 	Queues            [MaxQueue]QueueState // Queue states
 
 	// Device identification
 	DeviceID uint32 // Device type ID
 	VendorID uint32 // Vendor ID (0xffff = unassigned)
-	Features uint32 // Device features (low 32 bits)
+
+	// Feature negotiation. `Features` (low 32 bits) and `FeaturesHi`
+	// (bits 32-63) are the device-OFFERED features — the bits this
+	// device implements. The driver reads these via the transport's
+	// host-features register. The driver then writes back the subset
+	// it wants to use via the guest-features register; we record that
+	// subset in `GuestFeatures` / `GuestFeaturesHi`. The negotiated
+	// set is `Features & GuestFeatures` — and transports MUST gate
+	// behavior on the negotiated set, not the offered set, so that
+	// drivers and devices never disagree about what's active.
+	//
+	// Legacy virtio-pci can only expose the low 32 bits; modern and
+	// MMIO support both halves via the *Sel registers.
+	Features         uint32
+	FeaturesHi       uint32
+	GuestFeatures    uint32
+	GuestFeaturesHi  uint32
 
 	// Callbacks
 	DeviceRecv  DeviceRecvFunc  // Called when descriptors are available
@@ -198,6 +215,10 @@ func (dev *Device) Reset() {
 	dev.DeviceFeaturesSel = 0
 	dev.IntStatus = 0
 
+	dev.GuestFeatures = 0
+	dev.GuestFeaturesHi = 0
+	dev.GuestFeaturesSel = 0
+
 	for i := range dev.Queues {
 		qs := &dev.Queues[i]
 		qs.Ready = 0
@@ -209,11 +230,31 @@ func (dev *Device) Reset() {
 	}
 }
 
-// SetFeatures sets the device features (low 32 bits).
+// SetFeatures sets the device-OFFERED features (low 32 bits). Use
+// SetFeaturesHi for bits 32-63. Both are bits the device knows how to
+// implement; the driver picks a subset via the guest-features register.
 func (dev *Device) SetFeatures(features uint32) {
 	dev.mu.Lock()
 	defer dev.mu.Unlock()
 	dev.Features = features
+}
+
+// SetFeaturesHi sets the device-offered features (bits 32-63).
+func (dev *Device) SetFeaturesHi(features uint32) {
+	dev.mu.Lock()
+	defer dev.mu.Unlock()
+	dev.FeaturesHi = features
+}
+
+// NegotiatedFeatures returns the 64-bit set of features both the device
+// and driver agreed to use. Transports and device backends MUST gate
+// optional behavior on this — never on the offered set alone.
+func (dev *Device) NegotiatedFeatures() uint64 {
+	dev.mu.Lock()
+	defer dev.mu.Unlock()
+	lo := uint64(dev.Features & dev.GuestFeatures)
+	hi := uint64(dev.FeaturesHi & dev.GuestFeaturesHi)
+	return lo | hi<<32
 }
 
 // SetDebug sets debug flags.
@@ -257,11 +298,17 @@ func (dev *Device) read(opaque any, offset uint32, sizeLog2 int) uint32 {
 		val = dev.VendorID
 
 	case MMIODeviceFeatures:
+		// Return offered features for the selected half. MMIO version 2
+		// expects bit 32 (VIRTIO_F_VERSION_1) to be set in the high
+		// half; we OR that in unconditionally so the driver can complete
+		// the modern handshake. Other high bits (e.g. STANDBY at 62)
+		// are exposed only if the device backend explicitly set them
+		// via FeaturesHi.
 		switch dev.DeviceFeaturesSel {
 		case 0:
 			val = dev.Features
 		case 1:
-			val = 1 // VirtIO version 1 indicator
+			val = dev.FeaturesHi | (1 << 0) // VIRTIO_F_VERSION_1 (bit 32 == hi bit 0)
 		default:
 			val = 0
 		}
@@ -335,6 +382,21 @@ func (dev *Device) write(opaque any, offset uint32, val uint32, sizeLog2 int) {
 	switch offset {
 	case MMIODeviceFeaturesSel:
 		dev.DeviceFeaturesSel = val
+
+	case MMIODriverFeatures:
+		// Driver acks features it wants to use. Mask against what we
+		// actually offer — drivers MUST NOT enable bits we don't
+		// advertise (per virtio spec). We still record the masked
+		// value so reads can echo it back.
+		switch dev.GuestFeaturesSel {
+		case 0:
+			dev.GuestFeatures = val & dev.Features
+		case 1:
+			dev.GuestFeaturesHi = val & dev.FeaturesHi
+		}
+
+	case MMIODriverFeaturesSel:
+		dev.GuestFeaturesSel = val
 
 	case MMIOQueueSel:
 		if val < MaxQueue {

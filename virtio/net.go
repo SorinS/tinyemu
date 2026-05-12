@@ -119,8 +119,28 @@ func NewNetCore(memMap *mem.PhysMemoryMap, irq *mem.IRQSignal, es *EthernetDevic
 
 // setup configures device features, the manual-RX queue, MAC, status,
 // and EthernetDevice callbacks. Shared between MMIO and PCI constructors.
+//
+// We explicitly advertise ONLY the features we implement:
+//   - VIRTIO_NET_F_MAC    (bit 5)  — the device-configured MAC address
+//                                   is exposed via config space.
+//
+// We do NOT advertise:
+//   - VIRTIO_NET_F_STATUS  (bit 16) — would require tracking and
+//                                    pushing config-change interrupts
+//                                    on carrier transitions.
+//   - VIRTIO_NET_F_MRG_RXBUF (bit 15) — needs multi-buffer RX support
+//                                      we don't implement.
+//   - VIRTIO_NET_F_STANDBY (bit 62) — failover semantics; pulls in
+//                                    the net_failover kernel module
+//                                    which we have no business
+//                                    pretending to support.
+//   - VIRTIO_NET_F_CTRL_VQ  (bit 17) — control queue, not implemented.
+//   - All offload features (CSUM, GSO, …)             — host-side
+//                                                       offload, not
+//                                                       implemented.
 func (n *Net) setup(es *EthernetDevice) {
 	n.dev.SetFeatures(NetFeatureMAC)
+	n.dev.SetFeaturesHi(0) // no high-bit features (no STANDBY, etc.)
 	n.dev.Queues[NetQueueRX].ManualRecv = true
 	copy(n.dev.ConfigSpace[NetConfigMAC:], es.MACAddr[:])
 	n.dev.ConfigSpace[NetConfigStatus] = 0

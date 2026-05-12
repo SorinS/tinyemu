@@ -100,12 +100,15 @@ func (t *LegacyTransport) IORead(off uint16, size int) uint32 {
 
 	switch off {
 	case pciHostFeatures:
+		// Legacy virtio-pci only exposes the low 32 bits of the
+		// feature mask; the device's high bits are unreachable from a
+		// legacy driver (per virtio spec §4.1.4.2). This is fine: any
+		// high-bit feature requires modern transport anyway.
 		return dev.Features
 	case pciGuestFeatures:
-		// Drivers can read back what they wrote; we don't gate features
-		// per-driver so just echo back what was last written. Stash it
-		// in DeviceFeaturesSel since we don't use that field for legacy.
-		return dev.DeviceFeaturesSel
+		// Driver read-back of its own ACK. We store the (already-
+		// masked) value in GuestFeatures.
+		return dev.GuestFeatures
 	case pciQueuePFN:
 		// PFN is desc_addr >> 12. Legacy assumes desc_addr is page-aligned.
 		return uint32(dev.Queues[dev.QueueSel].DescAddr >> pciQueuePFNShift)
@@ -168,7 +171,13 @@ func (t *LegacyTransport) IOWrite(off uint16, val uint32, size int) {
 
 	switch off {
 	case pciGuestFeatures:
-		dev.DeviceFeaturesSel = val // stash for readback
+		// Mask against offered features — drivers are NOT permitted
+		// to enable bits we don't advertise (virtio-v1.0 §3.1.1
+		// driver-init step 5). Silently dropping unsupported bits
+		// matches what real virtio devices do; the driver then
+		// reads back the masked value and sees only what was
+		// granted.
+		dev.GuestFeatures = val & dev.Features
 	case pciQueuePFN:
 		// Driver writes PFN; we derive desc/avail/used from PFN + queue size.
 		// Layout per legacy spec: desc table, then avail ring,
