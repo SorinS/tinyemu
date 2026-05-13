@@ -54,6 +54,71 @@ func TestFcomFnstswSahf_1lt2(t *testing.T) {
 	}
 }
 
+// TestFucompp exercises DA E9 — FUCOMPP (compare ST(0) with ST(1),
+// unordered, pop BOTH). This is busybox awk's compiled `v != 0`
+// sequence inside istrue():
+//
+//   fldz                ; ST(0) = 0
+//   fldl v              ; ST(0) = v, ST(1) = 0
+//   fucompp             ; compare v vs 0, pop both
+//   fnstsw %ax
+//   sahf
+//   setne %al           ; AL = 1 if !=
+//
+// With our DA reg-form being a stubbed NOP, FUCOMPP didn't run — flags
+// reflected whatever the previous instruction left, and istrue() always
+// returned true. That made every `if (numeric_expr)` in awk take the
+// then branch.
+func TestFucompp_NonZero(t *testing.T) {
+	c := newTestCPU(t)
+	const vAddr = uint32(0x2000)
+	// v = 5.0
+	c.writeMem32(vAddr, 0)
+	c.writeMem32(vAddr+4, 0x40140000)
+	c.SetReg32(EBX, vAddr)
+	code := []byte{
+		0xD9, 0xEE,           // fldz                  ST(0)=0
+		0xDD, 0x03,           // fldl [ebx]             ST(0)=5, ST(1)=0
+		0xDA, 0xE9,           // fucompp                compare 5 vs 0, pop both
+		0xDF, 0xE0,           // fnstsw %ax
+		0x9E,                 // sahf
+		0x0F, 0x95, 0xC0,     // setne %al
+		0x0F, 0xB6, 0xC0,     // movzbl %al, %eax
+		0xF4,
+	}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("runCode: %v", err)
+	}
+	if got := c.GetReg32(EAX); got != 1 {
+		t.Errorf("FUCOMPP(5,0); setne: EAX = %d, want 1 (5 != 0)", got)
+	}
+}
+
+func TestFucompp_Zero(t *testing.T) {
+	c := newTestCPU(t)
+	const vAddr = uint32(0x2000)
+	// v = 0.0
+	c.writeMem32(vAddr, 0)
+	c.writeMem32(vAddr+4, 0)
+	c.SetReg32(EBX, vAddr)
+	code := []byte{
+		0xD9, 0xEE,           // fldz
+		0xDD, 0x03,           // fldl [ebx]
+		0xDA, 0xE9,           // fucompp
+		0xDF, 0xE0,           // fnstsw %ax
+		0x9E,                 // sahf
+		0x0F, 0x95, 0xC0,     // setne %al
+		0x0F, 0xB6, 0xC0,     // movzbl %al, %eax
+		0xF4,
+	}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("runCode: %v", err)
+	}
+	if got := c.GetReg32(EAX); got != 0 {
+		t.Errorf("FUCOMPP(0,0); setne: EAX = %d, want 0 (0 != 0 is false)", got)
+	}
+}
+
 // Same shape, but 2 >= 1 should be true (AL = 1).
 func TestFcomFnstswSahf_2ge1(t *testing.T) {
 	c := newTestCPU(t)

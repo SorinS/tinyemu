@@ -2,6 +2,7 @@ package x86
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 )
 
@@ -492,10 +493,37 @@ func (c *CPU) handleX87(opcode uint8) error {
 
 	case 0xDA:
 		// DA /n m32 (signed int32): ST(0) := ST(0) op (int32) src.
-		// DA reg form (mod=11) is FCMOVcc / FUCOMPP — skip; very rarely
-		// used by libm.
+		// DA reg form (mod=11) is FCMOVcc / FUCOMPP. busybox awk's
+		// `istrue(v)` for numeric vars compiles to `fldz; fldl v; fucompp;
+		// fnstsw ax; sahf; setne al` — stubbing FUCOMPP made every
+		// `if (numeric_expr)` take the THEN branch.
 		if mr.isReg {
-			return nil // NOP for now
+			switch {
+			case mr.reg == 5 && mr.rm == 1:
+				// FUCOMPP: compare ST(0) with ST(1), pop both.
+				c.fpuCompareSetFlags(c.fpuST(0), c.fpuST(1))
+				c.fpuPop()
+				c.fpuPop()
+			case mr.reg == 0: // FCMOVB ST(0), ST(i)  (CF=1)
+				if c.eflags&EFLAGS_CF != 0 {
+					c.fpuSetST(0, c.fpuST(int(mr.rm)))
+				}
+			case mr.reg == 1: // FCMOVE ST(0), ST(i)  (ZF=1)
+				if c.eflags&EFLAGS_ZF != 0 {
+					c.fpuSetST(0, c.fpuST(int(mr.rm)))
+				}
+			case mr.reg == 2: // FCMOVBE ST(0), ST(i) (CF=1 OR ZF=1)
+				if c.eflags&(EFLAGS_CF|EFLAGS_ZF) != 0 {
+					c.fpuSetST(0, c.fpuST(int(mr.rm)))
+				}
+			case mr.reg == 3: // FCMOVU ST(0), ST(i)  (PF=1)
+				if c.eflags&EFLAGS_PF != 0 {
+					c.fpuSetST(0, c.fpuST(int(mr.rm)))
+				}
+			default:
+				return fmt.Errorf("unsupported DA reg form: reg=%d rm=%d at EIP=%08X", mr.reg, mr.rm, c.eip-2)
+			}
+			return nil
 		}
 		v := int32(c.readMem32(c.segBaseForModRM(mr) + mr.ea))
 		src := float64(v)
