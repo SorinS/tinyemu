@@ -303,10 +303,29 @@ type CPU struct {
 	// recursion when the stack itself is unmapped.
 	pfDumpActive bool
 
-	// Minimal x87 state — just enough to satisfy Linux's FPU detection
-	// probe (FNINIT/FNSTSW/FNSTCW). We don't emulate floating-point
-	// arithmetic; the kernel only uses FPU in early-boot detection (we
-	// claim FPU=1 in CPUID and pass that probe).
+	// x87 FPU state. We model the eight ST registers as float64 (drops
+	// the extra 11 bits of mantissa that 80-bit extended precision
+	// provides — almost no software depends on those bits, and
+	// delegating to Go's IEEE-754 hardware is much simpler than rolling
+	// our own 80-bit math).
+	//
+	// `fpu` is the register file indexed by physical position. The
+	// architectural ST(0..7) registers are this array seen through the
+	// rotating window controlled by fpuTop (the C1 condition code is
+	// derived from this). `fpuTop` decrements on each FLD (push) and
+	// increments on each FSTP (pop), wrapping mod 8.
+	//
+	// fpuTag is the tag word: 2 bits per physical register
+	//   00 = valid, 01 = zero, 10 = special (NaN/Inf/denormal), 11 = empty.
+	// On reset all entries are 11 (empty). On a push, the new top is
+	// tagged by examining the value.
+	//
+	// fpuControlWord is the architectural CW register (rounding mode,
+	// precision, masked exceptions). fpuStatusWord is SW (exception
+	// flags, condition codes, TOP field at bits 11-13).
+	fpu            [8]float64
+	fpuTop         uint8 // 0..7, physical index of architectural ST(0)
+	fpuTag         uint16
 	fpuStatusWord  uint16
 	fpuControlWord uint16
 	fpuInitialized bool
