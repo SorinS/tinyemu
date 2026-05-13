@@ -367,6 +367,11 @@ func (c *CPU) Reset() {
 	c.fpuControlWord = 0x037F
 	c.fpuStatusWord = 0
 	c.fpuInitialized = true
+	// SSE control/status: power-on default per Intel SDM. All exception flags
+	// clear, all exceptions masked, round-to-nearest. Linux's fetestexcept
+	// (in musl) reads this via STMXCSR and uses it as part of the flag set;
+	// without a sane default the bits-25 OR-with-MXCSR returns garbage.
+	c.mxcsr = 0x1F80
 	c.cpl = 0
 	c.powerDown = false
 	c.intrLineState = 0

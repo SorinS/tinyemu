@@ -517,6 +517,93 @@ func packedSubSat(a, b uint64, elemSize int, signed bool) uint64 {
 	return out
 }
 
+// byteShiftLeft128 shifts a 128-bit value left by `count` BYTES (zero fill).
+// PSLLDQ semantics: count >= 16 → result is zero.
+func byteShiftLeft128(v [2]uint64, count int) [2]uint64 {
+	if count >= 16 {
+		return [2]uint64{0, 0}
+	}
+	if count == 0 {
+		return v
+	}
+	if count >= 8 {
+		// Whole 64-bit shift, plus residual byte shift in high lane.
+		return [2]uint64{0, v[0] << (uint(count-8) * 8)}
+	}
+	// count in 1..7: bits flow from low qword into high qword.
+	bits := uint(count) * 8
+	return [2]uint64{
+		v[0] << bits,
+		(v[1] << bits) | (v[0] >> (64 - bits)),
+	}
+}
+
+// byteShiftRight128 shifts a 128-bit value right by `count` BYTES (zero fill).
+// PSRLDQ semantics: count >= 16 → result is zero.
+func byteShiftRight128(v [2]uint64, count int) [2]uint64 {
+	if count >= 16 {
+		return [2]uint64{0, 0}
+	}
+	if count == 0 {
+		return v
+	}
+	if count >= 8 {
+		return [2]uint64{v[1] >> (uint(count-8) * 8), 0}
+	}
+	bits := uint(count) * 8
+	return [2]uint64{
+		(v[0] >> bits) | (v[1] << (64 - bits)),
+		v[1] >> bits,
+	}
+}
+
+// pshufWord reorders 4 words (16-bit each) in a 64-bit value according to
+// imm8 (two bits per output lane select source lane).
+//
+// PSHUFW mm, mm/m64, imm8 — MMX.
+// PSHUFLW xmm, xmm/m128, imm8 reuses this on the LOW 64 bits.
+// PSHUFHW xmm, xmm/m128, imm8 reuses this on the HIGH 64 bits.
+func pshufWord(src uint64, imm uint8) uint64 {
+	var out uint64
+	for i := 0; i < 4; i++ {
+		idx := uint((imm >> uint(i*2)) & 3)
+		w := uint16(src >> (idx * 16))
+		out |= uint64(w) << (uint(i) * 16)
+	}
+	return out
+}
+
+// pshufDword reorders 4 doublewords (32-bit each) in a 128-bit value
+// according to imm8 (two bits per output lane select source lane).
+//
+// PSHUFD xmm, xmm/m128, imm8 — SSE2.
+func pshufDword(src [2]uint64, imm uint8) [2]uint64 {
+	srcWords := [4]uint32{
+		uint32(src[0]),
+		uint32(src[0] >> 32),
+		uint32(src[1]),
+		uint32(src[1] >> 32),
+	}
+	var out [4]uint32
+	for i := 0; i < 4; i++ {
+		idx := (imm >> uint(i*2)) & 3
+		out[i] = srcWords[idx]
+	}
+	return [2]uint64{
+		uint64(out[0]) | uint64(out[1])<<32,
+		uint64(out[2]) | uint64(out[3])<<32,
+	}
+}
+
+// packedMulUDQ: PMULUDQ. Takes the LOW 32 bits of each 64-bit lane,
+// multiplies them as unsigned, produces a 64-bit result per lane.
+//
+// MMX form: 1 × 64-bit lane → result is low 32 of `a` × low 32 of `b`.
+// SSE2 form (called twice, once per 64-bit lane in a 128-bit XMM).
+func packedMulUDQ(a, b uint64) uint64 {
+	return uint64(uint32(a)) * uint64(uint32(b))
+}
+
 // packedMaddWord: PMADDWD. Treats each operand as 4 signed-16 lanes.
 // Pairs of adjacent lanes are multiplied to int32, then each pair is
 // summed to produce 2 signed-32 output lanes.
