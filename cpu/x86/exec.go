@@ -1006,6 +1006,11 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 	// INT imm8
 	case 0xCD:
 		vec := c.fetch8()
+		if syscallTrace && vec == 0x80 && c.cpl == 3 {
+			fmt.Fprintf(os.Stderr, "[sys] eax=%d ebx=%08X ecx=%08X edx=%08X esi=%08X edi=%08X EIP=%08X cycles=%d\n",
+				c.GetReg32(EAX), c.GetReg32(EBX), c.GetReg32(ECX), c.GetReg32(EDX),
+				c.GetReg32(ESI), c.GetReg32(EDI), c.eip, c.cycles)
+		}
 		return c.handleInterrupt(vec, false)
 
 	// INTO
@@ -2475,6 +2480,16 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 		case 0xAE:
 			mr := c.parseModRM()
 			switch mr.reg {
+			case 0: // FXSAVE m512
+				if mr.isReg {
+					return fmt.Errorf("FXSAVE requires memory operand at EIP=%08X", c.eip-3)
+				}
+				c.fxsave(c.segBaseForModRM(mr) + mr.ea)
+			case 1: // FXRSTOR m512
+				if mr.isReg {
+					return fmt.Errorf("FXRSTOR requires memory operand at EIP=%08X", c.eip-3)
+				}
+				c.fxrstor(c.segBaseForModRM(mr) + mr.ea)
 			case 2: // LDMXCSR
 				if mr.isReg {
 					return fmt.Errorf("LDMXCSR requires memory operand at EIP=%08X", c.eip-3)

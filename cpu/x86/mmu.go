@@ -70,6 +70,10 @@ func ud2Log(c *CPU, eip uint32) {
 // Enabled with TINYEMU_X86_INT_DEBUG=1.
 var intDebug = os.Getenv("TINYEMU_X86_INT_DEBUG") == "1"
 
+// syscallTrace logs every user-mode INT 0x80 entry. Useful for debugging
+// userspace hangs. Enabled with TINYEMU_X86_SYS=1.
+var syscallTrace = os.Getenv("TINYEMU_X86_SYS") == "1"
+
 // espTrace controls whether every change to ESP (or SP via SetReg16) is
 // logged with old/new values plus a Go stack trace, so we can pinpoint which
 // instruction handler corrupts ESP. Enabled with TINYEMU_X86_ESP_DEBUG=1.

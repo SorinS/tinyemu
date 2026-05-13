@@ -303,6 +303,98 @@ func (c *CPU) fpuLoadEnv32(addr uint32) {
 	c.fpuTop = uint8((c.fpuStatusWord >> 11) & 7)
 }
 
+// fxsave writes a 512-byte FXSAVE area at `addr`. The layout matches
+// Intel SDM Vol. 1 §10.5.1 for 32-bit non-REX form. We populate the
+// fields that real software actually inspects:
+//
+//   0   FCW       16    FPU control word
+//   2   FSW       16    FPU status word (TOP bits 11-13)
+//   4   FTW       8     abridged tag word (1 bit per ST: 0=empty, 1=valid)
+//   5   reserved  8
+//   6   FOP       16    last x87 opcode — 0
+//   8   FIP       32    last x87 instruction pointer — 0
+//   12  FCS       16    x87 CS — 0
+//   16  FDP       32    last data pointer — 0
+//   20  FDS       16    x87 DS — 0
+//   24  MXCSR     32
+//   28  MXCSR_MASK 32   0x0000FFBF
+//   32  ST(0)..ST(7)    each 80-bit in 16-byte slots (low 10 used)
+//   160 XMM0..XMM7      each 128-bit
+//
+// Linux's kernel context switch uses FXSAVE/FXRSTOR to save/restore
+// per-thread FPU state on EVERY task switch. Stubbing these to NOP
+// caused every preemption of a long-running FP user (busybox awk) to
+// corrupt the FPU registers — silent random branches in awk's `if`
+// statements. With this real implementation, awk's state survives.
+func (c *CPU) fxsave(addr uint32) {
+	c.fpuStatusWriteTop()
+	c.writeMem16(addr+0, c.fpuControlWord)
+	c.writeMem16(addr+2, c.fpuStatusWord)
+	// Build abridged tag word: 1 bit per ST register, set when not empty.
+	// Our c.fpuTag uses 2 bits per ST (00=valid, 01=zero, 10=special, 11=empty).
+	var ftw uint8
+	for i := 0; i < 8; i++ {
+		twoBit := (c.fpuTag >> (uint(i) * 2)) & 3
+		if twoBit != 3 {
+			ftw |= 1 << uint(i)
+		}
+	}
+	c.writeMem8(addr+4, ftw)
+	c.writeMem8(addr+5, 0)
+	c.writeMem16(addr+6, 0)   // FOP
+	c.writeMem32(addr+8, 0)   // FIP
+	c.writeMem16(addr+12, 0)  // FCS
+	c.writeMem16(addr+14, 0)
+	c.writeMem32(addr+16, 0)  // FDP
+	c.writeMem16(addr+20, 0)  // FDS
+	c.writeMem16(addr+22, 0)
+	c.writeMem32(addr+24, c.mxcsr)
+	c.writeMem32(addr+28, 0x0000FFBF)
+	// ST registers in physical (not stack) order. Each at offset 32+i*16.
+	for i := 0; i < 8; i++ {
+		c.fpuStore80(addr+uint32(32+i*16), c.fpu[i])
+		// Zero the upper 6 bytes of the 16-byte slot.
+		c.writeMem16(addr+uint32(32+i*16+10), 0)
+		c.writeMem32(addr+uint32(32+i*16+12), 0)
+	}
+	// XMM registers at offset 160 + i*16.
+	for i := 0; i < 8; i++ {
+		off := addr + uint32(160+i*16)
+		c.writeMem32(off+0, uint32(c.xmm[i][0]))
+		c.writeMem32(off+4, uint32(c.xmm[i][0]>>32))
+		c.writeMem32(off+8, uint32(c.xmm[i][1]))
+		c.writeMem32(off+12, uint32(c.xmm[i][1]>>32))
+	}
+}
+
+// fxrstor reads a 512-byte FXSAVE area at `addr` back into the FPU and
+// XMM state. Inverse of fxsave.
+func (c *CPU) fxrstor(addr uint32) {
+	c.fpuControlWord = c.readMem16(addr + 0)
+	c.fpuStatusWord = c.readMem16(addr + 2)
+	c.fpuTop = uint8((c.fpuStatusWord >> 11) & 7)
+	ftw := c.readMem8(addr + 4)
+	// Expand 1-bit-per-ST abridged tag to 2-bit-per-ST: 0=empty (3),
+	// 1=not empty (treat as 0=valid).
+	var tag uint16
+	for i := 0; i < 8; i++ {
+		if ftw&(1<<uint(i)) == 0 {
+			tag |= 3 << (uint(i) * 2)
+		}
+	}
+	c.fpuTag = tag
+	c.mxcsr = c.readMem32(addr + 24)
+	for i := 0; i < 8; i++ {
+		c.fpu[i] = c.fpuLoad80(addr + uint32(32+i*16))
+	}
+	for i := 0; i < 8; i++ {
+		off := addr + uint32(160+i*16)
+		lo := uint64(c.readMem32(off+0)) | uint64(c.readMem32(off+4))<<32
+		hi := uint64(c.readMem32(off+8)) | uint64(c.readMem32(off+12))<<32
+		c.xmm[i] = [2]uint64{lo, hi}
+	}
+}
+
 // fpuStore80 / fpuLoad80 — 80-bit extended-precision store/load. We
 // don't model 80-bit but musl uses these for printf("%Lf") and some
 // transcendental wrappers. Emit a best-effort 80-bit-format encoding
