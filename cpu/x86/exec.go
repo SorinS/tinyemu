@@ -2,6 +2,7 @@ package x86
 
 import (
 	"fmt"
+	ssemath "math"
 	"os"
 	"strings"
 )
@@ -2869,6 +2870,39 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				return fmt.Errorf("0F D6 without 66/F2/F3 prefix at EIP=%08X", c.eip-2)
 			}
 
+		// 0F D7    PMOVMSKB r32, mm   — sign bits of 8 packed bytes → low 8 bits
+		// 66 0F D7 PMOVMSKB r32, xmm  — sign bits of 16 packed bytes → low 16 bits
+		// Used by musl strchr/strlen SSE2 implementations.
+		case 0xD7:
+			mr := c.parseModRM()
+			if !mr.isReg {
+				return fmt.Errorf("PMOVMSKB requires register source at EIP=%08X", c.eip-2)
+			}
+			var mask uint32
+			if operandSize == 2 {
+				// 128-bit XMM: 16 sign bits
+				v := c.xmm[mr.rm]
+				for i := 0; i < 8; i++ {
+					if v[0]&(1<<(i*8+7)) != 0 {
+						mask |= 1 << uint(i)
+					}
+				}
+				for i := 0; i < 8; i++ {
+					if v[1]&(1<<(i*8+7)) != 0 {
+						mask |= 1 << uint(8+i)
+					}
+				}
+			} else {
+				// 64-bit MMX: 8 sign bits
+				v := c.mm[mr.rm]
+				for i := 0; i < 8; i++ {
+					if v&(1<<(i*8+7)) != 0 {
+						mask |= 1 << uint(i)
+					}
+				}
+			}
+			c.SetReg32(int(mr.reg), mask)
+
 		case 0x77:
 			// EMMS: tag word ← all-empty. We don't track tag state.
 
@@ -2908,6 +2942,43 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 		// 0F 54  ANDPS  xmm, xmm/m128       (66 → ANDPD)
 		// 0F 55  ANDNPS xmm, xmm/m128       (66 → ANDNPD)
 		// 0F 56  ORPS   xmm, xmm/m128       (66 → ORPD)
+		// 0F 50    MOVMSKPS r32, xmm   — sign bits of 4 packed singles → low 4 bits
+		// 66 0F 50 MOVMSKPD r32, xmm   — sign bits of 2 packed doubles → low 2 bits
+		// 0F D7    PMOVMSKB r32, mm    — sign bits of 8 packed bytes → low 8 bits
+		// 66 0F D7 PMOVMSKB r32, xmm   — sign bits of 16 packed bytes → low 16 bits
+		// Busybox/musl use these heavily (e.g. SSE2 strlen/memchr).
+		case 0x50:
+			mr := c.parseModRM()
+			if !mr.isReg {
+				return fmt.Errorf("MOVMSKPS/PD requires register source at EIP=%08X", c.eip-2)
+			}
+			v := c.xmm[mr.rm]
+			var mask uint32
+			if operandSize == 2 {
+				// MOVMSKPD: 2 sign bits
+				if v[0]&(1<<63) != 0 {
+					mask |= 1
+				}
+				if v[1]&(1<<63) != 0 {
+					mask |= 2
+				}
+			} else {
+				// MOVMSKPS: 4 sign bits (one per 32-bit lane)
+				if v[0]&(1<<31) != 0 {
+					mask |= 1
+				}
+				if v[0]&(1<<63) != 0 {
+					mask |= 2
+				}
+				if v[1]&(1<<31) != 0 {
+					mask |= 4
+				}
+				if v[1]&(1<<63) != 0 {
+					mask |= 8
+				}
+			}
+			c.SetReg32(int(mr.reg), mask)
+
 		// 0F 57  XORPS  xmm, xmm/m128       (66 → XORPD)
 		case 0x54, 0x55, 0x56, 0x57:
 			mr := c.parseModRM()
@@ -2962,6 +3033,78 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 				v = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
 			}
 			c.xmm[mr.reg] = v
+
+		case 0x2E, 0x2F:
+			// 0F 2E   UCOMISS  xmm1, xmm2/m32  — unordered compare scalar SP, set EFLAGS
+			// 0F 2F   COMISS   xmm1, xmm2/m32  — ordered (we treat the same; no FP exceptions)
+			// 66 0F 2E UCOMISD xmm1, xmm2/m64
+			// 66 0F 2F COMISD  xmm1, xmm2/m64
+			// Intel SDM Vol 2A: set EFLAGS.ZF/PF/CF from the comparison
+			// like FCOMI/FUCOMI; OF/SF/AF cleared. Used by gcc -O2 FP
+			// comparisons; busybox awk/printf compiles to these (6× UCOMISS
+			// + 3× COMISS in our boot's busybox).
+			mr := c.parseModRM()
+			var a, b float64
+			if operandSize == 2 {
+				// SCALAR DOUBLE (UCOMISD/COMISD) — 66 prefix
+				var ub uint64
+				if mr.isReg {
+					ub = c.xmm[mr.rm][0]
+				} else {
+					ub = uint64(c.readMem32(c.segBaseForModRM(mr)+mr.ea)) |
+						uint64(c.readMem32(c.segBaseForModRM(mr)+mr.ea+4))<<32
+				}
+				a = ssemath.Float64frombits(c.xmm[mr.reg][0])
+				b = ssemath.Float64frombits(ub)
+			} else {
+				// SCALAR SINGLE (UCOMISS/COMISS)
+				var ub uint32
+				if mr.isReg {
+					ub = uint32(c.xmm[mr.rm][0])
+				} else {
+					ub = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
+				}
+				a = float64(ssemath.Float32frombits(uint32(c.xmm[mr.reg][0])))
+				b = float64(ssemath.Float32frombits(ub))
+			}
+			c.fpuCompareSetEFlags(a, b)
+
+		case 0x14, 0x15:
+			// 0F 14    UNPCKLPS xmm1, xmm2/m128 — interleave LOW packed singles
+			// 0F 15    UNPCKHPS xmm1, xmm2/m128 — interleave HIGH packed singles
+			// 66 0F 14 UNPCKLPD  — interleave LOW packed doubles
+			// 66 0F 15 UNPCKHPD  — interleave HIGH packed doubles
+			mr := c.parseModRM()
+			var src [2]uint64
+			if mr.isReg {
+				src = c.xmm[mr.rm]
+			} else {
+				src = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+			}
+			dst := c.xmm[mr.reg]
+			if operandSize == 2 {
+				// UNPCKLPD / UNPCKHPD: 64-bit elements
+				if opcode2 == 0x14 {
+					c.xmm[mr.reg] = [2]uint64{dst[0], src[0]}
+				} else {
+					c.xmm[mr.reg] = [2]uint64{dst[1], src[1]}
+				}
+			} else {
+				// UNPCKLPS / UNPCKHPS: 32-bit elements
+				if opcode2 == 0x14 {
+					a0 := dst[0] & 0xFFFFFFFF
+					a1 := (dst[0] >> 32) & 0xFFFFFFFF
+					b0 := src[0] & 0xFFFFFFFF
+					b1 := (src[0] >> 32) & 0xFFFFFFFF
+					c.xmm[mr.reg] = [2]uint64{a0 | (b0 << 32), a1 | (b1 << 32)}
+				} else {
+					a2 := dst[1] & 0xFFFFFFFF
+					a3 := (dst[1] >> 32) & 0xFFFFFFFF
+					b2 := src[1] & 0xFFFFFFFF
+					b3 := (src[1] >> 32) & 0xFFFFFFFF
+					c.xmm[mr.reg] = [2]uint64{a2 | (b2 << 32), a3 | (b3 << 32)}
+				}
+			}
 
 		case 0x29:
 			// MOVAPS / MOVAPD store: full 128-bit.
@@ -3361,6 +3504,59 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 			src := c.mmxSrc64(mr)
 			dst := c.mm[mr.reg]
 			c.mm[mr.reg] = packUnsignedSat(dst, src)
+
+		// 0F C4    PINSRW mm, r32/m16, imm8  — insert 16-bit value into MMX
+		// 66 0F C4 PINSRW xmm, r32/m16, imm8 — into XMM (one of 8 lanes)
+		case 0xC4:
+			mr := c.parseModRM()
+			var val uint16
+			if mr.isReg {
+				val = uint16(c.GetReg32(int(mr.rm)))
+			} else {
+				val = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
+			}
+			imm := c.fetch8()
+			if operandSize == 2 {
+				// XMM 8 lanes
+				idx := imm & 7
+				v := c.xmm[mr.reg]
+				if idx < 4 {
+					shift := uint(idx) * 16
+					v[0] = (v[0] &^ (uint64(0xFFFF) << shift)) | (uint64(val) << shift)
+				} else {
+					shift := uint(idx-4) * 16
+					v[1] = (v[1] &^ (uint64(0xFFFF) << shift)) | (uint64(val) << shift)
+				}
+				c.xmm[mr.reg] = v
+			} else {
+				idx := imm & 3
+				shift := uint(idx) * 16
+				c.mm[mr.reg] = (c.mm[mr.reg] &^ (uint64(0xFFFF) << shift)) |
+					(uint64(val) << shift)
+			}
+
+		// 0F C5    PEXTRW r32, mm, imm8   — extract 16-bit lane from MMX
+		// 66 0F C5 PEXTRW r32, xmm, imm8  — from XMM (one of 8 lanes)
+		case 0xC5:
+			mr := c.parseModRM()
+			if !mr.isReg {
+				return fmt.Errorf("PEXTRW requires register source at EIP=%08X", c.eip-2)
+			}
+			imm := c.fetch8()
+			var val uint16
+			if operandSize == 2 {
+				idx := imm & 7
+				v := c.xmm[mr.rm]
+				if idx < 4 {
+					val = uint16(v[0] >> (uint(idx) * 16))
+				} else {
+					val = uint16(v[1] >> (uint(idx-4) * 16))
+				}
+			} else {
+				idx := imm & 3
+				val = uint16(c.mm[mr.rm] >> (uint(idx) * 16))
+			}
+			c.SetReg32(int(mr.reg), uint32(val))
 
 		// Multiplies: PMULLW (0F D5), PMULHW (0F E5)
 		case 0xD5, 0xE5:
