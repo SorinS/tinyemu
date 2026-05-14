@@ -63,6 +63,17 @@ var (
 	netUser     = flag.Bool("net-user", false, "enable user-mode networking (slirp)")
 	debugMode   = flag.Bool("debug", false, "enable debug output")
 
+	// Inject startup characters into the guest console BEFORE
+	// forwarding host stdin. Useful when the guest init script blocks
+	// on a stdin read that needs EOF/newline to advance (e.g., Alpine's
+	// /init waits for stdin after `Installing packages: ok`). Escapes:
+	//   \n  newline
+	//   \r  carriage return
+	//   \t  tab
+	//   \\  literal backslash
+	//   \xHH  hex byte
+	stdinPrefix = flag.String("stdin-prefix", "", "bytes to inject into guest console before forwarding host stdin (supports \\n \\xHH escapes)")
+
 	// Repeatable flags
 	driveFiles  stringSlice
 	cdromFiles  stringSlice
@@ -599,6 +610,18 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 
 	cpu := m.GetCPU()
 
+	// Apply -stdin-prefix. For x86 PC boards, push directly into the
+	// UART RX FIFO; for virtConsole-based boards (RISC-V), buffer it.
+	// Either way the bytes are delivered as the first console input
+	// the guest sees.
+	if prefix := decodeStdinPrefix(*stdinPrefix); len(prefix) > 0 {
+		if pcBoard, ok := m.(*pc.PC); ok {
+			pcBoard.UART().Push(prefix)
+		} else {
+			console.BufferInput(prefix)
+		}
+	}
+
 	for {
 		// Check for signals
 		select {
@@ -700,4 +723,60 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 			return 1
 		}
 	}
+}
+
+// decodeStdinPrefix parses the -stdin-prefix argument, expanding common
+// escapes (\n, \r, \t, \\, \xHH). Unrecognised escapes pass through
+// literally so users can still emit C-a (Ctrl-A = 0x01) via \x01.
+func decodeStdinPrefix(s string) []byte {
+	if s == "" {
+		return nil
+	}
+	var out []byte
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			out = append(out, s[i])
+			continue
+		}
+		switch s[i+1] {
+		case 'n':
+			out = append(out, '\n')
+			i++
+		case 'r':
+			out = append(out, '\r')
+			i++
+		case 't':
+			out = append(out, '\t')
+			i++
+		case '\\':
+			out = append(out, '\\')
+			i++
+		case 'x':
+			if i+3 >= len(s) {
+				out = append(out, s[i])
+				continue
+			}
+			var v byte
+			for j := 0; j < 2; j++ {
+				c := s[i+2+j]
+				switch {
+				case c >= '0' && c <= '9':
+					v = v*16 + (c - '0')
+				case c >= 'a' && c <= 'f':
+					v = v*16 + (c - 'a' + 10)
+				case c >= 'A' && c <= 'F':
+					v = v*16 + (c - 'A' + 10)
+				default:
+					out = append(out, s[i])
+					goto next
+				}
+			}
+			out = append(out, v)
+			i += 3
+		default:
+			out = append(out, s[i])
+		}
+	next:
+	}
+	return out
 }

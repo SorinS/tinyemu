@@ -18,10 +18,18 @@
 #   usbdelay=1                         — nlplug's per-device delay; with
 #       libata disabled there's nothing to wait on.
 #
-# Boot lands in Alpine's emergency recovery shell because there's no
-# /sbin/init in the empty sysroot. The init script blocks on stdin
-# (apk waiting for overlay file list). Type Ctrl-D once to advance
-# past that; you'll then get `~ #` and a working busybox shell + vi.
+# Alpine /init blocks on a stdin read after "Installing packages: ok"
+# (apk add inherits the script's stdin = /dev/console and reads it
+# even without --overlay-from-stdin in some code paths). We pre-feed
+# Ctrl-D (\x04 = EOF) via -stdin-prefix so the read returns 0 bytes
+# and /init falls through to the "/sbin/init not found in new root"
+# branch, landing at the busybox emergency shell `~ #` prompt. After
+# that, all host keystrokes flow through normally and you get a
+# working interactive shell + vi.
+#
+# Five Ctrl-D bytes are needed in practice: the kernel's serial console
+# init consumes a few before the userspace process actually inherits
+# stdin. One leaks into the shell as a trailing `?` echo — harmless.
 set -e
 exec bin/temu.darwin-arm64.bin \
     -machine x86 \
@@ -30,4 +38,5 @@ exec bin/temu.darwin-arm64.bin \
     -initrd bin/initrd-alpine-x86 \
     -drive bin/alpine-standard-3.19.0-x86.iso -ro \
     -net-user \
+    -stdin-prefix '\x04\x04\x04\x04\x04' \
     -append "console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable libata.force=disable ide=disable alpine_dev=vda:iso9660 usbdelay=1 modules=virtio_pci,virtio_blk,virtio_net,loop,squashfs"
