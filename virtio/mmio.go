@@ -6,6 +6,8 @@ package virtio
 
 import (
 	"encoding/binary"
+	"fmt"
+	"os"
 	"sync"
 
 	"github.com/jtolio/tinyemu-go/mem"
@@ -647,6 +649,45 @@ func (dev *Device) consumeDescLocked(queueIdx int, descIdx int, descLen int) {
 	}
 }
 
+// DMA write watchpoint (TINYEMU_X86_DMAWATCH=lo:hi hex). Logs every virtio
+// memcpyToRAM call that overlaps the watch range — useful for catching DMA
+// that bypasses CPU writePhys hooks.
+var (
+	dmaWatchActive bool
+	dmaWatchLo     uint32
+	dmaWatchHi     uint32
+)
+
+func init() {
+	if s := os.Getenv("TINYEMU_X86_DMAWATCH"); s != "" {
+		if _, err := fmt.Sscanf(s, "%x:%x", &dmaWatchLo, &dmaWatchHi); err == nil && dmaWatchHi > dmaWatchLo {
+			dmaWatchActive = true
+		}
+	}
+}
+
+func dmaWatchHook(addr, count uint32, buf []byte) {
+	// Overlap check: [addr, addr+count) vs [dmaWatchLo, dmaWatchHi).
+	if addr >= dmaWatchHi || addr+count <= dmaWatchLo {
+		return
+	}
+	// Show the bytes that land inside the watch range.
+	start := dmaWatchLo
+	if addr > dmaWatchLo {
+		start = addr
+	}
+	end := dmaWatchHi
+	if addr+count < dmaWatchHi {
+		end = addr + count
+	}
+	off := start - addr
+	n := end - start
+	if n > 16 {
+		n = 16
+	}
+	fmt.Fprintf(os.Stderr, "[dmawatch] virtio memcpyToRAM dst=0x%08X len=%d watched=[0x%08X..0x%08X) bytes=%X\n", addr, count, start, end, buf[off:off+n])
+}
+
 // MemcpyFromQueue copies data from a descriptor chain (guest to host).
 // Reference: tinyemu-2019-12-21/virtio.c:444-450 (memcpy_from_queue)
 func (dev *Device) MemcpyFromQueue(buf []byte, queueIdx int, descIdx int, offset int, count int) error {
@@ -780,6 +821,9 @@ func (dev *Device) write16(addr uint64, val uint16) {
 	if addr&1 != 0 {
 		return // Unaligned access not supported
 	}
+	if dmaWatchActive && uint32(addr) >= dmaWatchLo && uint32(addr) < dmaWatchHi {
+		fmt.Fprintf(os.Stderr, "[dmawatch] virtio write16 phys=0x%08X val=0x%04X\n", uint32(addr), val)
+	}
 	ptr := dev.MemMap.GetRAMPtr(addr, true)
 	if ptr == nil {
 		return
@@ -792,6 +836,9 @@ func (dev *Device) write16(addr uint64, val uint16) {
 func (dev *Device) write32(addr uint64, val uint32) {
 	if addr&3 != 0 {
 		return // Unaligned access not supported
+	}
+	if dmaWatchActive && uint32(addr) >= dmaWatchLo && uint32(addr) < dmaWatchHi {
+		fmt.Fprintf(os.Stderr, "[dmawatch] virtio write32 phys=0x%08X val=0x%08X\n", uint32(addr), val)
 	}
 	ptr := dev.MemMap.GetRAMPtr(addr, true)
 	if ptr == nil {
@@ -823,6 +870,9 @@ func (dev *Device) memcpyFromRAM(buf []byte, addr uint64, count int) error {
 // memcpyToRAM copies data from a buffer to guest memory.
 // Reference: tinyemu-2019-12-21/virtio.c:352-369 (virtio_memcpy_to_ram)
 func (dev *Device) memcpyToRAM(addr uint64, buf []byte, count int) error {
+	if dmaWatchActive {
+		dmaWatchHook(uint32(addr), uint32(count), buf)
+	}
 	offset := 0
 	for count > 0 {
 		// Copy up to one page at a time

@@ -243,6 +243,14 @@ type CPU struct {
 	// Power-down (HLT) state
 	powerDown bool
 
+	// Loop-hang diagnostic (TINYEMU_X86_LOOPHANG=1). Periodic EIP sample.
+	lastLoopSample uint64
+
+	// Phys checkpoint diagnostic (TINYEMU_X86_CHKPT=addr). Periodically
+	// re-reads the watched phys address and logs when the value changes.
+	lastCheckpoint    uint64
+	lastCheckpointVal uint32
+
 	// MMX register file: 8 × 64-bit. Per Intel SDM, MMX shares physical
 	// state with the x87 ST(0..7) mantissas. Since our x87 is stubbed
 	// (no real ST registers), we maintain mm[] standalone. Once x87 is
@@ -621,6 +629,30 @@ func (c *CPU) Run(maxCycles int) error {
 			}
 			c.powerDown = false
 		}
+		if loopHangDebug {
+			// Periodic EIP/CR3 sample: every loopSampleInterval cycles,
+			// log the current EIP. If the process is stuck in a long
+			// loop (visiting many EIPs over and over), repeated samples
+			// will show the loop range.
+			if c.cycles-c.lastLoopSample >= loopSampleInterval {
+				c.lastLoopSample = c.cycles
+				fmt.Fprintf(os.Stderr,
+					"[LOOP] cycles=%d EIP=%08X CR3=%08X CPL=%d EFLAGS=%08X\n",
+					c.cycles, c.eip, c.cr[3], c.cpl, c.eflags)
+			}
+		}
+		if checkpointWatchAddr != 0 {
+			if c.cycles-c.lastCheckpoint >= checkpointInterval {
+				c.lastCheckpoint = c.cycles
+				v := c.readPhys32(checkpointWatchAddr)
+				if v != c.lastCheckpointVal {
+					fmt.Fprintf(os.Stderr,
+						"[CHKPT] cycles=%d phys=%08X val=%08X (prev=%08X) EIP=%08X CPL=%d\n",
+						c.cycles, checkpointWatchAddr, v, c.lastCheckpointVal, c.eip, c.cpl)
+					c.lastCheckpointVal = v
+				}
+			}
+		}
 		if err := c.Step(); err != nil {
 			return err
 		}
@@ -628,3 +660,50 @@ func (c *CPU) Run(maxCycles int) error {
 	}
 	return nil
 }
+
+var loopHangDebug = os.Getenv("TINYEMU_X86_LOOPHANG") == "1"
+
+const loopSampleInterval = 50_000_000
+
+var checkpointWatchAddr uint32 = func() uint32 {
+	s := os.Getenv("TINYEMU_X86_CHKPT")
+	if s == "" {
+		return 0
+	}
+	if len(s) >= 2 && (s[:2] == "0x" || s[:2] == "0X") {
+		s = s[2:]
+	}
+	var v uint32
+	for _, ch := range s {
+		var d uint32
+		switch {
+		case ch >= '0' && ch <= '9':
+			d = uint32(ch - '0')
+		case ch >= 'a' && ch <= 'f':
+			d = uint32(ch-'a') + 10
+		case ch >= 'A' && ch <= 'F':
+			d = uint32(ch-'A') + 10
+		default:
+			return v
+		}
+		v = v*16 + d
+	}
+	return v
+}()
+
+var checkpointInterval uint64 = func() uint64 {
+	s := os.Getenv("TINYEMU_X86_CHKPT_INTERVAL")
+	if s == "" {
+		return 100_000
+	}
+	var v uint64
+	for _, ch := range s {
+		if ch >= '0' && ch <= '9' {
+			v = v*10 + uint64(ch-'0')
+		}
+	}
+	if v == 0 {
+		return 100_000
+	}
+	return v
+}()

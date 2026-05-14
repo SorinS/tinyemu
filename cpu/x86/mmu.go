@@ -11,6 +11,12 @@ import (
 // paging, etc.).
 var pfDebug = os.Getenv("TINYEMU_X86_PF_DEBUG") == "1"
 
+// userPFDebug logs only user-mode page faults (TINYEMU_X86_USERPF=1). Useful
+// when a userspace process is segfaulting and we need the EAX/ESI/EDI plus a
+// memory dump around the faulting pointer — without the noise of normal
+// kernel demand paging.
+var userPFDebug = os.Getenv("TINYEMU_X86_USERPF") == "1"
+
 // ud2SkipAndLog turns the #UD fault path into "log + skip the UD2", which
 // lets us see whether the kernel's BUG sites are warnings (it would normally
 // continue) or hard BUGs (it would have panicked). Enable with
@@ -73,6 +79,44 @@ var intDebug = os.Getenv("TINYEMU_X86_INT_DEBUG") == "1"
 // syscallTrace logs every user-mode INT 0x80 entry. Useful for debugging
 // userspace hangs. Enabled with TINYEMU_X86_SYS=1.
 var syscallTrace = os.Getenv("TINYEMU_X86_SYS") == "1"
+
+// Linear-address write-watchpoint. Set TINYEMU_X86_WW_LO=<hex> and
+// TINYEMU_X86_WW_HI=<hex> to log every writeMem* that lands in the
+// inclusive-low/exclusive-high range. Useful when capturing the
+// instruction that should have written some heap metadata but
+// apparently didn't.
+var (
+	watchWrites  = os.Getenv("TINYEMU_X86_WW_LO") != "" && os.Getenv("TINYEMU_X86_WW_HI") != ""
+	watchWriteLo = parseHexEnv("TINYEMU_X86_WW_LO")
+	watchWriteHi = parseHexEnv("TINYEMU_X86_WW_HI")
+)
+
+func parseHexEnv(name string) uint32 {
+	s := os.Getenv(name)
+	if s == "" {
+		return 0
+	}
+	// allow 0x prefix
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		s = s[2:]
+	}
+	var v uint32
+	for _, ch := range s {
+		var d uint32
+		switch {
+		case ch >= '0' && ch <= '9':
+			d = uint32(ch - '0')
+		case ch >= 'a' && ch <= 'f':
+			d = uint32(ch-'a') + 10
+		case ch >= 'A' && ch <= 'F':
+			d = uint32(ch-'A') + 10
+		default:
+			return v
+		}
+		v = v*16 + d
+	}
+	return v
+}
 
 // espTrace controls whether every change to ESP (or SP via SetReg16) is
 // logged with old/new values plus a Go stack trace, so we can pinpoint which
@@ -179,6 +223,13 @@ func (c *CPU) raisePageFault(addr uint32, f pageFaultFlags) {
 	if f.fetch {
 		code |= 0x10
 	}
+	// Only dump user-mode faults that are likely actual crashes — i.e.
+	// the linear address is in the NULL guard page (< 0x1000) or is very
+	// small. Normal demand-paging faults (anonymous mmap, COW, etc.)
+	// happen at high addresses and would flood the log.
+	if userPFDebug && f.user && addr < 0x1000 {
+		c.dumpUserPF(addr, code)
+	}
 	if pfDebug {
 		// Walk page tables for diagnostic context.
 		pdeAddr := c.cr[3] + (addr>>22)*4
@@ -247,6 +298,74 @@ func (c *CPU) raisePageFault(addr uint32, f pageFaultFlags) {
 		}
 	}
 	panic(pageFaultError{addr: addr, errorCode: code})
+}
+
+// dumpUserPF prints a focused trace for user-mode page faults: linear addr,
+// error code, EIP, full register dump, and a 64-byte hex dump around each
+// of EAX, ESI, EDI (the most common pointer registers). Useful for
+// debugging userspace segfaults like nlplug-findfs.
+func (c *CPU) dumpUserPF(addr, code uint32) {
+	if c.pfDumpActive {
+		return
+	}
+	c.pfDumpActive = true
+	defer func() { c.pfDumpActive = false }()
+	fmt.Fprintf(os.Stderr,
+		"[UPF] step=%d linear=%08X code=%X EIP=%08X ESP=%08X CR2=%08X CR3=%08X\n",
+		c.cycles, addr, code, c.eip, c.GetReg32(ESP), addr, c.cr[3])
+	fmt.Fprintf(os.Stderr,
+		"[UPF]   EAX=%08X EBX=%08X ECX=%08X EDX=%08X ESI=%08X EDI=%08X EBP=%08X EFLAGS=%08X\n",
+		c.GetReg32(EAX), c.GetReg32(EBX), c.GetReg32(ECX), c.GetReg32(EDX),
+		c.GetReg32(ESI), c.GetReg32(EDI), c.GetReg32(EBP), c.eflags)
+	// Walk page tables for EDI (which is the group base in the
+	// mallocng crash). Compare against TLB result.
+	edi := c.GetReg32(EDI)
+	pdeAddr := c.cr[3] + (edi>>22)*4
+	pde := c.readPhys32(pdeAddr)
+	freshPhys := uint32(0xFFFFFFFF)
+	if pde&1 != 0 {
+		if pde&0x80 != 0 {
+			freshPhys = (pde & 0xFFC00000) | (edi & 0x3FFFFF)
+		} else {
+			pteAddr := (pde &^ uint32(0xFFF)) + ((edi>>12)&0x3FF)*4
+			pte := c.readPhys32(pteAddr)
+			if pte&1 != 0 {
+				freshPhys = (pte &^ uint32(0xFFF)) | (edi & 0xFFF)
+			}
+			fmt.Fprintf(os.Stderr, "[UPF]   pwalk EDI=%08X PDE@%08X=%08X PTE@%08X=%08X fresh-phys=%08X\n", edi, pdeAddr, pde, pteAddr, pte, freshPhys)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "[UPF]   pwalk EDI=%08X PDE@%08X=%08X (not present)\n", edi, pdeAddr, pde)
+	}
+	tlbPhys, hit := c.tlb.lookup(edi, false, c.cpl == 3, false)
+	fmt.Fprintf(os.Stderr, "[UPF]   tlb EDI=%08X hit=%v tlb-phys=%08X stale=%v\n", edi, hit, tlbPhys, hit && tlbPhys != freshPhys)
+	dumpRange := func(label string, ptr uint32) {
+		fmt.Fprintf(os.Stderr, "[UPF]   mem @ %s=%08X (-32..+31):", label, ptr)
+		for i := int32(-32); i < 32; i++ {
+			a := uint32(int32(ptr) + i)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						fmt.Fprintf(os.Stderr, " ??")
+					}
+				}()
+				p := c.translateAddress(a, false, false, false)
+				b := uint8(c.readPhys32(p&^uint32(3)) >> ((p & 3) * 8))
+				if i == 0 {
+					fmt.Fprintf(os.Stderr, " |")
+				}
+				fmt.Fprintf(os.Stderr, " %02X", b)
+			}()
+		}
+		fmt.Fprintln(os.Stderr)
+	}
+	dumpRange("EAX", c.GetReg32(EAX))
+	if c.GetReg32(ESI) != c.GetReg32(EAX) {
+		dumpRange("ESI", c.GetReg32(ESI))
+	}
+	if c.GetReg32(EDI) != c.GetReg32(EAX) && c.GetReg32(EDI) != c.GetReg32(ESI) {
+		dumpRange("EDI", c.GetReg32(EDI))
+	}
 }
 
 // raiseStackFault panics with a stackFaultError so that Step() can catch it

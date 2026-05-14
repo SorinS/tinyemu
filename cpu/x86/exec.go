@@ -29,7 +29,20 @@ func (c *CPU) readPhys16(addr uint32) uint16 {
 // readPhys32 reads a dword from the given physical address (no paging).
 func (c *CPU) readPhys32(addr uint32) uint32 {
 	v, _ := c.memMap.Read32(uint64(addr & c.a20Mask))
+	c.physReadWatchHook(addr, v, 4)
 	return v
+}
+
+// physReadWatchHook is called by readPhys* — same range as physwatch.
+func (c *CPU) physReadWatchHook(addr uint32, val uint32, size int) {
+	if physWatchLo == 0 && physWatchHi == 0 {
+		return
+	}
+	if addr < physWatchLo || addr >= physWatchHi {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[physread] cycles=%d EIP=0x%08X read phys=0x%08X size=%d val=0x%08X\n",
+		c.cycles, c.eip, addr, size, val)
 }
 
 // eipBreakpoint, if non-zero, prints register state when EIP reaches it.
@@ -101,31 +114,58 @@ func (c *CPU) writePhys32(addr uint32, val uint32) {
 
 // readMem8 reads a byte from the given linear address (with paging).
 func (c *CPU) readMem8(addr uint32) uint8 {
-	return c.readPhys8(c.translateAddress(addr, false, c.cpl == 3, false))
+	phys := c.translateAddress(addr, false, c.cpl == 3, false)
+	v := c.readPhys8(phys)
+	if watchWrites && watchWriteLo <= addr && addr < watchWriteHi {
+		fmt.Fprintf(os.Stderr, "[RD8] step=%d EIP=%08X CPL=%d CR3=%08X lin=%08X phys=%08X val=%02X\n", c.cycles, c.eip, c.cpl, c.cr[3], addr, phys, v)
+	}
+	return v
 }
 
 // readMem16 reads a word from the given linear address (with paging).
 func (c *CPU) readMem16(addr uint32) uint16 {
-	return c.readPhys16(c.translateAddress(addr, false, c.cpl == 3, false))
+	phys := c.translateAddress(addr, false, c.cpl == 3, false)
+	v := c.readPhys16(phys)
+	if watchWrites && watchWriteLo <= addr && addr < watchWriteHi {
+		fmt.Fprintf(os.Stderr, "[RD16] step=%d EIP=%08X CPL=%d CR3=%08X lin=%08X phys=%08X val=%04X\n", c.cycles, c.eip, c.cpl, c.cr[3], addr, phys, v)
+	}
+	return v
 }
 
 // readMem32 reads a dword from the given linear address (with paging).
 func (c *CPU) readMem32(addr uint32) uint32 {
-	return c.readPhys32(c.translateAddress(addr, false, c.cpl == 3, false))
+	phys := c.translateAddress(addr, false, c.cpl == 3, false)
+	v := c.readPhys32(phys)
+	if watchWrites && watchWriteLo <= addr && addr < watchWriteHi {
+		fmt.Fprintf(os.Stderr, "[RD32] step=%d EIP=%08X CPL=%d CR3=%08X lin=%08X phys=%08X val=%08X\n", c.cycles, c.eip, c.cpl, c.cr[3], addr, phys, v)
+	}
+	return v
 }
 
 // writeMem8 writes a byte to the given linear address (with paging).
 func (c *CPU) writeMem8(addr uint32, val uint8) {
+	if watchWrites && watchWriteLo <= addr && addr < watchWriteHi {
+		fmt.Fprintf(os.Stderr, "[WW8] step=%d EIP=%08X CPL=%d CR3=%08X lin=%08X val=%02X\n", c.cycles, c.eip, c.cpl, c.cr[3], addr, val)
+	}
 	c.writePhys8(c.translateAddress(addr, true, c.cpl == 3, false), val)
 }
 
 // writeMem16 writes a word to the given linear address (with paging).
 func (c *CPU) writeMem16(addr uint32, val uint16) {
+	if watchWrites && watchWriteLo <= addr && addr < watchWriteHi {
+		fmt.Fprintf(os.Stderr, "[WW16] step=%d EIP=%08X CPL=%d CR3=%08X lin=%08X val=%04X\n", c.cycles, c.eip, c.cpl, c.cr[3], addr, val)
+	}
 	c.writePhys16(c.translateAddress(addr, true, c.cpl == 3, false), val)
 }
 
 // writeMem32 writes a dword to the given linear address (with paging).
 func (c *CPU) writeMem32(addr uint32, val uint32) {
+	if watchWrites && watchWriteLo <= addr && addr < watchWriteHi {
+		phys := c.translateAddress(addr, true, c.cpl == 3, false)
+		fmt.Fprintf(os.Stderr, "[WW32] step=%d EIP=%08X CPL=%d CR3=%08X lin=%08X phys=%08X val=%08X\n", c.cycles, c.eip, c.cpl, c.cr[3], addr, phys, val)
+		c.writePhys32(phys, val)
+		return
+	}
 	c.writePhys32(c.translateAddress(addr, true, c.cpl == 3, false), val)
 }
 
@@ -1050,7 +1090,14 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					c.seg[CS] = newCS
 					c.segBase[CS] = uint32(newCS) << 4
 				}
-				c.setEFlagsFromPop(uint32(newFlags), c.cpl)
+				// EFLAGS restore: use the OLD cpl (before CS load). Intel
+				// SDM §6.8.1: IRET's IOPL/IF mask is gated by the CPL at
+				// the time of IRET — not the new CPL the IRET transitions
+				// to. Using c.cpl here would let a kernel→user IRET leave
+				// IF=0 in user mode (kernel's IF=0 during interrupt entry
+				// stays clobbered into user EFLAGS), masking all external
+				// IRQs in user mode and stalling preemption.
+				c.setEFlagsFromPop(uint32(newFlags), oldCPL)
 				c.eflags |= EFLAGS_RF
 				if crossPriv {
 					if err := c.LoadSegmentProtected(SS, newSS); err != nil {
@@ -1079,7 +1126,12 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 					c.seg[CS] = newCS
 					c.segBase[CS] = uint32(newCS) << 4
 				}
-				c.setEFlagsFromPop(newFlags, c.cpl)
+				// EFLAGS restore: use OLD cpl (see 16-bit branch above
+				// for the long explanation). Bug fixed 2026-05-14: was
+				// using c.cpl which is the new (user) CPL after CS load,
+				// causing IF to be masked out on kernel→user IRET and
+				// userspace to resume with interrupts disabled.
+				c.setEFlagsFromPop(newFlags, oldCPL)
 				c.eflags |= EFLAGS_RF
 				// Restore VM bit if CPL=0 and popped EFLAGS has it.
 				if c.IsProtectedMode() && c.cpl == 0 && (c.eflags&EFLAGS_VM) != 0 {

@@ -1183,6 +1183,16 @@ func TestIRET32PrivilegeDowngrade(t *testing.T) {
 	if c.GetReg32(ESP) != 0x8000 {
 		t.Errorf("ESP = 0x%08X, want 0x00008000", c.GetReg32(ESP))
 	}
+
+	// Verify IF was restored from the popped EFLAGS. We pushed 0x00000200
+	// (only IF set, bit 9). Earlier, the IRET implementation passed `c.cpl`
+	// to setEFlagsFromPop AFTER LoadSegmentProtected(CS) had updated CPL to
+	// 3, which made the mask reject IF restore (CPL=3 > IOPL=0), leaving
+	// userspace with IF=0. Linux relies on IF=1 in user mode for timer
+	// preemption — the bug stalled Alpine boot post-package-install.
+	if c.eflags&EFLAGS_IF == 0 {
+		t.Errorf("EFLAGS.IF = 0 after IRET ring0→ring3, want 1 (popped 0x00000200). bug: IRET used new CPL=3 instead of old CPL=0 to mask EFLAGS pop")
+	}
 }
 
 // TestIRET32PrivilegeDowngradePagedSupervisorStack reproduces the exact bug
