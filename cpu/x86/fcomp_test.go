@@ -149,3 +149,60 @@ func TestFcomFnstswSahf_2ge1(t *testing.T) {
 			"  eflags=%08X  AX=%04X", got, c.eflags, c.GetReg16(AX))
 	}
 }
+
+// TestFCMOVNB exercises DB C1 (FCMOVNB ST(0), ST(1)) — conditional move
+// when CF=0 (NOT below). Bug fixed 2026-05-14: the DB reg-form handler
+// used POSITIVE conditions (CF=1) instead of the negated ones the DB
+// encoding requires.
+func TestFCMOVNB_CFclear_movesValue(t *testing.T) {
+	c := newTestCPU(t)
+	// ST(0) = 7.0, ST(1) = 42.0 — push 42 first so ST(1)=42, then 7.
+	c.fpu[7] = 42.0
+	c.fpu[6] = 7.0
+	c.fpuTop = 6
+	// Clear CF.
+	c.eflags &^= EFLAGS_CF
+	// DB C1 = FCMOVNB ST(0), ST(1)
+	code := []byte{0xDB, 0xC1, 0xF4}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("runCode: %v", err)
+	}
+	if got := c.fpuST(0); got != 42.0 {
+		t.Errorf("FCMOVNB with CF=0: ST(0)=%v, want 42.0 (move should happen)", got)
+	}
+}
+
+func TestFCMOVNB_CFset_noMove(t *testing.T) {
+	c := newTestCPU(t)
+	c.fpu[7] = 42.0
+	c.fpu[6] = 7.0
+	c.fpuTop = 6
+	c.eflags |= EFLAGS_CF
+	code := []byte{0xDB, 0xC1, 0xF4}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("runCode: %v", err)
+	}
+	if got := c.fpuST(0); got != 7.0 {
+		t.Errorf("FCMOVNB with CF=1: ST(0)=%v, want 7.0 (no move)", got)
+	}
+}
+
+// TestFCOMI exercises DB F1 (FCOMI ST(0), ST(1)) — set EFLAGS.ZF/PF/CF
+// from comparison without going through FSW/FNSTSW/SAHF.
+func TestFCOMI_lessThan(t *testing.T) {
+	c := newTestCPU(t)
+	c.fpu[7] = 2.0 // ST(1)
+	c.fpu[6] = 1.0 // ST(0)
+	c.fpuTop = 6
+	// DB F1 = FCOMI ST(0), ST(1); 1.0 < 2.0 → CF=1, ZF=0, PF=0
+	code := []byte{0xDB, 0xF1, 0xF4}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("runCode: %v", err)
+	}
+	if c.eflags&EFLAGS_CF == 0 {
+		t.Errorf("FCOMI(1.0, 2.0): expected CF=1, got eflags=%08X", c.eflags)
+	}
+	if c.eflags&EFLAGS_ZF != 0 {
+		t.Errorf("FCOMI(1.0, 2.0): expected ZF=0, got eflags=%08X", c.eflags)
+	}
+}

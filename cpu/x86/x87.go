@@ -253,6 +253,38 @@ func (c *CPU) fpuCompareSetFlags(dst, src float64) {
 	}
 }
 
+// fpuCompareSetEFlags is the FCOMI/FUCOMI variant: same result mapping
+// but onto EFLAGS.ZF/PF/CF instead of FSW.C3/C2/C0. Intel SDM Vol 1
+// §8.3.6:
+//   ST(0) > src   → ZF=0 PF=0 CF=0
+//   ST(0) < src   → ZF=0 PF=0 CF=1
+//   ST(0) = src   → ZF=1 PF=0 CF=0
+//   unordered     → ZF=1 PF=1 CF=1
+// OF, SF, AF are cleared.
+func (c *CPU) fpuCompareSetEFlags(dst, src float64) {
+	var zf, pf, cf bool
+	switch {
+	case math.IsNaN(dst) || math.IsNaN(src):
+		zf, pf, cf = true, true, true
+	case dst > src:
+		zf, pf, cf = false, false, false
+	case dst < src:
+		zf, pf, cf = false, false, true
+	default:
+		zf, pf, cf = true, false, false
+	}
+	c.eflags &^= EFLAGS_ZF | EFLAGS_PF | EFLAGS_CF | EFLAGS_OF | EFLAGS_SF | EFLAGS_AF
+	if zf {
+		c.eflags |= EFLAGS_ZF
+	}
+	if pf {
+		c.eflags |= EFLAGS_PF
+	}
+	if cf {
+		c.eflags |= EFLAGS_CF
+	}
+}
+
 // fpuConst returns the named constant used by the FLDZ/FLD1/etc. group.
 // `subop` is the low 3 bits of the D9 modrm byte for opcodes E8..EF.
 func fpuConst(subop uint8) (float64, bool) {
@@ -697,9 +729,23 @@ func (c *CPU) handleX87(opcode uint8) error {
 
 	case 0xDF:
 		if mr.isReg {
-			// DF E0 = FNSTSW AX (mod=11 reg=100 rm=000).
-			if mr.reg == 4 && mr.rm == 0 {
-				c.SetReg16(AX, c.fpuStatusWord)
+			// DF reg form:
+			//   reg=4 rm=0  FNSTSW AX
+			//   reg=5 rm=i  FUCOMIP ST(0), ST(i) — unordered compare,
+			//               set EFLAGS, pop ST(0)
+			//   reg=6 rm=i  FCOMIP  ST(0), ST(i) — ordered compare,
+			//               set EFLAGS, pop ST(0)
+			switch mr.reg {
+			case 4:
+				if mr.rm == 0 {
+					c.SetReg16(AX, c.fpuStatusWord)
+				}
+			case 5: // FUCOMIP ST(0), ST(i)
+				c.fpuCompareSetEFlags(c.fpuST(0), c.fpuST(int(mr.rm)))
+				c.fpuPop()
+			case 6: // FCOMIP ST(0), ST(i)
+				c.fpuCompareSetEFlags(c.fpuST(0), c.fpuST(int(mr.rm)))
+				c.fpuPop()
 			}
 			return nil
 		}
@@ -817,35 +863,57 @@ func (c *CPU) handleX87_D9_reg(mr modRMResult) error {
 	return nil
 }
 
-// handleX87_DB_reg covers DB register-form opcodes (control + FCMOV).
+// handleX87_DB_reg covers DB register-form opcodes (control + FCMOVN* + FCOMI).
+//
+// DB reg-form encoding (per Intel SDM Vol 2A):
+//   reg=0 rm=*  FCMOVNB ST(0), ST(i)   — CF=0
+//   reg=1 rm=*  FCMOVNE ST(0), ST(i)   — ZF=0
+//   reg=2 rm=*  FCMOVNBE ST(0), ST(i)  — CF=0 AND ZF=0
+//   reg=3 rm=*  FCMOVNU ST(0), ST(i)   — PF=0
+//   reg=4 rm=0  FNENI                 (NOP)
+//   reg=4 rm=1  FNDISI                (NOP)
+//   reg=4 rm=2  FNCLEX
+//   reg=4 rm=3  FNINIT
+//   reg=4 rm=4  FNSETPM               (NOP)
+//   reg=5 rm=*  FUCOMI ST(0), ST(i)
+//   reg=6 rm=*  FCOMI ST(0), ST(i)
+//
+// Bug fixed 2026-05-14: previously DB reg=0..3 used POSITIVE conditions
+// (CF=1, ZF=1, etc.) — that's DA's encoding, not DB. DB conditions are
+// NEGATED. Net effect on busybox awk/perl: every `if (positive_double)`
+// where the compiler emitted FCMOVN* took the OPPOSITE branch.
 func (c *CPU) handleX87_DB_reg(mr modRMResult) error {
-	modrm := uint8(mr.reg<<3 | mr.rm) | 0xC0
-	switch modrm {
-	case 0xE0: // FNENI (8087 backwards-compat, NOP since 80387)
-	case 0xE1: // FNDISI — same
-	case 0xE2: // FNCLEX
-		c.fpuStatusWord = 0
-	case 0xE3: // FNINIT
-		c.fpuReset()
-	case 0xE4: // FNSETPM (NOP)
-	}
-	// FCMOVcc ST(0), ST(i): conditional move based on EFLAGS.
-	// /0 = FCMOVB, /1 = FCMOVE, /2 = FCMOVBE, /3 = FCMOVU
-	if mr.reg < 4 {
+	switch mr.reg {
+	case 0, 1, 2, 3:
 		var cond bool
 		switch mr.reg {
-		case 0: // CF=1
-			cond = c.eflags&EFLAGS_CF != 0
-		case 1: // ZF=1
-			cond = c.eflags&EFLAGS_ZF != 0
-		case 2: // CF=1 OR ZF=1
-			cond = c.eflags&(EFLAGS_CF|EFLAGS_ZF) != 0
-		case 3: // PF=1
-			cond = c.eflags&EFLAGS_PF != 0
+		case 0: // FCMOVNB: CF=0
+			cond = c.eflags&EFLAGS_CF == 0
+		case 1: // FCMOVNE: ZF=0
+			cond = c.eflags&EFLAGS_ZF == 0
+		case 2: // FCMOVNBE: CF=0 AND ZF=0
+			cond = c.eflags&(EFLAGS_CF|EFLAGS_ZF) == 0
+		case 3: // FCMOVNU: PF=0
+			cond = c.eflags&EFLAGS_PF == 0
 		}
 		if cond {
 			c.fpuSetST(0, c.fpuST(int(mr.rm)))
 		}
+	case 4:
+		// Control ops by rm.
+		switch mr.rm {
+		case 2: // FNCLEX
+			c.fpuStatusWord = 0
+		case 3: // FNINIT
+			c.fpuReset()
+			// rm 0=FNENI, 1=FNDISI, 4=FNSETPM — all NOPs since 80387.
+		}
+	case 5: // FUCOMI ST(0), ST(i) — unordered compare, set EFLAGS (ZF/PF/CF).
+		c.fpuCompareSetEFlags(c.fpuST(0), c.fpuST(int(mr.rm)))
+	case 6: // FCOMI ST(0), ST(i) — ordered compare, set EFLAGS.
+		c.fpuCompareSetEFlags(c.fpuST(0), c.fpuST(int(mr.rm)))
+	case 7:
+		// Reserved.
 	}
 	return nil
 }
