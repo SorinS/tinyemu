@@ -124,7 +124,18 @@ func (c *CPU) readMem8(addr uint32) uint8 {
 }
 
 // readMem16 reads a word from the given linear address (with paging).
+// Unaligned reads that cross a page boundary translate each page separately.
 func (c *CPU) readMem16(addr uint32) uint16 {
+	if (addr & 0xFFF) > 0xFFE {
+		// Crosses page boundary — read byte-by-byte (each byte translates).
+		lo := uint16(c.readMem8(addr))
+		hi := uint16(c.readMem8(addr + 1))
+		v := lo | (hi << 8)
+		if watchWrites && watchWriteLo <= addr && addr < watchWriteHi {
+			fmt.Fprintf(os.Stderr, "[RD16x] step=%d EIP=%08X CPL=%d CR3=%08X lin=%08X (cross) val=%04X\n", c.cycles, c.eip, c.cpl, c.cr[3], addr, v)
+		}
+		return v
+	}
 	phys := c.translateAddress(addr, false, c.cpl == 3, false)
 	v := c.readPhys16(phys)
 	if watchWrites && watchWriteLo <= addr && addr < watchWriteHi {
@@ -134,7 +145,20 @@ func (c *CPU) readMem16(addr uint32) uint16 {
 }
 
 // readMem32 reads a dword from the given linear address (with paging).
+// Unaligned reads that cross a page boundary translate each page separately.
 func (c *CPU) readMem32(addr uint32) uint32 {
+	if (addr & 0xFFF) > 0xFFC {
+		// Crosses page boundary — read byte-by-byte (each byte translates).
+		b0 := uint32(c.readMem8(addr))
+		b1 := uint32(c.readMem8(addr + 1))
+		b2 := uint32(c.readMem8(addr + 2))
+		b3 := uint32(c.readMem8(addr + 3))
+		v := b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+		if watchWrites && watchWriteLo <= addr && addr < watchWriteHi {
+			fmt.Fprintf(os.Stderr, "[RD32x] step=%d EIP=%08X CPL=%d CR3=%08X lin=%08X (cross) val=%08X\n", c.cycles, c.eip, c.cpl, c.cr[3], addr, v)
+		}
+		return v
+	}
 	phys := c.translateAddress(addr, false, c.cpl == 3, false)
 	v := c.readPhys32(phys)
 	if watchWrites && watchWriteLo <= addr && addr < watchWriteHi {
@@ -152,19 +176,36 @@ func (c *CPU) writeMem8(addr uint32, val uint8) {
 }
 
 // writeMem16 writes a word to the given linear address (with paging).
+// Unaligned writes that cross a page boundary translate each page separately.
 func (c *CPU) writeMem16(addr uint32, val uint16) {
 	if watchWrites && watchWriteLo <= addr && addr < watchWriteHi {
 		fmt.Fprintf(os.Stderr, "[WW16] step=%d EIP=%08X CPL=%d CR3=%08X lin=%08X val=%04X\n", c.cycles, c.eip, c.cpl, c.cr[3], addr, val)
+	}
+	if (addr & 0xFFF) > 0xFFE {
+		c.writeMem8(addr, uint8(val))
+		c.writeMem8(addr+1, uint8(val>>8))
+		return
 	}
 	c.writePhys16(c.translateAddress(addr, true, c.cpl == 3, false), val)
 }
 
 // writeMem32 writes a dword to the given linear address (with paging).
+// Unaligned writes that cross a page boundary translate each page separately —
+// this matters because the two pages may map to non-consecutive physical
+// pages, and writing all 4 bytes to consecutive phys offsets corrupts whatever
+// happens to live just past the source page's mapping.
 func (c *CPU) writeMem32(addr uint32, val uint32) {
 	if watchWrites && watchWriteLo <= addr && addr < watchWriteHi {
 		phys := c.translateAddress(addr, true, c.cpl == 3, false)
 		fmt.Fprintf(os.Stderr, "[WW32] step=%d EIP=%08X CPL=%d CR3=%08X lin=%08X phys=%08X val=%08X\n", c.cycles, c.eip, c.cpl, c.cr[3], addr, phys, val)
 		c.writePhys32(phys, val)
+		return
+	}
+	if (addr & 0xFFF) > 0xFFC {
+		c.writeMem8(addr, uint8(val))
+		c.writeMem8(addr+1, uint8(val>>8))
+		c.writeMem8(addr+2, uint8(val>>16))
+		c.writeMem8(addr+3, uint8(val>>24))
 		return
 	}
 	c.writePhys32(c.translateAddress(addr, true, c.cpl == 3, false), val)
@@ -294,6 +335,26 @@ func (c *CPU) fetchS32() int32 {
 // Step executes a single x86 instruction.
 func (c *CPU) Step() (err error) {
 	origEIP := c.eip
+	// Sentinel: after each step, check if a watched phys addr changed.
+	// Set TINYEMU_X86_PHYSSENTINEL=hex to enable.
+	if physSentinelAddr != 0 {
+		v, _ := c.memMap.Read32(uint64(physSentinelAddr))
+		nowVal := v
+		if c.physSentinelInit {
+			if nowVal != c.physSentinelVal {
+				fmt.Fprintf(os.Stderr,
+					"[sentinel] cycles=%d prev-EIP=0x%08X next-EIP=0x%08X phys=0x%08X val %08X -> %08X EAX=%08X EBX=%08X ECX=%08X EDX=%08X ESI=%08X EDI=%08X EBP=%08X ESP=%08X\n",
+					c.cycles, c.physSentinelPrevEIP, c.eip, physSentinelAddr, c.physSentinelVal, nowVal,
+					c.GetReg32(EAX), c.GetReg32(EBX), c.GetReg32(ECX), c.GetReg32(EDX),
+					c.GetReg32(ESI), c.GetReg32(EDI), c.GetReg32(EBP), c.GetReg32(ESP))
+				c.physSentinelVal = nowVal
+			}
+		} else {
+			c.physSentinelVal = nowVal
+			c.physSentinelInit = true
+		}
+		c.physSentinelPrevEIP = c.eip
+	}
 	// EIP-breakpoint diagnostics: set TINYEMU_X86_EIPBP=hex (single addr) or
 	// TINYEMU_X86_EIPBPS=hex,hex,... (multiple) to dump register state and
 	// a 6-frame return-address chain when EIP lands on any of those

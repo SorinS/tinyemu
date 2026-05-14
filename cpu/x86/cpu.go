@@ -226,6 +226,11 @@ type CPU struct {
 	// A20 gate mask
 	a20Mask uint32
 
+	// physSentinelVal/Init — see exec.go's Step physSentinelAddr block.
+	physSentinelVal     uint32
+	physSentinelInit    bool
+	physSentinelPrevEIP uint32
+
 	// Memory reference
 	memMap *mem.PhysMemoryMap
 

@@ -143,6 +143,21 @@ var physWatchLo, physWatchHi uint32 = func() (uint32, uint32) {
 	return lo, hi
 }()
 
+// physSentinelAddr (TINYEMU_X86_PHYSSENTINEL=hex) — at every Step, sample the
+// 32-bit value at this physical address. When it changes, log the EIP and
+// previous/new values. Used to catch writes that bypass physWatchHook.
+var physSentinelAddr uint32 = func() uint32 {
+	s := os.Getenv("TINYEMU_X86_PHYSSENTINEL")
+	if s == "" {
+		return 0
+	}
+	var v uint32
+	if _, err := fmt.Sscanf(s, "%x", &v); err != nil {
+		return 0
+	}
+	return v
+}()
+
 // physWatchHook is invoked from each writePhys* path. If the address is in
 // the configured watch range, log the write.
 func (c *CPU) physWatchHook(addr, val uint32, size int) {
