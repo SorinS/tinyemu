@@ -4,7 +4,14 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"os"
 )
+
+// fpCmpDiag, when true, logs every CPL=3 FPU compare with small
+// operands (|dst|<256 and |src|<256, or equal-zero) to stderr. Enabled
+// via TINYEMU_X86_FPCMP=1. Intended for tracing the busybox awk
+// next_input_file() compare that misbehaves.
+var fpCmpDiag = os.Getenv("TINYEMU_X86_FPCMP") == "1"
 
 // x87 FPU implementation.
 //
@@ -126,6 +133,10 @@ func (c *CPU) fpuStatusWriteTop() {
 func (c *CPU) fpuLoadF32(addr uint32) {
 	bits := c.readMem32(addr)
 	v := float64(math.Float32frombits(bits))
+	if fpCmpDiag && c.cpl == 3 && math.Abs(v) < 256 {
+		fmt.Fprintf(os.Stderr, "[FLDF32] EIP=%08X addr=%08X val=%g\n",
+			c.eip, addr, v)
+	}
 	c.fpuPush(v)
 }
 
@@ -134,7 +145,12 @@ func (c *CPU) fpuLoadF64(addr uint32) {
 	lo := uint64(c.readMem32(addr))
 	hi := uint64(c.readMem32(addr + 4))
 	bits := lo | hi<<32
-	c.fpuPush(math.Float64frombits(bits))
+	v := math.Float64frombits(bits)
+	if fpCmpDiag && c.cpl == 3 && math.Abs(v) < 256 {
+		fmt.Fprintf(os.Stderr, "[FLDF64] EIP=%08X addr=%08X val=%g\n",
+			c.eip, addr, v)
+	}
+	c.fpuPush(v)
 }
 
 // fpuStoreF32 writes ST(0) (or top, depending on caller) as a 32-bit
@@ -251,6 +267,33 @@ func (c *CPU) fpuCompareSetFlags(dst, src float64) {
 	if c3 {
 		c.fpuStatusWord |= 1 << 14
 	}
+	if fpCmpDiag && c.cpl == 3 && math.Abs(dst) < 256 && math.Abs(src) < 256 {
+		fmt.Fprintf(os.Stderr, "[FPCMP ] EIP=%08X dst=%g src=%g c3=%v c0=%v fsw=%04X eax=%08X eflags=%08X next16=%s\n",
+			c.eip, dst, src, c3, c0, c.fpuStatusWord, c.GetReg32(EAX), c.eflags, c.dumpCodeBytes(c.eip, 16))
+	}
+}
+
+// dumpCodeBytes returns up to n bytes of code at addr formatted as hex.
+// Used by the FPCMP diagnostic to show the post-compare instruction
+// stream (FNSTSW / SAHF / JCC) without needing to disassemble outside
+// the emulator.
+func (c *CPU) dumpCodeBytes(addr uint32, n int) string {
+	var b [32]byte
+	if n > len(b) {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		func() {
+			defer func() { _ = recover() }()
+			b[i] = c.fetchMem8(addr + uint32(i))
+		}()
+	}
+	out := make([]byte, 0, 3*n)
+	for i := 0; i < n; i++ {
+		const hex = "0123456789abcdef"
+		out = append(out, hex[b[i]>>4], hex[b[i]&0xF], ' ')
+	}
+	return string(out)
 }
 
 // fpuCompareSetEFlags is the FCOMI/FUCOMI variant: same result mapping
@@ -282,6 +325,10 @@ func (c *CPU) fpuCompareSetEFlags(dst, src float64) {
 	}
 	if cf {
 		c.eflags |= EFLAGS_CF
+	}
+	if fpCmpDiag && c.cpl == 3 && math.Abs(dst) < 256 && math.Abs(src) < 256 {
+		fmt.Fprintf(os.Stderr, "[FPCMPI] EIP=%08X dst=%g src=%g zf=%v cf=%v eflags=%08X next16=%s\n",
+			c.eip, dst, src, zf, cf, c.eflags, c.dumpCodeBytes(c.eip, 16))
 	}
 }
 
@@ -687,8 +734,11 @@ func (c *CPU) handleX87(opcode uint8) error {
 			dstIdx := int(mr.rm)
 			dst := c.fpuST(dstIdx)
 			if mr.reg == 3 && mr.rm == 1 {
-				// FCOMPP — modrm D9 (mod=11 reg=011 rm=001)
-				c.fpuCompareSetFlags(dst, src)
+				// FCOMPP (DE D9) — compare ST(0) with ST(1), pop both.
+				// Order matters: the enclosing DE-reg arithmetic uses
+				// dst=ST(rm), src=ST(0); reusing those here flips the
+				// comparison direction.
+				c.fpuCompareSetFlags(c.fpuST(0), c.fpuST(1))
 				c.fpuPop()
 				c.fpuPop()
 				return nil

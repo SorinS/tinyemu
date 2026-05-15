@@ -187,6 +187,92 @@ func TestFCMOVNB_CFset_noMove(t *testing.T) {
 	}
 }
 
+// TestFcompp_NextInputFile reproduces the busybox awk next_input_file()
+// compare. Compiled as:
+//
+//	fldl  argind_local      ; ST(0) = ARGIND+1 = 1.0
+//	fldl  argc_local        ; ST(0) = ARGC = 2.0, ST(1) = ARGIND+1
+//	fcompp                  ; DE D9 — compare ST(0) with ST(1), pop both
+//	fnstsw %ax
+//	sahf
+//	jb .else                ; jump to "open file" if CF=1 (ARGC<ARGIND+1)
+//	... stdin fallback ...
+//
+// For ARGC=2, ARGIND+1=1: ST(0)=2 > ST(1)=1, so C0=0 → CF=0 → JB NOT taken,
+// fall through to stdin fallback. WRONG — `1 >= 2` is false; the C-level
+// condition is the other way.
+//
+// Looking at the C source `getvar_i(ARGIND)+1 >= getvar_i(ARGC)` and the
+// compiler's evaluation order — the compiler in fact pushes ARGIND+1
+// FIRST (becoming ST(1) after the second push) and ARGC second
+// (becoming ST(0)). FCOMPP compares ST(0) vs ST(1) = ARGC vs ARGIND+1.
+// CF set means ST(0)<ST(1) means ARGC<ARGIND+1 means ARGIND+1>=ARGC →
+// stdin fallback. So JB to "open file" expects CF=0 when ARGC>ARGIND+1.
+//
+// Our bug: FCOMPP was passing the operands to fpuCompareSetFlags in the
+// wrong order, so C0/CF reflected ST(1)<ST(0) instead of ST(0)<ST(1).
+// For ARGC=2, ARGIND+1=1 the inverted result was "ST(0)>ST(1)" wrongly
+// reported as "ST(0)<ST(1)" — so awk-with-file always read stdin.
+func TestFcompp_NextInputFile_OpensFile(t *testing.T) {
+	c := newTestCPU(t)
+	const argindLocal = uint32(0x2000) // value 1.0 (ARGIND+1)
+	const argcLocal = uint32(0x2008)   // value 2.0 (ARGC)
+	c.writeMem32(argindLocal, 0)
+	c.writeMem32(argindLocal+4, 0x3FF00000)
+	c.writeMem32(argcLocal, 0)
+	c.writeMem32(argcLocal+4, 0x40000000)
+	c.SetReg32(EBX, argindLocal)
+	c.SetReg32(ECX, argcLocal)
+	code := []byte{
+		0xDD, 0x03, // fldl [ebx]  -> ST(0) = ARGIND+1 = 1
+		0xDD, 0x01, // fldl [ecx]  -> ST(0) = ARGC = 2, ST(1) = 1
+		0xDE, 0xD9, // fcompp      -> compare ST(0)=2 vs ST(1)=1, pop both
+		0xDF, 0xE0, // fnstsw %ax
+		0x9E,             // sahf
+		0x0F, 0x92, 0xC0, // setb %al   ; AL = 1 if CF=1
+		0x0F, 0xB6, 0xC0, // movzbl %al, %eax
+		0xF4, // hlt
+	}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("runCode: %v", err)
+	}
+	// CF should be 0 because ST(0)=2 > ST(1)=1. AL=0.
+	if got := c.GetReg32(EAX); got != 0 {
+		t.Errorf("FCOMPP(2.0, 1.0); setb: EAX = %d, want 0 (CF should be 0 because 2 > 1)\n"+
+			"  eflags=%08X AX=%04X fsw=%04X", got, c.eflags, c.GetReg16(AX), c.fpuStatusWord)
+	}
+}
+
+// Mirror with operands swapped: ST(0)=1, ST(1)=2 -> CF=1, AL=1.
+func TestFcompp_LessThan_SetsCF(t *testing.T) {
+	c := newTestCPU(t)
+	const aAddr = uint32(0x2000) // 2.0
+	const bAddr = uint32(0x2008) // 1.0
+	c.writeMem32(aAddr, 0)
+	c.writeMem32(aAddr+4, 0x40000000)
+	c.writeMem32(bAddr, 0)
+	c.writeMem32(bAddr+4, 0x3FF00000)
+	c.SetReg32(EBX, aAddr)
+	c.SetReg32(ECX, bAddr)
+	code := []byte{
+		0xDD, 0x03, // fldl [ebx]  -> ST(0) = 2
+		0xDD, 0x01, // fldl [ecx]  -> ST(0) = 1, ST(1) = 2
+		0xDE, 0xD9, // fcompp      -> compare ST(0)=1 vs ST(1)=2
+		0xDF, 0xE0,
+		0x9E,
+		0x0F, 0x92, 0xC0,
+		0x0F, 0xB6, 0xC0,
+		0xF4,
+	}
+	if err := runCode(t, c, code, 0x1000); err != nil {
+		t.Fatalf("runCode: %v", err)
+	}
+	if got := c.GetReg32(EAX); got != 1 {
+		t.Errorf("FCOMPP(1.0, 2.0); setb: EAX = %d, want 1 (CF should be 1 because 1 < 2)\n"+
+			"  eflags=%08X AX=%04X fsw=%04X", got, c.eflags, c.GetReg16(AX), c.fpuStatusWord)
+	}
+}
+
 // TestFCOMI exercises DB F1 (FCOMI ST(0), ST(1)) — set EFLAGS.ZF/PF/CF
 // from comparison without going through FSW/FNSTSW/SAHF.
 func TestFCOMI_lessThan(t *testing.T) {
