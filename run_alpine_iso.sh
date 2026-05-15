@@ -17,19 +17,16 @@
 #       it because the ISO is on virtio-blk anyway).
 #   usbdelay=1                         — nlplug's per-device delay; with
 #       libata disabled there's nothing to wait on.
+#   modloop=none                       — skip openrc's modloop service.
+#       Modloop sigverify uses awk to walk /proc/mounts; that path still
+#       hangs (project_awk_hang.md). We don't need extra kernel modules
+#       for this minimal boot — the Yocto kernel has loop+squashfs
+#       built-in.
 #
-# Alpine /init blocks on a stdin read after "Installing packages: ok"
-# (apk add inherits the script's stdin = /dev/console and reads it
-# even without --overlay-from-stdin in some code paths). We pre-feed
-# Ctrl-D (\x04 = EOF) via -stdin-prefix so the read returns 0 bytes
-# and /init falls through to the "/sbin/init not found in new root"
-# branch, landing at the busybox emergency shell `~ #` prompt. After
-# that, all host keystrokes flow through normally and you get a
-# working interactive shell + vi.
-#
-# Five Ctrl-D bytes are needed in practice: the kernel's serial console
-# init consumes a few before the userspace process actually inherits
-# stdin. One leaks into the shell as a trailing `?` echo — harmless.
+# After the page-cross fix (commits 8e7e2b5 + 19ee6fe), apk's
+# RSA-SHA1 signature verification succeeds and all 27 packages install
+# cleanly. switch_root + busybox-init + openrc work end-to-end, and
+# Alpine reaches the `localhost login:` prompt on /dev/ttyS0.
 set -e
 exec bin/temu.darwin-arm64.bin \
     -machine x86 \
@@ -38,5 +35,4 @@ exec bin/temu.darwin-arm64.bin \
     -initrd bin/initrd-alpine-x86 \
     -drive bin/alpine-standard-3.19.0-x86.iso -ro \
     -net-user \
-    -stdin-prefix '\x04\x04\x04\x04\x04' \
-    -append "console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable libata.force=disable ide=disable alpine_dev=vda:iso9660 usbdelay=1 modules=virtio_pci,virtio_blk,virtio_net,loop,squashfs"
+    -append "console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable libata.force=disable ide=disable alpine_dev=vda:iso9660 usbdelay=1 modloop=none modules=virtio_pci,virtio_blk,virtio_net,loop,squashfs"
