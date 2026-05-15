@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -39,7 +40,15 @@ func NewTerminal(allowCtrlC bool) (*Terminal, error) {
 	origTermios, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
 	if err != nil {
 		// Not a TTY — return a passthrough terminal. Tests, scripts,
-		// and CI runs hit this path.
+		// and CI runs hit this path. Warn loudly so an interactive
+		// user knows why Ctrl-A x won't exit the emulator: in
+		// passthrough mode the kernel's line discipline buffers input
+		// until newline and intercepts Ctrl-C as SIGINT instead of
+		// passing it through. To exit, press Enter then send EOF
+		// (Ctrl-D) or kill the process.
+		fmt.Fprintln(os.Stderr,
+			"tinyemu: stdin is not a TTY (IoctlGetTermios: "+err.Error()+
+				"); Ctrl-A x won't exit. Press Ctrl-C in the launching shell or kill the process.")
 		return newPassthroughTerminal(fd), nil
 	}
 
