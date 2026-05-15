@@ -246,13 +246,28 @@ func (c *CPU) fetchMem8(addr uint32) uint8 {
 	return c.readPhys8(c.translateAddress(addr, false, c.cpl == 3, true))
 }
 
-// fetchMem16 reads a code word.
+// fetchMem16 reads a code word. Cross-page accesses split byte-by-byte —
+// see writeMem32's comment for why this matters.
 func (c *CPU) fetchMem16(addr uint32) uint16 {
+	if (addr & 0xFFF) > 0xFFE {
+		return uint16(c.fetchMem8(addr)) | (uint16(c.fetchMem8(addr+1)) << 8)
+	}
 	return c.readPhys16(c.translateAddress(addr, false, c.cpl == 3, true))
 }
 
-// fetchMem32 reads a code dword.
+// fetchMem32 reads a code dword. Cross-page accesses split byte-by-byte.
+// This matters for any instruction with a >1-byte immediate/displacement
+// that straddles a page boundary — most critically a CALL rel32 whose
+// 4-byte offset spans pages: the high byte ends up on the second page and
+// must translate through the second page's PTE.
 func (c *CPU) fetchMem32(addr uint32) uint32 {
+	if (addr & 0xFFF) > 0xFFC {
+		b0 := uint32(c.fetchMem8(addr))
+		b1 := uint32(c.fetchMem8(addr + 1))
+		b2 := uint32(c.fetchMem8(addr + 2))
+		b3 := uint32(c.fetchMem8(addr + 3))
+		return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+	}
 	return c.readPhys32(c.translateAddress(addr, false, c.cpl == 3, true))
 }
 
@@ -263,16 +278,27 @@ func (c *CPU) fetchMem32(addr uint32) uint32 {
 // user-only mapping on real hardware). Routing IDT/TSS/GDT reads through
 // these helpers fixes a triple-fault that occurred when delivering a #PF
 // raised at CPL=3: the implicit IDT read inherited user=true and faulted on
-// the kernel-owned IDT page.
+// the kernel-owned IDT page. Cross-page accesses split byte-by-byte (an
+// 8-byte IDT/GDT descriptor can straddle a page boundary).
 func (c *CPU) readMemSV8(addr uint32) uint8 {
 	return c.readPhys8(c.translateAddress(addr, false, false, false))
 }
 
 func (c *CPU) readMemSV16(addr uint32) uint16 {
+	if (addr & 0xFFF) > 0xFFE {
+		return uint16(c.readMemSV8(addr)) | (uint16(c.readMemSV8(addr+1)) << 8)
+	}
 	return c.readPhys16(c.translateAddress(addr, false, false, false))
 }
 
 func (c *CPU) readMemSV32(addr uint32) uint32 {
+	if (addr & 0xFFF) > 0xFFC {
+		b0 := uint32(c.readMemSV8(addr))
+		b1 := uint32(c.readMemSV8(addr + 1))
+		b2 := uint32(c.readMemSV8(addr + 2))
+		b3 := uint32(c.readMemSV8(addr + 3))
+		return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+	}
 	return c.readPhys32(c.translateAddress(addr, false, false, false))
 }
 

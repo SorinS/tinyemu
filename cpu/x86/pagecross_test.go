@@ -152,6 +152,102 @@ func TestPageCross_Write16(t *testing.T) {
 	}
 }
 
+// TestPageCross_Fetch32 — instruction-fetch path must also handle page
+// crossings. An instruction with a 4-byte immediate/displacement whose
+// last byte lands on the next page would otherwise decode wrong: e.g. a
+// `CALL rel32` at offset 0xFFB of a page has opcode + 4-byte offset
+// spanning offsets 0xFFB..0xFFE on page A and 0xFFF on page B (the byte
+// at the next page boundary). Without the cross-page-aware fetch, the
+// high byte of rel32 is read from the wrong physical page → wrong
+// branch target. This is exactly the busybox-grep "segfault at
+// 0x78XXXa29" crash class.
+//
+// Reproducer: place a CALL rel32 instruction at linear 0xFFB of a
+// virtual page mapped to phys X, with the next virtual page mapped to
+// phys Y. The 4-byte rel32 in code: bytes at X+0xFFC..0xFFE on page X,
+// byte at Y+0x000 on page Y. Verify the call goes to the right target.
+func TestPageCross_Fetch32(t *testing.T) {
+	c := newTestCPU(t)
+	c.SetSegBase(CS, 0)
+	c.SetSegLimit(CS, 0xFFFFFFFF)
+	c.SetSegBase(DS, 0)
+	c.SetSegLimit(DS, 0xFFFFFFFF)
+	c.SetSegBase(SS, 0)
+	c.SetSegLimit(SS, 0xFFFFFFFF)
+	c.SetReg32(ESP, 0x9000)
+
+	// Paging: identity for almost everything, except linear page 0x20000
+	// goes to phys 0x90000 (DIVERGED).
+	pdAddr := uint32(0x40000)
+	ptAddr := uint32(0x41000)
+	for i := uint32(0); i < 1024; i++ {
+		c.writePhys32(pdAddr+i*4, 0)
+	}
+	c.writePhys32(pdAddr+0, ptAddr|0x07)
+	for i := uint32(0); i < 1024; i++ {
+		c.writePhys32(ptAddr+i*4, (i<<12)|0x07)
+	}
+	// linear 0x20000 → phys 0x90000 (diverged)
+	c.writePhys32(ptAddr+0x20*4, 0x90000|0x07)
+
+	// Place a CALL rel32 at linear 0x1FFFB (last 5 bytes of page 0x1F000):
+	//   opcode E8, then 4-byte rel32 = +0x100 (sign-extended).
+	// EIP after this CALL = 0x1FFFB + 5 = 0x20000 (= start of next page).
+	// Target = 0x20000 + 0x100 = 0x20100.
+	// At target 0x20100 (in page 0x20000, which maps to phys 0x90000):
+	//   MOV EAX, 0xCAFEF00D   B8 0D F0 FE CA
+	//   HLT                    F4
+	// We place those instructions at the correct phys (0x90000+0x100).
+	//
+	// Code on page 0x1F (identity-mapped to phys 0x1F000):
+	//   linear 0x1FFFB:  E8 (CALL opcode)
+	//   linear 0x1FFFC:  00 (rel32 byte 0)
+	//   linear 0x1FFFD:  01 (rel32 byte 1)
+	//   linear 0x1FFFE:  00 (rel32 byte 2)
+	//   linear 0x1FFFF:  00 (rel32 byte 3, last byte of page A)
+	// linear 0x20000..  unused (target is at 0x20100)
+	c.writePhys8(0x1FFFB, 0xE8)
+	c.writePhys8(0x1FFFC, 0x00)
+	c.writePhys8(0x1FFFD, 0x01)
+	c.writePhys8(0x1FFFE, 0x00)
+	c.writePhys8(0x1FFFF, 0x00)
+	// Target at phys 0x90100 (= linear 0x20100 via the diverged mapping):
+	c.writePhys8(0x90100, 0xB8)
+	c.writePhys8(0x90101, 0x0D)
+	c.writePhys8(0x90102, 0xF0)
+	c.writePhys8(0x90103, 0xFE)
+	c.writePhys8(0x90104, 0xCA)
+	c.writePhys8(0x90105, 0xF4) // HLT
+	// Also populate phys 0x20100 (the WRONG target if cross-page broken)
+	// with a sentinel — a HLT but moving 0xBADC0FFE into EAX. If the bug
+	// re-emerges, the test will hit this and we'll see 0xBADC0FFE.
+	c.writePhys8(0x20100, 0xB8)
+	c.writePhys8(0x20101, 0xFE)
+	c.writePhys8(0x20102, 0x0F)
+	c.writePhys8(0x20103, 0xDC)
+	c.writePhys8(0x20104, 0xBA)
+	c.writePhys8(0x20105, 0xF4)
+
+	c.SetCR(3, pdAddr)
+	c.SetCR(0, c.GetCR(0)|CR0_PG)
+
+	c.SetEIP(0x1FFFB)
+	for i := 0; i < 50; i++ {
+		if c.IsPowerDown() {
+			break
+		}
+		if err := c.Step(); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+	if !c.IsPowerDown() {
+		t.Fatalf("did not halt")
+	}
+	if got := c.GetReg32(EAX); got != 0xCAFEF00D {
+		t.Errorf("EAX = %08X, want CAFEF00D (= correct CALL target). Got BADC0FFE means cross-page fetch read wrong rel32 bytes.", got)
+	}
+}
+
 // TestPageCross_Read32 — symmetric test for reads.
 func TestPageCross_Read32(t *testing.T) {
 	c := newTestCPU(t)
