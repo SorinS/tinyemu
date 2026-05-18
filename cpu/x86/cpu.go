@@ -276,6 +276,20 @@ type CPU struct {
 	pendingVector     uint8
 	ackInterruptFunc  func() (uint8, bool)
 
+	// Instruction prefetch buffer. ifBufLip / ifBufPhys are the linear
+	// and physical addresses of ifBuf[0]; ifBufValid bytes are valid
+	// starting from there. Filled lazily by fetch8Slow on miss; the fast
+	// path in fetch8/16/32 serves bytes straight out of ifBuf without
+	// translating per byte. The buffer never spans a page boundary, and
+	// is invalidated on TLB flush / INVLPG (so a CR3 swap can't surface
+	// stale bytes) and on writePhys{8,16,32} that overlaps the buffered
+	// physical range (covers writes to executing code — common in test
+	// fixtures, rare but legal in real software).
+	ifBuf      [16]byte
+	ifBufLip   uint32
+	ifBufPhys  uint32
+	ifBufValid uint8
+
 	// Current instruction sizes (set during Step/executeOpcode)
 	currentAddrSize uint8
 	currentOpSize   uint8

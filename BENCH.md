@@ -52,4 +52,5 @@ Notable phases observed:
 | Date       | Commit  | Step          | Alpine→login | cycles/sec | Notes |
 |------------|---------|---------------|--------------|------------|-------|
 | 2026-05-18 | b6af7ae | Step 0 setup  | 541s         | ~19.8M     | baseline; measurement infra only |
-| 2026-05-18 | HEAD    | Steps 1 + 4   | 531s         | ~20.8M     | GetRange cache + physWatch gate; ~1.85% — below expected. Pivot to profile-driven next. |
+| 2026-05-18 | 3f94278 | Steps 1 + 4   | 531s         | ~20.8M     | GetRange cache + physWatch gate; ~1.85% — below expected. Pivot to profile-driven next. |
+| 2026-05-18 | HEAD    | Step 3        | 501s         | ~21.5M     | Instruction prefetch buffer. +5.7% over previous; total 7.4% vs baseline. Modloop verify (openssl) ~33% faster on its own. |

@@ -102,6 +102,7 @@ func (c *CPU) writePhys8(addr uint32, val uint8) {
 	if physWatchActive {
 		c.physWatchHook(addr, uint32(val), 1)
 	}
+	c.maybeInvalidateFetchBufferPhys(addr, 1)
 	c.memMap.Write8(uint64(addr&c.a20Mask), val)
 }
 
@@ -110,6 +111,7 @@ func (c *CPU) writePhys16(addr uint32, val uint16) {
 	if physWatchActive {
 		c.physWatchHook(addr, uint32(val), 2)
 	}
+	c.maybeInvalidateFetchBufferPhys(addr, 2)
 	c.memMap.Write16(uint64(addr&c.a20Mask), val)
 }
 
@@ -118,6 +120,7 @@ func (c *CPU) writePhys32(addr uint32, val uint32) {
 	if physWatchActive {
 		c.physWatchHook(addr, val, 4)
 	}
+	c.maybeInvalidateFetchBufferPhys(addr, 4)
 	c.memMap.Write32(uint64(addr&c.a20Mask), val)
 }
 
@@ -325,30 +328,105 @@ func (c *CPU) maskEIP() {
 }
 
 // fetch8 reads the next byte from the code stream and advances EIP.
+// Fast path: serve from the prefetch buffer. Slow path: refill the
+// buffer from physical memory (up to a page boundary), then return.
 func (c *CPU) fetch8() uint8 {
-	lip := c.GetLIP()
-	v := c.fetchMem8(lip)
+	lip := c.segBase[CS] + c.eip
+	off := lip - c.ifBufLip
+	if off < uint32(c.ifBufValid) {
+		b := c.ifBuf[off]
+		c.eip++
+		c.maskEIP()
+		return b
+	}
+	return c.fetch8Slow(lip)
+}
+
+// fetch8Slow refills the prefetch buffer at `lip` and returns the
+// first byte. Separated from fetch8 so the fast path stays inlinable.
+func (c *CPU) fetch8Slow(lip uint32) uint8 {
+	c.fillFetchBuffer(lip)
+	b := c.ifBuf[0]
 	c.eip++
 	c.maskEIP()
-	return v
+	return b
+}
+
+// fillFetchBuffer reads up to 16 instruction bytes starting at `lip`
+// into c.ifBuf. The fill stops at the next page boundary so the
+// translation is valid for every byte. Page faults during the fill
+// propagate via panic, unwinding the in-flight Step exactly as a
+// fetchMem8 fault would.
+func (c *CPU) fillFetchBuffer(lip uint32) {
+	pageOff := lip & 0xFFF
+	n := uint32(16)
+	if pageOff+n > 0x1000 {
+		n = 0x1000 - pageOff
+	}
+	phys := c.translateAddress(lip, false, c.cpl == 3, true)
+	for i := uint32(0); i < n; i++ {
+		c.ifBuf[i] = c.readPhys8(phys + i)
+	}
+	c.ifBufLip = lip
+	c.ifBufPhys = phys
+	c.ifBufValid = uint8(n)
+}
+
+// invalidateFetchBuffer drops the prefetch buffer so the next fetch
+// refills from memory. Called from TLB flush paths (CR3 reload,
+// INVLPG, mode switch) and from any place that may have changed the
+// bytes the buffer is caching.
+func (c *CPU) invalidateFetchBuffer() {
+	c.ifBufValid = 0
+}
+
+// maybeInvalidateFetchBufferPhys clears the prefetch buffer if [addr,
+// addr+size) overlaps the buffered physical range. Called from
+// writePhys{8,16,32} so self-modifying code (or test fixtures that
+// stage code in two passes) doesn't serve stale instruction bytes.
+func (c *CPU) maybeInvalidateFetchBufferPhys(addr, size uint32) {
+	if c.ifBufValid == 0 {
+		return
+	}
+	bufEnd := c.ifBufPhys + uint32(c.ifBufValid)
+	if addr < bufEnd && c.ifBufPhys < addr+size {
+		c.ifBufValid = 0
+	}
 }
 
 // fetch16 reads the next word from the code stream and advances EIP.
 func (c *CPU) fetch16() uint16 {
-	lip := c.GetLIP()
-	v := c.fetchMem16(lip)
-	c.eip += 2
-	c.maskEIP()
-	return v
+	lip := c.segBase[CS] + c.eip
+	off := lip - c.ifBufLip
+	if off+2 <= uint32(c.ifBufValid) {
+		v := uint16(c.ifBuf[off]) | uint16(c.ifBuf[off+1])<<8
+		c.eip += 2
+		c.maskEIP()
+		return v
+	}
+	a := uint16(c.fetch8())
+	b := uint16(c.fetch8())
+	return a | b<<8
 }
 
 // fetch32 reads the next dword from the code stream and advances EIP.
 func (c *CPU) fetch32() uint32 {
-	lip := c.GetLIP()
-	v := c.fetchMem32(lip)
-	c.eip += 4
-	c.maskEIP()
-	return v
+	lip := c.segBase[CS] + c.eip
+	off := lip - c.ifBufLip
+	if off+4 <= uint32(c.ifBufValid) {
+		v := uint32(c.ifBuf[off]) |
+			uint32(c.ifBuf[off+1])<<8 |
+			uint32(c.ifBuf[off+2])<<16 |
+			uint32(c.ifBuf[off+3])<<24
+		c.eip += 4
+		c.maskEIP()
+		return v
+	}
+	a := uint32(c.fetch8())
+	b := uint32(c.fetch8())
+	cc := uint32(c.fetch8())
+	d := uint32(c.fetch8())
+	return a | b<<8 | cc<<16 | d<<24
 }
 
 // fetchS8 reads a signed byte from the code stream.

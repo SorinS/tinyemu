@@ -330,6 +330,7 @@ func (c *CPU) handleGroupO_01() error {
 					c.eip, lin, c.cycles)
 			}
 			c.tlb.invalidatePage(lin)
+			c.invalidateFetchBuffer()
 		}
 	default:
 		return fmt.Errorf("0F 01 /%d not implemented", mr.reg)
@@ -458,6 +459,7 @@ func (c *CPU) handleMovCR(read bool) error {
 			// Toggling CR0.PG flushes the entire TLB.
 			if (oldCR0^c.cr[0])&CR0_PG != 0 {
 				c.tlb.flushAll()
+				c.invalidateFetchBuffer()
 			}
 		case 3:
 			// CR3 reload flushes all non-global TLB entries (matches the
@@ -465,11 +467,13 @@ func (c *CPU) handleMovCR(read bool) error {
 			// value is unchanged we still flush — software writes CR3 to
 			// the same value precisely to invoke this flush.
 			c.tlb.flushNonGlobal()
+			c.invalidateFetchBuffer()
 		case 4:
 			// Toggling CR4.PGE/PSE/PAE flushes the entire TLB. (Linux uses
 			// CR4.PGE-toggle as its __flush_tlb_global primitive.)
 			if (oldCR4^c.cr[4])&(CR4_PGE|CR4_PSE|CR4_PAE) != 0 {
 				c.tlb.flushAll()
+				c.invalidateFetchBuffer()
 			}
 		}
 		c.updatePAEActive()
