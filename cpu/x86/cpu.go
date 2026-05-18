@@ -280,12 +280,12 @@ type CPU struct {
 	// and physical addresses of ifBuf[0]; ifBufValid bytes are valid
 	// starting from there. Filled lazily by fetch8Slow on miss; the fast
 	// path in fetch8/16/32 serves bytes straight out of ifBuf without
-	// translating per byte. The buffer never spans a page boundary, and
-	// is invalidated on TLB flush / INVLPG (so a CR3 swap can't surface
-	// stale bytes) and on writePhys{8,16,32} that overlaps the buffered
-	// physical range (covers writes to executing code — common in test
-	// fixtures, rare but legal in real software).
-	ifBuf      [16]byte
+	// translating per byte. 32 bytes covers most basic blocks in the
+	// kernel's bignum hot path (Montgomery mul inner loop) without
+	// crossing a page. Invalidated on TLB flush / INVLPG (so a CR3 swap
+	// can't surface stale bytes) and on writePhys{8,16,32} that overlaps
+	// the buffered physical range (covers writes to executing code).
+	ifBuf      [32]byte
 	ifBufLip   uint32
 	ifBufPhys  uint32
 	ifBufValid uint8

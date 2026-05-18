@@ -79,6 +79,11 @@ var eipBreakpoints = func() map[uint32]bool {
 	return m
 }()
 
+// eipBPActive collapses the (eipBreakpoint != 0 || len(eipBreakpoints) > 0)
+// check into a single bool so Step doesn't pay a map lookup on every
+// instruction in the default (no-breakpoint) build.
+var eipBPActive = eipBreakpoint != 0 || len(eipBreakpoints) > 0
+
 // ReadPhys32 is the exported wrapper around readPhys32 for diagnostic tools
 // that need to inspect raw physical memory (e.g. page tables).
 func (c *CPU) ReadPhys32(addr uint32) uint32 { return c.readPhys32(addr) }
@@ -352,20 +357,29 @@ func (c *CPU) fetch8Slow(lip uint32) uint8 {
 	return b
 }
 
-// fillFetchBuffer reads up to 16 instruction bytes starting at `lip`
+// fillFetchBuffer reads up to 32 instruction bytes starting at `lip`
 // into c.ifBuf. The fill stops at the next page boundary so the
 // translation is valid for every byte. Page faults during the fill
 // propagate via panic, unwinding the in-flight Step exactly as a
-// fetchMem8 fault would.
+// fetchMem8 fault would. When the source range lives in RAM (the
+// dominant case), copy directly from the underlying byte slice — that
+// saves the per-byte GetRange + readPhys8 round-trip that the slow
+// path was previously paying 32 times per fill.
 func (c *CPU) fillFetchBuffer(lip uint32) {
 	pageOff := lip & 0xFFF
-	n := uint32(16)
+	n := uint32(len(c.ifBuf))
 	if pageOff+n > 0x1000 {
 		n = 0x1000 - pageOff
 	}
 	phys := c.translateAddress(lip, false, c.cpl == 3, true)
-	for i := uint32(0); i < n; i++ {
-		c.ifBuf[i] = c.readPhys8(phys + i)
+	paddr := uint64(phys & c.a20Mask)
+	if pr := c.memMap.GetRange(paddr); pr != nil && pr.IsRAM {
+		off := paddr - pr.Addr
+		copy(c.ifBuf[:n], pr.PhysMem[off:off+uint64(n)])
+	} else {
+		for i := uint32(0); i < n; i++ {
+			c.ifBuf[i] = c.readPhys8(phys + i)
+		}
 	}
 	c.ifBufLip = lip
 	c.ifBufPhys = phys
@@ -472,7 +486,7 @@ func (c *CPU) Step() (err error) {
 	// a 6-frame return-address chain when EIP lands on any of those
 	// addresses. Used while reverse-engineering failures against a known
 	// vmlinux.
-	if (eipBreakpoint != 0 && c.eip == eipBreakpoint) || eipBreakpoints[c.eip] {
+	if eipBPActive && ((eipBreakpoint != 0 && c.eip == eipBreakpoint) || eipBreakpoints[c.eip]) {
 		var frames [6]uint32
 		ebp := c.GetReg32(EBP)
 		for i := 0; i < 6 && ebp >= 0x1000; i++ {

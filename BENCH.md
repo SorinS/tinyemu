@@ -53,4 +53,5 @@ Notable phases observed:
 |------------|---------|---------------|--------------|------------|-------|
 | 2026-05-18 | b6af7ae | Step 0 setup  | 541s         | ~19.8M     | baseline; measurement infra only |
 | 2026-05-18 | 3f94278 | Steps 1 + 4   | 531s         | ~20.8M     | GetRange cache + physWatch gate; ~1.85% — below expected. Pivot to profile-driven next. |
-| 2026-05-18 | HEAD    | Step 3        | 501s         | ~21.5M     | Instruction prefetch buffer. +5.7% over previous; total 7.4% vs baseline. Modloop verify (openssl) ~33% faster on its own. |
+| 2026-05-18 | 105517d | Step 3        | 501s         | ~21.5M     | Instruction prefetch buffer. +5.7% over previous; total 7.4% vs baseline. Modloop verify (openssl) ~33% faster on its own. |
+| 2026-05-18 | HEAD    | Step 3 refine | 386s         | ~25.3M     | 32-byte buffer; bulk-copy RAM in fillFetchBuffer; eipBPActive bool gate (skip per-Step map lookup). +23% over Step 3; total **28.8% vs baseline**. Modloop verify 210s → 110s (~48% faster than baseline). |
