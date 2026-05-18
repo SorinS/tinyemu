@@ -30,7 +30,9 @@ func (c *CPU) readPhys16(addr uint32) uint16 {
 // readPhys32 reads a dword from the given physical address (no paging).
 func (c *CPU) readPhys32(addr uint32) uint32 {
 	v, _ := c.memMap.Read32(uint64(addr & c.a20Mask))
-	c.physReadWatchHook(addr, v, 4)
+	if physWatchActive {
+		c.physReadWatchHook(addr, v, 4)
+	}
 	return v
 }
 
@@ -97,19 +99,25 @@ func (c *CPU) writePhys64(addr uint32, val uint64) {
 
 // writePhys8 writes a byte to the given physical address (no paging).
 func (c *CPU) writePhys8(addr uint32, val uint8) {
-	c.physWatchHook(addr, uint32(val), 1)
+	if physWatchActive {
+		c.physWatchHook(addr, uint32(val), 1)
+	}
 	c.memMap.Write8(uint64(addr&c.a20Mask), val)
 }
 
 // writePhys16 writes a word to the given physical address (no paging).
 func (c *CPU) writePhys16(addr uint32, val uint16) {
-	c.physWatchHook(addr, uint32(val), 2)
+	if physWatchActive {
+		c.physWatchHook(addr, uint32(val), 2)
+	}
 	c.memMap.Write16(uint64(addr&c.a20Mask), val)
 }
 
 // writePhys32 writes a dword to the given physical address (no paging).
 func (c *CPU) writePhys32(addr uint32, val uint32) {
-	c.physWatchHook(addr, val, 4)
+	if physWatchActive {
+		c.physWatchHook(addr, val, 4)
+	}
 	c.memMap.Write32(uint64(addr&c.a20Mask), val)
 }
 

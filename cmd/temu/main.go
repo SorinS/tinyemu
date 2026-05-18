@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/pprof"
 	"strings"
 	"syscall"
 	"time"
@@ -610,6 +611,42 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 
 	cpu := m.GetCPU()
 
+	// TINYEMU_X86_PROFILE=1 — write a runtime/pprof CPU profile to
+	// /tmp/temu.prof. Inspect with `go tool pprof -top /tmp/temu.prof`.
+	if os.Getenv("TINYEMU_X86_PROFILE") == "1" {
+		f, err := os.Create("/tmp/temu.prof")
+		if err == nil {
+			if err := pprof.StartCPUProfile(f); err == nil {
+				fmt.Fprintln(os.Stderr, "[perf] CPU profile writing to /tmp/temu.prof")
+				defer func() {
+					pprof.StopCPUProfile()
+					f.Close()
+					fmt.Fprintln(os.Stderr, "[perf] /tmp/temu.prof closed")
+				}()
+			} else {
+				f.Close()
+				fmt.Fprintf(os.Stderr, "[perf] StartCPUProfile failed: %v\n", err)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[perf] create /tmp/temu.prof: %v\n", err)
+		}
+	}
+
+	// TINYEMU_X86_PERF=1 — print cycles-per-second every 5 wall seconds.
+	// Cheap and always-available baseline for the optimization work in
+	// docs/Optimization.md.
+	perfEnabled := os.Getenv("TINYEMU_X86_PERF") == "1"
+	var (
+		perfStart      time.Time
+		perfLast       time.Time
+		perfLastCycles uint64
+	)
+	if perfEnabled {
+		perfStart = time.Now()
+		perfLast = perfStart
+		perfLastCycles = cpu.GetCycles()
+	}
+
 	// Apply -stdin-prefix. For x86 PC boards, push directly into the
 	// UART RX FIFO; for virtConsole-based boards (RISC-V), buffer it.
 	// Either way the bytes are delivered as the first console input
@@ -623,6 +660,18 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 	}
 
 	for {
+		if perfEnabled {
+			now := time.Now()
+			if now.Sub(perfLast) >= 5*time.Second {
+				cyc := cpu.GetCycles()
+				rate := float64(cyc-perfLastCycles) / now.Sub(perfLast).Seconds()
+				fmt.Fprintf(os.Stderr, "[perf] %.0f cycles/sec  total=%d  elapsed=%.1fs\n",
+					rate, cyc, now.Sub(perfStart).Seconds())
+				perfLast = now
+				perfLastCycles = cyc
+			}
+		}
+
 		// Check for signals
 		select {
 		case <-sigCh:

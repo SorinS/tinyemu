@@ -143,6 +143,12 @@ var physWatchLo, physWatchHi uint32 = func() (uint32, uint32) {
 	return lo, hi
 }()
 
+// physWatchActive collapses the (physWatchLo != 0 || physWatchHi != 0) check
+// into a single load so writePhys* / readPhys32 don't pay the cost of a
+// function call into physWatchHook on every memory access. The branch is
+// false in every non-debug run, so the predictor effectively folds it away.
+var physWatchActive = physWatchLo != 0 || physWatchHi != 0
+
 // physSentinelAddr (TINYEMU_X86_PHYSSENTINEL=hex) — at every Step, sample the
 // 32-bit value at this physical address. When it changes, log the EIP and
 // previous/new values. Used to catch writes that bypass physWatchHook.

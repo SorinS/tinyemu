@@ -85,6 +85,13 @@ type PhysMemoryMap struct {
 	ranges       []PhysMemoryRange
 	opaque       any
 	flushTLBFunc TLBFlushFunc
+	// lastIdx is the index of the last range that satisfied GetRange.
+	// Memory accesses cluster — instruction fetch within a page, stack
+	// pushes near ESP — so checking the most-recent hit first turns a
+	// linear scan into one compare on the hit path. Stored as an index
+	// (not a *PhysMemoryRange) so the cache survives any future
+	// append() that reallocates the backing array.
+	lastIdx int
 }
 
 // NewPhysMemoryMap creates a new physical memory map.
@@ -117,10 +124,20 @@ func (m *PhysMemoryMap) Close() {
 // GetRange returns the memory range containing the given physical address.
 // Returns nil if no range contains the address.
 // Reference: iomem.c:68-78 (get_phys_mem_range)
+//
+// Fast path: most accesses hit the same range as the previous one (the
+// RAM range dominates), so check m.lastIdx first.
 func (m *PhysMemoryMap) GetRange(paddr uint64) *PhysMemoryRange {
+	if m.lastIdx < len(m.ranges) {
+		pr := &m.ranges[m.lastIdx]
+		if pr.Size > 0 && paddr >= pr.Addr && paddr < pr.Addr+pr.Size {
+			return pr
+		}
+	}
 	for i := range m.ranges {
 		pr := &m.ranges[i]
 		if pr.Size > 0 && paddr >= pr.Addr && paddr < pr.Addr+pr.Size {
+			m.lastIdx = i
 			return pr
 		}
 	}
