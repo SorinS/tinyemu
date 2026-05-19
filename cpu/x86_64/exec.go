@@ -72,6 +72,20 @@ func (c *CPU) Step() (err error) {
 	addressSize := uint8(8)
 	operandOverride := false
 	segOverride := -1
+	// String-op repetition: 0 = none, 1 = REP/REPE (0xF3), 2 = REPNE
+	// (0xF2). The decoder for MOVS/STOS/LODS/SCAS consults it; on any
+	// other opcode the prefix is silently dropped. That's correct for
+	// well-formed kernel/user code but masks two subtle cases:
+	//   - 0xF3 has been repurposed as part of multi-byte VEX/XOP
+	//     prefixes for SSE3+/AVX (e.g. F3 0F BD = LZCNT vs plain BSR).
+	//     Until we wire SSE+ decoding, those would silently fall
+	//     through to the legacy 0F BD = BSR semantics.
+	//   - REP on instructions where the SDM lists it as "undefined"
+	//     would silently succeed instead of #UD.
+	// Both are accepted risk until they bite — kernel boot exercises
+	// REP/REPE/REPNE only on the string-op family the dispatcher
+	// recognises.
+	repPrefix := uint8(0)
 
 	for {
 		b := c.fetch8()
@@ -80,8 +94,16 @@ func (c *CPU) Step() (err error) {
 			operandOverride = true
 		case b == 0x67:
 			addressSize = 4
-		case b == 0xF0, b == 0xF2, b == 0xF3:
-			// LOCK / REPNE / REPE — accepted but no-op in M1.
+		case b == 0xF0:
+			// LOCK. Single-threaded emulation: every instruction is
+			// already serialized, so LOCK is functionally a no-op.
+			// The real-hardware rule that LOCK on an instruction that
+			// doesn't support it raises #UD is NOT enforced; a
+			// malformed LOCK prefix would silently succeed.
+		case b == 0xF2:
+			repPrefix = 2
+		case b == 0xF3:
+			repPrefix = 1
 		case b == 0x2E:
 			segOverride = CS
 		case b == 0x36:
@@ -105,7 +127,7 @@ func (c *CPU) Step() (err error) {
 				operandSize = 2
 			}
 			_ = segOverride // wired in Phase 2/3 when memory operands appear
-			return c.executeOpcode(b, rex, operandSize, addressSize, segOverride)
+			return c.executeOpcode(b, rex, operandSize, addressSize, segOverride, repPrefix)
 		}
 	}
 }

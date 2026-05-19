@@ -12,7 +12,7 @@ import "math/bits"
 // (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP), bitwise ops in their primary "rm
 // vs r" forms (0x09 OR, 0x21 AND, 0x29 SUB, 0x31 XOR, 0x39 CMP), TEST
 // r/m,r (0x85), and Group 5 INC/DEC (0xFF /0, /1).
-func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride int) error {
+func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride int, repPrefix uint8) error {
 	_ = segOverride // segment-override handling lands with explicit memory operands beyond the initial slice
 	_ = addressSize // 32-bit addressing not yet wired
 
@@ -20,7 +20,9 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// ===== Single-byte primary ops =====
 
 	case op == 0x90:
-		// NOP. (0x90 with REX.B is XCHG R8,RAX; not exercised in M1/M2.)
+		// NOP. (0x90 with REX.B is XCHG R8,RAX; not wired yet — the
+		// kernel uses 0x90 as a plain NOP padding byte everywhere it
+		// matters.)
 		return nil
 
 	case op == 0xF4:
@@ -273,6 +275,25 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	case op == 0xFD: // STD — set DF
 		c.rflags |= RFLAGS_DF
 		return nil
+
+	// ===== String operations =====
+
+	case op == 0xA4:
+		return c.opStringMOVS(rex, 1, repPrefix)
+	case op == 0xA5:
+		return c.opStringMOVS(rex, operandSize, repPrefix)
+	case op == 0xAA:
+		return c.opStringSTOS(rex, 1, repPrefix)
+	case op == 0xAB:
+		return c.opStringSTOS(rex, operandSize, repPrefix)
+	case op == 0xAC:
+		return c.opStringLODS(rex, 1, repPrefix)
+	case op == 0xAD:
+		return c.opStringLODS(rex, operandSize, repPrefix)
+	case op == 0xAE:
+		return c.opStringSCAS(rex, 1, repPrefix)
+	case op == 0xAF:
+		return c.opStringSCAS(rex, operandSize, repPrefix)
 
 	// ===== Two-byte escape =====
 

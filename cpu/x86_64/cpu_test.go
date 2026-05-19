@@ -162,8 +162,8 @@ func TestReg8_PreservesOtherBytes(t *testing.T) {
 	}
 }
 
-// TestExtRegs_R8toR15 covers the long-mode-only registers reachable via
-// REX.B / REX.R / REX.X in M1. They share storage with reg64[8..15].
+// TestExtRegs_R8toR15 covers the long-mode-only registers reachable
+// via REX.B / REX.R / REX.X. They share storage with reg64[8..15].
 func TestExtRegs_R8toR15(t *testing.T) {
 	c := newTestCPU(t)
 	values := []uint64{
