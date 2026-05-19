@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"debug/elf"
 	"fmt"
+	"os"
 
 	"github.com/jtolio/tinyemu-go/cpu/x86_64"
 )
@@ -179,7 +180,32 @@ func (p *PC) loadVMLinux64(kernelData, initrdData []byte, cmdLine string) error 
 	// section, not at offset 0 of .text); we just trust the ELF.
 	cpu64.SetReg64(x86_64.RSI, uint64(setupAddr))
 	cpu64.SetReg64(x86_64.RSP, uint64(setupAddr-8))
-	cpu64.SetRIP(f.Entry)
+	// Allow override via TINYEMU_X64_ENTRY=<hex> for boot debugging.
+	entry := f.Entry
+	if s := os.Getenv("TINYEMU_X64_ENTRY"); s != "" {
+		if len(s) > 2 && (s[:2] == "0x" || s[:2] == "0X") {
+			s = s[2:]
+		}
+		var v uint64
+		for _, ch := range s {
+			var d uint64
+			switch {
+			case ch >= '0' && ch <= '9':
+				d = uint64(ch - '0')
+			case ch >= 'a' && ch <= 'f':
+				d = uint64(ch-'a') + 10
+			case ch >= 'A' && ch <= 'F':
+				d = uint64(ch-'A') + 10
+			default:
+				continue
+			}
+			v = v*16 + d
+		}
+		if v != 0 {
+			entry = v
+		}
+	}
+	cpu64.SetRIP(entry)
 	cpu64.SetRFLAGS(2)
 	return nil
 }
