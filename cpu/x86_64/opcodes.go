@@ -29,40 +29,87 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.powerDown = true
 		return nil
 
-	// ===== ALU (Ev,Gv = 0x_1, Gv,Ev = 0x_3) =====
+	// ===== ALU (each op has 6 encodings) =====
+	// Layout per op (using ADD/0x_0..5 as reference): _0=Eb,Gb;
+	// _1=Ev,Gv; _2=Gb,Eb; _3=Gv,Ev; _4=AL,imm8; _5=rAX,imm.
+	// Same pattern for OR (0x08-0x0D), AND (0x20-0x25), SUB (0x28-
+	// 0x2D), XOR (0x30-0x35), CMP (0x38-0x3D). TEST is its own
+	// shorter sub-family (0x84/0x85, 0xA8/0xA9).
 
-	case op == 0x01: // ADD r/m, r
+	case op == 0x00:
+		return c.opALURM(rex, 1, aluADD)
+	case op == 0x01:
 		return c.opALURM(rex, operandSize, aluADD)
-	case op == 0x03: // ADD r, r/m
+	case op == 0x02:
+		return c.opALURfromM(rex, 1, aluADD)
+	case op == 0x03:
 		return c.opALURfromM(rex, operandSize, aluADD)
+	case op == 0x04:
+		return c.opALUImmAL(aluADD)
 
-	case op == 0x09: // OR r/m, r
+	case op == 0x08:
+		return c.opALURM(rex, 1, aluOR)
+	case op == 0x09:
 		return c.opALURM(rex, operandSize, aluOR)
-	case op == 0x0B: // OR r, r/m
+	case op == 0x0A:
+		return c.opALURfromM(rex, 1, aluOR)
+	case op == 0x0B:
 		return c.opALURfromM(rex, operandSize, aluOR)
+	case op == 0x0C:
+		return c.opALUImmAL(aluOR)
 
-	case op == 0x21: // AND r/m, r
+	case op == 0x20:
+		return c.opALURM(rex, 1, aluAND)
+	case op == 0x21:
 		return c.opALURM(rex, operandSize, aluAND)
-	case op == 0x23: // AND r, r/m
+	case op == 0x22:
+		return c.opALURfromM(rex, 1, aluAND)
+	case op == 0x23:
 		return c.opALURfromM(rex, operandSize, aluAND)
+	case op == 0x24:
+		return c.opALUImmAL(aluAND)
 
-	case op == 0x29: // SUB r/m, r
+	case op == 0x28:
+		return c.opALURM(rex, 1, aluSUB)
+	case op == 0x29:
 		return c.opALURM(rex, operandSize, aluSUB)
-	case op == 0x2B: // SUB r, r/m
+	case op == 0x2A:
+		return c.opALURfromM(rex, 1, aluSUB)
+	case op == 0x2B:
 		return c.opALURfromM(rex, operandSize, aluSUB)
+	case op == 0x2C:
+		return c.opALUImmAL(aluSUB)
 
-	case op == 0x31: // XOR r/m, r
+	case op == 0x30:
+		return c.opALURM(rex, 1, aluXOR)
+	case op == 0x31:
 		return c.opALURM(rex, operandSize, aluXOR)
-	case op == 0x33: // XOR r, r/m
+	case op == 0x32:
+		return c.opALURfromM(rex, 1, aluXOR)
+	case op == 0x33:
 		return c.opALURfromM(rex, operandSize, aluXOR)
+	case op == 0x34:
+		return c.opALUImmAL(aluXOR)
 
-	case op == 0x39: // CMP r/m, r
+	case op == 0x38:
+		return c.opALURM(rex, 1, aluCMP)
+	case op == 0x39:
 		return c.opALURM(rex, operandSize, aluCMP)
-	case op == 0x3B: // CMP r, r/m
+	case op == 0x3A:
+		return c.opALURfromM(rex, 1, aluCMP)
+	case op == 0x3B:
 		return c.opALURfromM(rex, operandSize, aluCMP)
+	case op == 0x3C:
+		return c.opALUImmAL(aluCMP)
 
-	case op == 0x85: // TEST r/m, r
+	case op == 0x84: // TEST r/m8, r8
+		return c.opTEST(rex, 1)
+	case op == 0x85:
 		return c.opTEST(rex, operandSize)
+	case op == 0xA8: // TEST AL, imm8
+		return c.opALUImmAL(aluTEST)
+	case op == 0xA9:
+		return c.opALUImmRAX(operandSize, aluTEST)
 
 	// ALU rAX, imm forms (single-byte primary opcode + imm). The imm is
 	// imm16 in operandSize=2 mode and imm32 sign-extended-to-64
@@ -125,9 +172,16 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 
 	// ===== Group 1 (immediate) =====
 
+	case op == 0x80:
+		// Group 1 r/m8, imm8.
+		return c.opGroup1(rex, 1, true)
 	case op == 0x81:
 		// Group 1 r/m, imm16/imm32 (sign-extended to 64).
 		return c.opGroup1(rex, operandSize, false)
+	case op == 0x82:
+		// Same encoding as 0x83 in legacy mode; #UD in long mode per
+		// Intel SDM. Surfacing explicitly.
+		return unimplemented("0x82 (illegal in long mode)")
 	case op == 0x83:
 		// Group 1 r/m, imm8 (sign-extended).
 		return c.opGroup1(rex, operandSize, true)
@@ -780,19 +834,22 @@ const (
 	aluSUB
 	aluXOR
 	aluCMP
+	aluTEST
 )
 
 // aluApply runs op over (dst, src) at the given operand size, returning
 // (result, flags). For ADC/SBB the caller is responsible for folding
-// in CF; M2 doesn't implement those yet (the ALU helpers below skip
-// them). For the bitwise ops (AND, OR, XOR) CF and OF are cleared.
+// in CF; not yet wired. For the bitwise ops (AND, OR, XOR, TEST) CF
+// and OF are cleared. aluCMP and aluTEST are no-writeback variants
+// of aluSUB and aluAND respectively — the dispatcher decides whether
+// to commit the result.
 func aluApply(op aluOp, dst, src uint64, size uint8) (uint64, flagBits) {
 	switch op {
 	case aluADD:
 		return add(dst, src, size)
 	case aluSUB, aluCMP:
 		return sub(dst, src, size)
-	case aluAND:
+	case aluAND, aluTEST:
 		r := (dst & src) & mask(size)
 		return r, logicalFlags(r, size)
 	case aluOR:
@@ -805,36 +862,74 @@ func aluApply(op aluOp, dst, src uint64, size uint8) (uint64, flagBits) {
 	return 0, flagBits{}
 }
 
-// opALURM handles the "r/m, r" form (e.g. 0x01 ADD, 0x29 SUB, 0x39 CMP).
+// aluWritesBack reports whether op stores its result. CMP and TEST
+// only update flags.
+func aluWritesBack(op aluOp) bool {
+	return op != aluCMP && op != aluTEST
+}
+
+// opALURM handles the "r/m, r" form. Width-1 operands use the
+// REX-aware 8-bit register encoding (AH/CH/DH/BH vs SPL/BPL/SIL/DIL).
 func (c *CPU) opALURM(rex, operandSize uint8, op aluOp) error {
 	m := c.parseModRM64(rex)
-	src := c.readReg(m.reg, operandSize)
-	dst := c.readOperand(m, operandSize)
+	var src, dst uint64
+	if operandSize == 1 {
+		src = uint64(c.read8RegField(m))
+		if m.isReg {
+			dst = uint64(c.read8FromModRM(m))
+		} else {
+			dst = uint64(c.readMem8(m.ea))
+		}
+	} else {
+		src = c.readReg(m.reg, operandSize)
+		dst = c.readOperand(m, operandSize)
+	}
 	res, fl := aluApply(op, dst, src, operandSize)
-	if op != aluCMP {
-		c.writeOperand(m, res, operandSize)
+	if aluWritesBack(op) {
+		if operandSize == 1 {
+			if m.isReg {
+				c.write8FromModRM(m, uint8(res))
+			} else {
+				c.writeMem8(m.ea, uint8(res))
+			}
+		} else {
+			c.writeOperand(m, res, operandSize)
+		}
 	}
 	c.setArithFlags(fl)
 	return nil
 }
 
-// opALURfromM handles the "r, r/m" form (e.g. 0x03 ADD, 0x2B SUB,
-// 0x3B CMP). Destination is the reg field.
+// opALURfromM handles the "r, r/m" form.
 func (c *CPU) opALURfromM(rex, operandSize uint8, op aluOp) error {
 	m := c.parseModRM64(rex)
-	src := c.readOperand(m, operandSize)
-	dst := c.readReg(m.reg, operandSize)
+	var src, dst uint64
+	if operandSize == 1 {
+		if m.isReg {
+			src = uint64(c.read8FromModRM(m))
+		} else {
+			src = uint64(c.readMem8(m.ea))
+		}
+		dst = uint64(c.read8RegField(m))
+	} else {
+		src = c.readOperand(m, operandSize)
+		dst = c.readReg(m.reg, operandSize)
+	}
 	res, fl := aluApply(op, dst, src, operandSize)
-	if op != aluCMP {
-		c.writeReg(m.reg, res, operandSize)
+	if aluWritesBack(op) {
+		if operandSize == 1 {
+			c.write8RegField(m, uint8(res))
+		} else {
+			c.writeReg(m.reg, res, operandSize)
+		}
 	}
 	c.setArithFlags(fl)
 	return nil
 }
 
-// opALUImmRAX handles the 0x05/0x0D/0x25/0x2D/0x35/0x3D family —
-// "op rAX, imm". imm is operandSize bytes (max 32, then sign-extended
-// to 64 in the 8-byte case).
+// opALUImmRAX handles the 0x05/0x0D/0x25/0x2D/0x35/0x3D and 0xA9
+// (TEST) family — "op rAX, imm". imm is operandSize bytes (max 32,
+// sign-extended to 64 in the 8-byte case).
 func (c *CPU) opALUImmRAX(operandSize uint8, op aluOp) error {
 	var imm uint64
 	switch operandSize {
@@ -845,8 +940,22 @@ func (c *CPU) opALUImmRAX(operandSize uint8, op aluOp) error {
 	}
 	dst := c.readReg(RAX, operandSize)
 	res, fl := aluApply(op, dst, imm, operandSize)
-	if op != aluCMP {
+	if aluWritesBack(op) {
 		c.writeReg(RAX, res, operandSize)
+	}
+	c.setArithFlags(fl)
+	return nil
+}
+
+// opALUImmAL handles the byte-form rAX-imm immediates: 0x04 ADD AL,
+// imm8 / 0x0C OR / 0x24 AND / 0x2C SUB / 0x34 XOR / 0x3C CMP /
+// 0xA8 TEST AL, imm8.
+func (c *CPU) opALUImmAL(op aluOp) error {
+	imm := uint64(c.fetch8())
+	dst := uint64(c.GetReg8(AL))
+	res, fl := aluApply(op, dst, imm, 1)
+	if aluWritesBack(op) {
+		c.SetReg8(AL, uint8(res))
 	}
 	c.setArithFlags(fl)
 	return nil
@@ -1193,25 +1302,27 @@ func (c *CPU) opGroup2(rex, operandSize uint8, implicitCount uint64) error {
 	return nil
 }
 
-// opTEST implements 0x85 — TEST r/m, r. Like AND but no writeback.
+// opTEST implements 0x84 (byte) and 0x85 (word/dword/qword) — TEST
+// r/m, r. Routes through aluTEST so the byte form gets the same
+// REX-aware 8-bit register handling as the other ALU byte forms.
 func (c *CPU) opTEST(rex, operandSize uint8) error {
-	m := c.parseModRM64(rex)
-	src := c.readReg(m.reg, operandSize)
-	dst := c.readOperand(m, operandSize)
-	r := (dst & src) & mask(operandSize)
-	c.setArithFlags(logicalFlags(r, operandSize))
-	return nil
+	return c.opALURM(rex, operandSize, aluTEST)
 }
 
 // opGroup1 dispatches 0x80/0x81/0x83. imm8 (true) reads a signed-8-bit
 // immediate and sign-extends to operandSize; otherwise reads imm16 (for
 // operandSize=2) or imm32 (for 4/8, sign-extending to 8). The sub-op
-// (0..7) lives in ModR/M.reg.
+// (0..7) lives in ModR/M.reg. operandSize=1 (the 0x80 byte form) uses
+// the REX-aware 8-bit register encoding for r/m.
 func (c *CPU) opGroup1(rex, operandSize uint8, imm8 bool) error {
 	m := c.parseModRM64(rex)
 	var imm uint64
 	if imm8 {
-		imm = uint64(int64(int8(c.fetch8())))
+		if operandSize == 1 {
+			imm = uint64(c.fetch8()) // byte form: no sign-extend needed
+		} else {
+			imm = uint64(int64(int8(c.fetch8())))
+		}
 	} else {
 		switch operandSize {
 		case 2:
@@ -1220,7 +1331,16 @@ func (c *CPU) opGroup1(rex, operandSize uint8, imm8 bool) error {
 			imm = uint64(int64(int32(c.fetch32())))
 		}
 	}
-	dst := c.readOperand(m, operandSize)
+	var dst uint64
+	if operandSize == 1 {
+		if m.isReg {
+			dst = uint64(c.read8FromModRM(m))
+		} else {
+			dst = uint64(c.readMem8(m.ea))
+		}
+	} else {
+		dst = c.readOperand(m, operandSize)
+	}
 	var op aluOp
 	switch m.reg {
 	case 0:
@@ -1239,8 +1359,16 @@ func (c *CPU) opGroup1(rex, operandSize uint8, imm8 bool) error {
 		return unimplemented("Group 1 /%d (ADC/SBB not implemented)", m.reg)
 	}
 	res, fl := aluApply(op, dst, imm, operandSize)
-	if op != aluCMP {
-		c.writeOperand(m, res, operandSize)
+	if aluWritesBack(op) {
+		if operandSize == 1 {
+			if m.isReg {
+				c.write8FromModRM(m, uint8(res))
+			} else {
+				c.writeMem8(m.ea, uint8(res))
+			}
+		} else {
+			c.writeOperand(m, res, operandSize)
+		}
 	}
 	c.setArithFlags(fl)
 	return nil
