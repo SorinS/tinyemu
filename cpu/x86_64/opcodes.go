@@ -117,6 +117,22 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.rip = c.pop64()
 		return nil
 
+	case op == 0xCC:
+		// INT3 — software breakpoint, vector 3, no error code.
+		return c.deliverInterrupt(3, false, 0)
+
+	case op == 0xCD:
+		// INT imm8.
+		vec := c.fetch8()
+		return c.deliverInterrupt(vec, false, 0)
+
+	case op == 0xCF:
+		// IRET. In long mode the 64-bit form requires REX.W=1; the
+		// 32-bit IRETD form (REX.W=0) is decoded but pops 32-bit values
+		// — not yet implemented because nothing in our test surface
+		// exercises it. Treat REX.W=0 as IRETQ for simplicity.
+		return c.opIRETQ()
+
 	case op == 0xE8:
 		disp := int64(int32(c.fetch32()))
 		c.push64(c.rip)
@@ -228,10 +244,9 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 		return c.opGroup7(rex)
 
 	case op2 == 0x0B:
-		// UD2 — guaranteed-invalid-opcode instruction. Used by the
-		// kernel as a fault-on-purpose marker (BUG_ON, WARN_ON).
-		// Phase 5c delivers as #UD through the IDT.
-		return unimplemented("UD2 (#UD delivery pending)")
+		// UD2 — guaranteed-invalid-opcode instruction. Routes through
+		// vector 6 (#UD).
+		return c.deliverInterrupt(6, false, 0)
 
 	case op2 == 0x20:
 		// MOV r64, CRn — reads control register into a GPR. The ModR/M

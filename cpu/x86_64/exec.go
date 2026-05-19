@@ -42,6 +42,16 @@ func (c *CPU) Step() (err error) {
 			switch ex := r.(type) {
 			case pageFaultPanic:
 				c.rip = origRIP
+				c.cr[2] = ex.Err.Addr
+				// Try IDT-based delivery first. If no IDT is configured
+				// (limit 0) or the gate is bogus, surface the original
+				// fault to the host so the caller can decide what to do.
+				if c.segLimit[IDTR] > 0 {
+					if derr := c.deliverInterrupt(14, true, ex.Err.ErrorCode); derr == nil {
+						err = nil
+						return
+					}
+				}
 				err = ex.Err
 			default:
 				panic(r)

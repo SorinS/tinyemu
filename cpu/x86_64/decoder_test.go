@@ -368,10 +368,13 @@ func TestDecode_Program_MovHlt(t *testing.T) {
 // the Run loop fails loudly instead of spinning silently on garbage.
 func TestDecode_Unimplemented(t *testing.T) {
 	c, mm := longModeFlat(t, 4096)
-	loadCode(t, c, mm, 0x100, []byte{0xCC}) // INT3 — not implemented yet
+	// 0x06 is PUSH ES in legacy modes and #UD-encoded in long mode.
+	// The decoder treats it as unimplemented, which is the contract
+	// this test pins.
+	loadCode(t, c, mm, 0x100, []byte{0x06})
 	err := c.Step()
 	if !errors.Is(err, ErrNotImplemented) {
-		t.Errorf("Step(0xCC) = %v, want wrap-of ErrNotImplemented", err)
+		t.Errorf("Step(0x06) = %v, want wrap-of ErrNotImplemented", err)
 	}
 }
 
