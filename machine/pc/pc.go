@@ -8,6 +8,7 @@ import (
 
 	"github.com/jtolio/tinyemu-go/cpu"
 	"github.com/jtolio/tinyemu-go/cpu/x86"
+	"github.com/jtolio/tinyemu-go/cpu/x86_64"
 	"github.com/jtolio/tinyemu-go/devices"
 	"github.com/jtolio/tinyemu-go/mem"
 	"github.com/jtolio/tinyemu-go/virtio"
@@ -34,18 +35,23 @@ const (
 type Config struct {
 	RAMSize uint64 // RAM size in bytes
 	Console *virtio.CharacterDevice
+	// MachineType selects the CPU backend. Empty or "x86" picks the
+	// i386 backend (cpu/x86); "x86_64" picks the long-mode backend
+	// (cpu/x86_64). Devices and chassis are identical either way.
+	MachineType string
 }
 
-// Compile-time check: cpu/x86's CPU must satisfy the X86Core interface
-// that machine/pc programs against. Both cpu/x86 (i386) and the
-// upcoming cpu/x86_64 backends plug into this same chassis through the
-// interface, so any drift in signatures fails at build time here.
-var _ cpu.X86Core = (*x86.CPU)(nil)
+// Compile-time checks: both CPU backends satisfy cpu.X86Core.
+var (
+	_ cpu.X86Core = (*x86.CPU)(nil)
+	_ cpu.X86Core = (*x86_64.CPU)(nil)
+)
 
 // PC represents a complete x86 PC machine.
 type PC struct {
 	memMap     *mem.PhysMemoryMap
 	cpu        cpu.X86Core
+	is64       bool
 	io         *IOPortDispatcher
 	pic        *PIC8259
 	pit        *PIT8254
@@ -82,10 +88,15 @@ func New(cfg Config) (*PC, error) {
 		io:            NewIOPortDispatcher(),
 		console:       cfg.Console,
 		nextVirtIOIRQ: VirtIOIRQ,
+		is64:          cfg.MachineType == "x86_64",
 	}
 
-	// Create CPU
-	p.cpu = x86.NewCPU(p.memMap)
+	// Create CPU — backend selected by MachineType.
+	if p.is64 {
+		p.cpu = x86_64.NewCPU(p.memMap)
+	} else {
+		p.cpu = x86.NewCPU(p.memMap)
+	}
 
 	// Register low RAM (640KB)
 	var err error
@@ -272,6 +283,17 @@ func (p *PC) Run(maxCycles int) error {
 func (p *PC) LoadBIOS(biosData []byte, kernelData []byte, initrdData []byte, cmdLine string) error {
 	// If kernel data is provided, try direct bzImage boot
 	if len(kernelData) > 0 {
+		if p.is64 {
+			// Long-mode direct bzImage boot. Skips the real-mode setup
+			// stub (we don't model real mode); jumps the CPU straight
+			// into the 64-bit kernel entry at protected_mode_start+0x200
+			// per the AMD64 boot protocol.
+			if err := p.loadBZImage64(kernelData, initrdData, cmdLine); err == nil {
+				return nil
+			} else {
+				return fmt.Errorf("64-bit kernel load failed: %w", err)
+			}
+		}
 		_, err := p.loadBZImage(kernelData, initrdData, cmdLine)
 		if err == nil {
 			return nil
