@@ -584,19 +584,19 @@ func (c *CPU) handleX87(opcode uint8) error {
 				c.fpuPop()
 				c.fpuPop()
 			case mr.reg == 0: // FCMOVB ST(0), ST(i)  (CF=1)
-				if c.eflags&EFLAGS_CF != 0 {
+				if c.getCF() {
 					c.fpuSetST(0, c.fpuST(int(mr.rm)))
 				}
 			case mr.reg == 1: // FCMOVE ST(0), ST(i)  (ZF=1)
-				if c.eflags&EFLAGS_ZF != 0 {
+				if c.getZF() {
 					c.fpuSetST(0, c.fpuST(int(mr.rm)))
 				}
 			case mr.reg == 2: // FCMOVBE ST(0), ST(i) (CF=1 OR ZF=1)
-				if c.eflags&(EFLAGS_CF|EFLAGS_ZF) != 0 {
+				if c.getCF() || c.getZF() {
 					c.fpuSetST(0, c.fpuST(int(mr.rm)))
 				}
 			case mr.reg == 3: // FCMOVU ST(0), ST(i)  (PF=1)
-				if c.eflags&EFLAGS_PF != 0 {
+				if c.getPF() {
 					c.fpuSetST(0, c.fpuST(int(mr.rm)))
 				}
 			default:
@@ -938,13 +938,13 @@ func (c *CPU) handleX87_DB_reg(mr modRMResult) error {
 		var cond bool
 		switch mr.reg {
 		case 0: // FCMOVNB: CF=0
-			cond = c.eflags&EFLAGS_CF == 0
+			cond = !c.getCF()
 		case 1: // FCMOVNE: ZF=0
-			cond = c.eflags&EFLAGS_ZF == 0
+			cond = !c.getZF()
 		case 2: // FCMOVNBE: CF=0 AND ZF=0
-			cond = c.eflags&(EFLAGS_CF|EFLAGS_ZF) == 0
+			cond = !c.getCF() && !c.getZF()
 		case 3: // FCMOVNU: PF=0
-			cond = c.eflags&EFLAGS_PF == 0
+			cond = !c.getPF()
 		}
 		if cond {
 			c.fpuSetST(0, c.fpuST(int(mr.rm)))

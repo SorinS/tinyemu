@@ -1243,7 +1243,7 @@ func (c *CPU) executeOpcode(opcode uint8, repPrefix uint8, segOverride int, oper
 
 	// INTO
 	case 0xCE:
-		if c.eflags&EFLAGS_OF != 0 {
+		if c.getOF() {
 			return c.handleInterrupt(0x04, false)
 		}
 

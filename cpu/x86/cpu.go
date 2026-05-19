@@ -290,6 +290,21 @@ type CPU struct {
 	ifBufPhys  uint32
 	ifBufValid uint8
 
+	// Lazy flag state. CF is always eager (chained ADC/SBB read it
+	// every iteration). OF/SF/ZF/AF/PF are deferred — when an ALU op
+	// would normally set them, we save (res, op1, op2, size, kind)
+	// here and skip the per-flag eflags writes. The cost is paid only
+	// when someone actually reads one of those flags (Jcc, CMOVcc,
+	// SETcc, PUSHF/LAHF/SAHF, certain CMOV cases in x87). For the RSA
+	// Montgomery loops that dominate Alpine boot, the lazy flags are
+	// almost never read — every ADC re-sets them and CF is the only
+	// one that matters.
+	lazyKind lazyFlagsKind
+	lazyRes  uint32
+	lazyOp1  uint32
+	lazyOp2  uint32
+	lazySize uint8
+
 	// Current instruction sizes (set during Step/executeOpcode)
 	currentAddrSize uint8
 	currentOpSize   uint8
@@ -520,10 +535,13 @@ func (c *CPU) GetLIP() uint32 {
 // ===== EFLAGS accessors =====
 
 func (c *CPU) GetEFLAGS() uint32 {
+	c.materializeFlags()
 	return c.eflags
 }
 
 func (c *CPU) SetEFLAGS(v uint32) {
+	// Wholesale eflags write — any pending lazy snapshot is now stale.
+	c.lazyKind = lazyNone
 	c.eflags = v&ValidFlagMask | 2
 }
 

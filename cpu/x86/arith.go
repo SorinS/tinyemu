@@ -1,5 +1,111 @@
 package x86
 
+// Lazy flag state machine. CF is always written eagerly into c.eflags
+// (chained ADC/SBB read it every iteration). OF/SF/ZF/AF/PF are
+// deferred: instead of computing them per ALU op, we save the result
+// + operands + kind, and materialize on demand when something reads
+// any of those flags. For RSA Montgomery / openssl bignum loops, the
+// lazy flags are almost never read — every iteration overwrites them
+// and only CF matters.
+//
+// Reads (Jcc, CMOVcc, SETcc, PUSHF, LAHF, SAHF, FCMOV) call
+// materializeFlags() via the getOF/getSF/getZF/getAF/getPF accessors
+// or via c.GetEFLAGS().
+//
+// Direct writes (POPF, IRET, CLC/STC/etc.) clear the lazy state by
+// calling materializeFlags() — pending lazy values land in eflags
+// before the new value overwrites them. setOF/setSF/etc. follow the
+// same pattern so mixing eager and lazy producers stays consistent.
+type lazyFlagsKind uint8
+
+const (
+	lazyNone lazyFlagsKind = iota
+	lazyAdd                // res = op1 + op2 (CF/OF computed from operands+result)
+	lazySub                // res = op1 - op2 (CF/OF computed from operands+result)
+	lazyLogic              // AND/OR/XOR/TEST: OF=0, AF undefined, CF=0, others per result
+	lazyIncDec             // INC/DEC: like Add/Sub but CF unchanged; isAdd flagged via op2 bit
+	lazyShift              // shifts/rotates: caller already set CF + OF; we only need SF/ZF/PF
+)
+
+// materializeFlags resolves any pending lazy flag state into
+// c.eflags. After this call lazyKind == lazyNone and reads can hit
+// c.eflags directly. Safe to call repeatedly; no-op when no lazy
+// state is pending.
+func (c *CPU) materializeFlags() {
+	kind := c.lazyKind
+	if kind == lazyNone {
+		return
+	}
+	c.lazyKind = lazyNone
+
+	res := c.lazyRes
+	op1 := c.lazyOp1
+	op2 := c.lazyOp2
+
+	var msb, mask uint32
+	switch c.lazySize {
+	case 1:
+		msb, mask = 0x80, 0xFF
+	case 2:
+		msb, mask = 0x8000, 0xFFFF
+	default:
+		msb, mask = 0x80000000, 0xFFFFFFFF
+	}
+
+	resMasked := res & mask
+	sf := (resMasked & msb) != 0
+	zf := resMasked == 0
+	af := ((op1 ^ op2 ^ res) & 0x10) != 0
+	resLow := uint8(res)
+	resLow ^= resLow >> 4
+	resLow ^= resLow >> 2
+	resLow ^= resLow >> 1
+	pf := (resLow & 1) == 0
+
+	var of bool
+	switch kind {
+	case lazyAdd, lazyIncDec:
+		of = ((op1^op2)&msb) == 0 && ((op1^res)&msb) != 0
+	case lazySub:
+		of = ((op1^op2)&msb) != 0 && ((op1^res)&msb) != 0
+	case lazyLogic:
+		of = false
+		af = false // AF is undefined for logic; clear deterministically
+	case lazyShift:
+		// SF/ZF/PF only — leave OF/AF in eflags untouched.
+		ef := c.eflags &^ (EFLAGS_SF | EFLAGS_ZF | EFLAGS_PF)
+		if sf {
+			ef |= EFLAGS_SF
+		}
+		if zf {
+			ef |= EFLAGS_ZF
+		}
+		if pf {
+			ef |= EFLAGS_PF
+		}
+		c.eflags = ef
+		return
+	}
+
+	ef := c.eflags &^ (EFLAGS_OF | EFLAGS_SF | EFLAGS_ZF | EFLAGS_AF | EFLAGS_PF)
+	if of {
+		ef |= EFLAGS_OF
+	}
+	if sf {
+		ef |= EFLAGS_SF
+	}
+	if zf {
+		ef |= EFLAGS_ZF
+	}
+	if af {
+		ef |= EFLAGS_AF
+	}
+	if pf {
+		ef |= EFLAGS_PF
+	}
+	c.eflags = ef
+}
+
 // add16 performs 16-bit addition with EFLAGS update.
 func (c *CPU) add16(a, b uint16) uint16 {
 	res := uint32(a) + uint32(b)
@@ -169,61 +275,80 @@ func (c *CPU) and32(a, b uint32) uint32 {
 	return r
 }
 
-// updateArithFlags16 updates OF, SF, ZF, AF, PF, CF for 16-bit operations.
+// updateArithFlags16 updates CF eagerly and defers OF/SF/ZF/AF/PF.
 func (c *CPU) updateArithFlags16(res, op1, op2 uint16, isAdd bool) {
-	var cf, of bool
+	var cf bool
 	if isAdd {
 		cf = uint32(op1)+uint32(op2) > 0xFFFF
-		of = ((op1^op2)&0x8000) == 0 && ((op1^res)&0x8000) != 0
 	} else {
 		cf = op1 < op2
-		of = ((op1^op2)&0x8000) != 0 && ((op1^res)&0x8000) != 0
 	}
-	c.setCF(cf)
-	c.setOF(of)
-	c.setSF((res & 0x8000) != 0)
-	c.setZF(res == 0)
-	c.setAF(((op1 ^ op2 ^ res) & 0x10) != 0)
-	c.setPF(parity8(uint8(res)))
+	if cf {
+		c.eflags |= EFLAGS_CF
+	} else {
+		c.eflags &^= EFLAGS_CF
+	}
+	c.lazyRes = uint32(res)
+	c.lazyOp1 = uint32(op1)
+	c.lazyOp2 = uint32(op2)
+	c.lazySize = 2
+	if isAdd {
+		c.lazyKind = lazyAdd
+	} else {
+		c.lazyKind = lazySub
+	}
 }
 
-// updateArithFlags8 updates OF, SF, ZF, AF, PF, CF for 8-bit operations.
+// updateArithFlags8 updates CF eagerly and defers OF/SF/ZF/AF/PF.
 func (c *CPU) updateArithFlags8(res, op1, op2 uint8, isAdd bool) {
-	var cf, of bool
+	var cf bool
 	if isAdd {
 		cf = uint16(op1)+uint16(op2) > 0xFF
-		of = ((op1^op2)&0x80) == 0 && ((op1^res)&0x80) != 0
 	} else {
 		cf = op1 < op2
-		of = ((op1^op2)&0x80) != 0 && ((op1^res)&0x80) != 0
 	}
-	c.setCF(cf)
-	c.setOF(of)
-	c.setSF((res & 0x80) != 0)
-	c.setZF(res == 0)
-	c.setAF(((op1 ^ op2 ^ res) & 0x10) != 0)
-	c.setPF(parity8(res))
+	if cf {
+		c.eflags |= EFLAGS_CF
+	} else {
+		c.eflags &^= EFLAGS_CF
+	}
+	c.lazyRes = uint32(res)
+	c.lazyOp1 = uint32(op1)
+	c.lazyOp2 = uint32(op2)
+	c.lazySize = 1
+	if isAdd {
+		c.lazyKind = lazyAdd
+	} else {
+		c.lazyKind = lazySub
+	}
 }
 
-// updateArithFlags32 updates OF, SF, ZF, AF, PF, CF for 32-bit operations.
+// updateArithFlags32 updates CF eagerly and defers OF/SF/ZF/AF/PF.
 func (c *CPU) updateArithFlags32(res, op1, op2 uint32, isAdd bool) {
-	var cf, of bool
+	var cf bool
 	if isAdd {
 		cf = uint64(op1)+uint64(op2) > 0xFFFFFFFF
-		of = ((op1^op2)&0x80000000) == 0 && ((op1^res)&0x80000000) != 0
 	} else {
 		cf = op1 < op2
-		of = ((op1^op2)&0x80000000) != 0 && ((op1^res)&0x80000000) != 0
 	}
-	c.setCF(cf)
-	c.setOF(of)
-	c.setSF((res & 0x80000000) != 0)
-	c.setZF(res == 0)
-	c.setAF(((op1 ^ op2 ^ res) & 0x10) != 0)
-	c.setPF(parity8(uint8(res)))
+	if cf {
+		c.eflags |= EFLAGS_CF
+	} else {
+		c.eflags &^= EFLAGS_CF
+	}
+	c.lazyRes = res
+	c.lazyOp1 = op1
+	c.lazyOp2 = op2
+	c.lazySize = 4
+	if isAdd {
+		c.lazyKind = lazyAdd
+	} else {
+		c.lazyKind = lazySub
+	}
 }
 
-// setCF sets or clears the carry flag.
+// setCF sets or clears the carry flag. CF is always eager; no
+// materialize needed since it isn't deferred.
 func (c *CPU) setCF(flag bool) {
 	if flag {
 		c.eflags |= EFLAGS_CF
@@ -232,8 +357,12 @@ func (c *CPU) setCF(flag bool) {
 	}
 }
 
-// setOF sets or clears the overflow flag.
+// setOF / setSF / setZF / setAF / setPF: invalidate the lazy snapshot
+// (materializing it into c.eflags first) so the explicit write doesn't
+// get clobbered by a stale lazy state that happens to mention the
+// same flag.
 func (c *CPU) setOF(flag bool) {
+	c.materializeFlags()
 	if flag {
 		c.eflags |= EFLAGS_OF
 	} else {
@@ -241,8 +370,8 @@ func (c *CPU) setOF(flag bool) {
 	}
 }
 
-// setSF sets or clears the sign flag.
 func (c *CPU) setSF(flag bool) {
+	c.materializeFlags()
 	if flag {
 		c.eflags |= EFLAGS_SF
 	} else {
@@ -250,8 +379,8 @@ func (c *CPU) setSF(flag bool) {
 	}
 }
 
-// setZF sets or clears the zero flag.
 func (c *CPU) setZF(flag bool) {
+	c.materializeFlags()
 	if flag {
 		c.eflags |= EFLAGS_ZF
 	} else {
@@ -259,8 +388,8 @@ func (c *CPU) setZF(flag bool) {
 	}
 }
 
-// setAF sets or clears the auxiliary carry flag.
 func (c *CPU) setAF(flag bool) {
+	c.materializeFlags()
 	if flag {
 		c.eflags |= EFLAGS_AF
 	} else {
@@ -268,8 +397,8 @@ func (c *CPU) setAF(flag bool) {
 	}
 }
 
-// setPF sets or clears the parity flag.
 func (c *CPU) setPF(flag bool) {
+	c.materializeFlags()
 	if flag {
 		c.eflags |= EFLAGS_PF
 	} else {
