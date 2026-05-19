@@ -71,10 +71,19 @@ func (c *CPU) Step() (err error) {
 	}()
 
 	if c.intrLineState != 0 && (c.rflags&RFLAGS_IF) != 0 && !c.interruptsBlocked {
-		// Interrupt delivery is wired up in Phase 5; until then we
-		// honor the interrupt by clearing the pending state but not
-		// vectoring through the IDT.
-		_ = c.ackInterruptFunc
+		// Hardware interrupt pending and IF set. Ack the PIC to learn
+		// the vector, then vector through the IDT. If no ack handler
+		// is wired (test harnesses without a PIC) we just consume the
+		// interrupt-line state without delivery.
+		if c.ackInterruptFunc != nil {
+			if vec, ok := c.ackInterruptFunc(); ok {
+				if derr := c.deliverInterrupt(vec, false, 0); derr != nil {
+					return derr
+				}
+				c.interruptsBlocked = false
+				return nil
+			}
+		}
 	}
 	c.interruptsBlocked = false
 
