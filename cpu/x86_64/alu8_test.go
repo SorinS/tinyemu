@@ -114,6 +114,29 @@ func TestTEST_Byte(t *testing.T) {
 	}
 }
 
+// TestGroup3_TestByteImm — regression for a wrong immediate-width
+// bug in opGroup3: the byte form (0xF6 /0) used to fetch 4 bytes of
+// immediate (the 32-bit path) instead of 1, consuming 3 extra bytes
+// from the instruction stream and silently mis-aligning every
+// subsequent fetch. Caught during TinyCorePure64 boot — manifested
+// as "Group 5 /7" several instructions later because we'd landed
+// inside a JE rel32's disp32.
+func TestGroup3_TestByteImm(t *testing.T) {
+	c := runBytesAt(t, func(c *CPU, _ *mem.PhysMemoryMap) {
+		c.SetReg64(RAX, 0x55)
+	}, []byte{0xF6, 0xC0, 0x0F, 0xF4, 0xCC}) // f6 c0 0f = test al, 0x0f
+	// 0x55 & 0x0F = 5 → not zero, ZF clear.
+	if c.rflags&RFLAGS_ZF != 0 {
+		t.Errorf("ZF set on test al,0x0f with 0x55 & 0x0f = 5")
+	}
+	// And the critical invariant: we should have HALTed (HLT at byte
+	// offset 3). If imm was over-consumed (4 bytes), we'd have
+	// executed the 0xCC at offset 4 as part of imm and not hit HLT.
+	if !c.IsPowerDown() {
+		t.Errorf("HLT didn't execute — imm width must have been wrong")
+	}
+}
+
 // 0xA8 — TEST AL, imm8.
 func TestTEST_AL_Imm(t *testing.T) {
 	c := runBytesAt(t, func(c *CPU, _ *mem.PhysMemoryMap) {

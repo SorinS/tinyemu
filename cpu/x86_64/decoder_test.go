@@ -478,6 +478,33 @@ func TestDecode_PushImm32(t *testing.T) {
 	}
 }
 
+// TestDecode_CallIndirect — Group 5 /2 = CALL r/m64. The kernel uses
+// indirect calls for vtable-style dispatch (file_operations->read etc.)
+// and for retpoline thunks. Regression for the case where the dispatch
+// was missing entirely.
+func TestDecode_CallIndirect(t *testing.T) {
+	c, mm := longModeFlat(t, 0x10000)
+	c.SetReg64(RSP, 0x8000)
+	c.SetReg64(RAX, 0x2000) // target address
+	// FF D0   call rax  (ModRM 11 010 000 — mod=11, reg=2=CALL, rm=0=RAX)
+	const code uint64 = 0x100
+	loadCode(t, c, mm, code, []byte{0xFF, 0xD0})
+	if err := c.Step(); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if c.GetRIP() != 0x2000 {
+		t.Errorf("RIP after CALL RAX = %#x, want 0x2000", c.GetRIP())
+	}
+	// Return address (RIP after the 2-byte CALL) was pushed.
+	pushed, _ := mm.Read64(0x8000 - 8)
+	if pushed != code+2 {
+		t.Errorf("pushed return addr = %#x, want %#x", pushed, code+2)
+	}
+	if c.GetReg64(RSP) != 0x8000-8 {
+		t.Errorf("RSP = %#x, want %#x", c.GetReg64(RSP), uint64(0x8000-8))
+	}
+}
+
 // Fetch under paging with no PML4 mapping surfaces as a PageFaultError
 // from Step (Phase 5 will route this through the IDT as #PF).
 func TestDecode_FetchPagedNotPresent(t *testing.T) {

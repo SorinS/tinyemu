@@ -47,6 +47,32 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	case op == 0x04:
 		return c.opALUImmAL(aluADD)
 
+	case op == 0x10:
+		return c.opALURM(rex, 1, aluADC)
+	case op == 0x11:
+		return c.opALURM(rex, operandSize, aluADC)
+	case op == 0x12:
+		return c.opALURfromM(rex, 1, aluADC)
+	case op == 0x13:
+		return c.opALURfromM(rex, operandSize, aluADC)
+	case op == 0x14:
+		return c.opALUImmAL(aluADC)
+	case op == 0x15:
+		return c.opALUImmRAX(operandSize, aluADC)
+
+	case op == 0x18:
+		return c.opALURM(rex, 1, aluSBB)
+	case op == 0x19:
+		return c.opALURM(rex, operandSize, aluSBB)
+	case op == 0x1A:
+		return c.opALURfromM(rex, 1, aluSBB)
+	case op == 0x1B:
+		return c.opALURfromM(rex, operandSize, aluSBB)
+	case op == 0x1C:
+		return c.opALUImmAL(aluSBB)
+	case op == 0x1D:
+		return c.opALUImmRAX(operandSize, aluSBB)
+
 	case op == 0x08:
 		return c.opALURM(rex, 1, aluOR)
 	case op == 0x09:
@@ -167,6 +193,8 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		op == 0xBC, op == 0xBD, op == 0xBE, op == 0xBF:
 		return c.opMOVImmToReg(op-0xB8, rex, operandSize)
 
+	case op == 0xC6:
+		return c.opMOVImm(rex, 1)
 	case op == 0xC7:
 		return c.opMOVImm(rex, operandSize)
 
@@ -269,6 +297,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 
 	// ===== Group 3 (TEST/NOT/NEG/MUL/IMUL/DIV/IDIV) =====
 
+	case op == 0xF6:
+		// Group 3 byte form — TEST r/m8,imm8 / NOT / NEG / MUL / IMUL
+		// / DIV / IDIV at 8-bit operand width.
+		return c.opGroup3(rex, 1)
 	case op == 0xF7:
 		return c.opGroup3(rex, operandSize)
 
@@ -307,6 +339,58 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return c.opGroup5(rex, operandSize)
 
 	// ===== Flag manipulation =====
+
+	case op == 0x9C: // PUSHFQ — push RFLAGS as 8 bytes (long-mode default)
+		c.push64(c.rflags)
+		return nil
+	case op == 0x9D: // POPFQ — pop 8 bytes into RFLAGS
+		v := c.pop64()
+		// Filter reserved bits via ValidFlagMask; bit 1 always reads 1
+		// per SDM. CPL=0 can change everything except VM/RF (RF gets
+		// cleared on POPF semantics — we fold the same effect by
+		// stripping RF from the popped value).
+		c.rflags = (v & ValidFlagMask &^ RFLAGS_RF) | 2
+		return nil
+
+	case op == 0x9E: // SAHF — store AH into low byte of RFLAGS
+		// AH bits 7,6,4,2,0 ↔ SF, ZF, AF, PF, CF. Bits 1,3,5 ignored.
+		ah := c.GetReg8(AH)
+		c.rflags &^= RFLAGS_SF | RFLAGS_ZF | RFLAGS_AF | RFLAGS_PF | RFLAGS_CF
+		if ah&0x80 != 0 {
+			c.rflags |= RFLAGS_SF
+		}
+		if ah&0x40 != 0 {
+			c.rflags |= RFLAGS_ZF
+		}
+		if ah&0x10 != 0 {
+			c.rflags |= RFLAGS_AF
+		}
+		if ah&0x04 != 0 {
+			c.rflags |= RFLAGS_PF
+		}
+		if ah&0x01 != 0 {
+			c.rflags |= RFLAGS_CF
+		}
+		return nil
+	case op == 0x9F: // LAHF — load AH from low byte of RFLAGS
+		var ah uint8 = 0x02 // bit 1 always reads 1
+		if c.rflags&RFLAGS_SF != 0 {
+			ah |= 0x80
+		}
+		if c.rflags&RFLAGS_ZF != 0 {
+			ah |= 0x40
+		}
+		if c.rflags&RFLAGS_AF != 0 {
+			ah |= 0x10
+		}
+		if c.rflags&RFLAGS_PF != 0 {
+			ah |= 0x04
+		}
+		if c.rflags&RFLAGS_CF != 0 {
+			ah |= 0x01
+		}
+		c.SetReg8(AH, ah)
+		return nil
 
 	case op == 0xF5: // CMC — complement CF
 		c.rflags ^= RFLAGS_CF
@@ -355,7 +439,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return c.opTwoByte(rex, operandSize, segOverride)
 	}
 
-	return unimplemented("opcode %#02x rex=%#x", op, rex)
+	return c.unimplementedAt("opcode %#02x rex=%#x", op, rex)
 }
 
 // opTwoByte dispatches the 0x0F escape opcode family.
@@ -376,6 +460,14 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 		// UD2 — guaranteed-invalid-opcode instruction. Routes through
 		// vector 6 (#UD).
 		return c.deliverInterrupt(6, false, 0)
+
+	case op2 == 0x1F:
+		// Multi-byte NOP — the compiler emits this for alignment
+		// padding around branch targets. ModR/M (+ SIB + disp) is
+		// consumed for side-effect-free operand decoding; the result
+		// is discarded.
+		c.parseModRM64(rex)
+		return nil
 
 	case op2 == 0x05:
 		// SYSCALL — fast kernel entry. EFER.SCE must be set; we
@@ -476,7 +568,7 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 		// MOVSX r, r/m16.
 		return c.opMOVSX(rex, operandSize, 2)
 	}
-	return unimplemented("0F %#02x rex=%#x", op2, rex)
+	return c.unimplementedAt("0F %#02x rex=%#x", op2, rex)
 }
 
 // opGroup6 dispatches 0x0F 0x00 — SLDT/STR/LLDT/LTR/VERR/VERW. M5b
@@ -838,11 +930,12 @@ const (
 )
 
 // aluApply runs op over (dst, src) at the given operand size, returning
-// (result, flags). For ADC/SBB the caller is responsible for folding
-// in CF; not yet wired. For the bitwise ops (AND, OR, XOR, TEST) CF
-// and OF are cleared. aluCMP and aluTEST are no-writeback variants
-// of aluSUB and aluAND respectively — the dispatcher decides whether
-// to commit the result.
+// (result, flags). ADC/SBB are caller-CF-aware via the closure variant
+// aluApplyWithCF below — direct callers of aluApply should not select
+// aluADC/aluSBB. For the bitwise ops (AND, OR, XOR, TEST) CF and OF
+// are cleared. aluCMP and aluTEST are no-writeback variants of aluSUB
+// and aluAND respectively — the dispatcher decides whether to commit
+// the result.
 func aluApply(op aluOp, dst, src uint64, size uint8) (uint64, flagBits) {
 	switch op {
 	case aluADD:
@@ -860,6 +953,23 @@ func aluApply(op aluOp, dst, src uint64, size uint8) (uint64, flagBits) {
 		return r, logicalFlags(r, size)
 	}
 	return 0, flagBits{}
+}
+
+// aluApplyWithCF is like aluApply but threads the CPU's current CF
+// into the computation. Required for ADC/SBB; for other ops it falls
+// through to aluApply.
+func (c *CPU) aluApplyWithCF(op aluOp, dst, src uint64, size uint8) (uint64, flagBits) {
+	var cf uint64
+	if c.rflags&RFLAGS_CF != 0 {
+		cf = 1
+	}
+	switch op {
+	case aluADC:
+		return addWithCarry(dst, src, cf, size)
+	case aluSBB:
+		return subWithBorrow(dst, src, cf, size)
+	}
+	return aluApply(op, dst, src, size)
 }
 
 // aluWritesBack reports whether op stores its result. CMP and TEST
@@ -884,7 +994,7 @@ func (c *CPU) opALURM(rex, operandSize uint8, op aluOp) error {
 		src = c.readReg(m.reg, operandSize)
 		dst = c.readOperand(m, operandSize)
 	}
-	res, fl := aluApply(op, dst, src, operandSize)
+	res, fl := c.aluApplyWithCF(op, dst, src, operandSize)
 	if aluWritesBack(op) {
 		if operandSize == 1 {
 			if m.isReg {
@@ -915,7 +1025,7 @@ func (c *CPU) opALURfromM(rex, operandSize uint8, op aluOp) error {
 		src = c.readOperand(m, operandSize)
 		dst = c.readReg(m.reg, operandSize)
 	}
-	res, fl := aluApply(op, dst, src, operandSize)
+	res, fl := c.aluApplyWithCF(op, dst, src, operandSize)
 	if aluWritesBack(op) {
 		if operandSize == 1 {
 			c.write8RegField(m, uint8(res))
@@ -939,7 +1049,7 @@ func (c *CPU) opALUImmRAX(operandSize uint8, op aluOp) error {
 		imm = uint64(int64(int32(c.fetch32())))
 	}
 	dst := c.readReg(RAX, operandSize)
-	res, fl := aluApply(op, dst, imm, operandSize)
+	res, fl := c.aluApplyWithCF(op, dst, imm, operandSize)
 	if aluWritesBack(op) {
 		c.writeReg(RAX, res, operandSize)
 	}
@@ -953,7 +1063,7 @@ func (c *CPU) opALUImmRAX(operandSize uint8, op aluOp) error {
 func (c *CPU) opALUImmAL(op aluOp) error {
 	imm := uint64(c.fetch8())
 	dst := uint64(c.GetReg8(AL))
-	res, fl := aluApply(op, dst, imm, 1)
+	res, fl := c.aluApplyWithCF(op, dst, imm, 1)
 	if aluWritesBack(op) {
 		c.SetReg8(AL, uint8(res))
 	}
@@ -967,9 +1077,11 @@ func (c *CPU) opALUImmAL(op aluOp) error {
 func (c *CPU) opGroup3(rex, operandSize uint8) error {
 	m := c.parseModRM64(rex)
 	switch m.reg {
-	case 0, 1: // TEST r/m, imm
+	case 0, 1: // TEST r/m, imm. Immediate width = operand size.
 		var imm uint64
 		switch operandSize {
+		case 1:
+			imm = uint64(c.fetch8())
 		case 2:
 			imm = uint64(c.fetch16())
 		default:
@@ -1347,6 +1459,10 @@ func (c *CPU) opGroup1(rex, operandSize uint8, imm8 bool) error {
 		op = aluADD
 	case 1:
 		op = aluOR
+	case 2:
+		op = aluADC
+	case 3:
+		op = aluSBB
 	case 4:
 		op = aluAND
 	case 5:
@@ -1355,10 +1471,8 @@ func (c *CPU) opGroup1(rex, operandSize uint8, imm8 bool) error {
 		op = aluXOR
 	case 7:
 		op = aluCMP
-	default:
-		return unimplemented("Group 1 /%d (ADC/SBB not implemented)", m.reg)
 	}
-	res, fl := aluApply(op, dst, imm, operandSize)
+	res, fl := c.aluApplyWithCF(op, dst, imm, operandSize)
 	if aluWritesBack(op) {
 		if operandSize == 1 {
 			if m.isReg {
@@ -1397,9 +1511,16 @@ func (c *CPU) opGroup5(rex, operandSize uint8) error {
 		c.setArithFlags(fl)
 		c.rflags = (c.rflags &^ RFLAGS_CF) | oldCF
 		return nil
+	case 2: // CALL r/m (near, absolute indirect)
+		// Long-mode default operand size for indirect CALL is 64 bits
+		// regardless of operand-size prefix. Push the return address
+		// (current RIP, already advanced past the instruction by
+		// parseModRM64) and jump.
+		target := c.readOperand(m, 8)
+		c.push64(c.rip)
+		c.rip = target
+		return nil
 	case 4: // JMP r/m (near, absolute indirect)
-		// In long mode the operand is always 64-bit regardless of
-		// operandSize — JMP r64. Use a 64-bit read.
 		target := c.readOperand(m, 8)
 		c.rip = target
 		return nil
@@ -1407,7 +1528,7 @@ func (c *CPU) opGroup5(rex, operandSize uint8) error {
 		c.push64(c.readOperand(m, 8))
 		return nil
 	}
-	return unimplemented("Group 5 /%d", m.reg)
+	return c.unimplementedAt("Group 5 /%d", m.reg)
 }
 
 // opMOVImm implements 0xC7 /0 — MOV r/m, imm. In 64-bit operand mode
@@ -1415,7 +1536,7 @@ func (c *CPU) opGroup5(rex, operandSize uint8) error {
 func (c *CPU) opMOVImm(rex, operandSize uint8) error {
 	m := c.parseModRM64(rex)
 	if m.reg != 0 {
-		return unimplemented("0xC7 with /%d (not MOV)", m.reg)
+		return unimplemented("Group 11 /%d (only /0 = MOV)", m.reg)
 	}
 	var v uint64
 	switch operandSize {
@@ -1425,6 +1546,8 @@ func (c *CPU) opMOVImm(rex, operandSize uint8) error {
 		v = uint64(c.fetch32())
 	case 2:
 		v = uint64(c.fetch16())
+	case 1:
+		v = uint64(c.fetch8())
 	}
 	c.writeOperand(m, v, operandSize)
 	return nil
@@ -1662,6 +1785,9 @@ func (c *CPU) write8FromModRM(m modRMResult, v uint8) {
 
 func (c *CPU) readOperand(m modRMResult, size uint8) uint64 {
 	if m.isReg {
+		if size == 1 {
+			return uint64(c.read8FromModRM(m))
+		}
 		return c.readReg(m.rm, size)
 	}
 	switch size {
@@ -1677,6 +1803,10 @@ func (c *CPU) readOperand(m modRMResult, size uint8) uint64 {
 
 func (c *CPU) writeOperand(m modRMResult, v uint64, size uint8) {
 	if m.isReg {
+		if size == 1 {
+			c.write8FromModRM(m, uint8(v))
+			return
+		}
 		c.writeReg(m.rm, v, size)
 		return
 	}
@@ -1747,6 +1877,60 @@ func add(a, b uint64, size uint8) (uint64, flagBits) {
 	fl.zf = r == 0
 	fl.sf = r&signBit(size) != 0
 	fl.of = ((^(a ^ b)) & (a ^ r) & signBit(size)) != 0
+	fl.pf = parity8(uint8(r))
+	return r, fl
+}
+
+// addWithCarry: a + b + cf (cf ∈ {0,1}). CF and OF computed for the
+// full triple-input add.
+func addWithCarry(a, b, cf uint64, size uint8) (uint64, flagBits) {
+	m := mask(size)
+	a &= m
+	b &= m
+	r := (a + b + cf) & m
+	var fl flagBits
+	// Unsigned overflow: result of full add doesn't fit in size bits.
+	if size == 8 {
+		// 64-bit: check by comparing to one of the operands. The
+		// triple add overflows when (a+b) overflows OR (a+b+cf)
+		// produces a carry beyond the result we already saw.
+		s1 := a + b
+		fl.cf = s1 < a || (s1+cf) < s1
+	} else {
+		fl.cf = (a+b+cf)&(m+1) != 0
+	}
+	fl.af = ((a ^ b ^ r) & 0x10) != 0
+	fl.zf = r == 0
+	fl.sf = r&signBit(size) != 0
+	// OF for ADC: same as ADD — set if both operands have the same
+	// sign and result differs.
+	fl.of = ((^(a ^ b)) & (a ^ r) & signBit(size)) != 0
+	fl.pf = parity8(uint8(r))
+	return r, fl
+}
+
+// subWithBorrow: a - b - cf.
+func subWithBorrow(a, b, cf uint64, size uint8) (uint64, flagBits) {
+	m := mask(size)
+	a &= m
+	b &= m
+	r := (a - b - cf) & m
+	var fl flagBits
+	// CF is the borrow-out: true when a < b + cf.
+	bPlusCF := b + cf
+	fl.cf = a < bPlusCF || (b == m && cf == 1) // overflow guard for b+cf
+	if size == 8 {
+		// At width 8, the (b+cf) sum can overflow 64 bits; the
+		// secondary clause covers that.
+	} else {
+		// Easier formulation at narrower widths: extend, subtract,
+		// inspect the borrow bit.
+		fl.cf = (a-b-cf)&(m+1) != 0
+	}
+	fl.af = ((a ^ b ^ r) & 0x10) != 0
+	fl.zf = r == 0
+	fl.sf = r&signBit(size) != 0
+	fl.of = ((a ^ b) & (a ^ r) & signBit(size)) != 0
 	fl.pf = parity8(uint8(r))
 	return r, fl
 }

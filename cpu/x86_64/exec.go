@@ -3,6 +3,7 @@ package x86_64
 import (
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/jtolio/tinyemu-go/cpu"
 )
@@ -37,6 +38,16 @@ const (
 // ErrNotImplemented or a plain error.
 func (c *CPU) Step() (err error) {
 	origRIP := c.rip
+	if stepTrace {
+		var bytes [8]byte
+		for i := uint64(0); i < 8; i++ {
+			func() {
+				defer func() { _ = recover() }()
+				bytes[i] = c.readMem8(origRIP + i)
+			}()
+		}
+		fmt.Fprintf(os.Stderr, "[step] RIP=%#x bytes=% x\n", origRIP, bytes[:])
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			switch ex := r.(type) {
@@ -154,3 +165,31 @@ func (c *CPU) Run(maxCycles int) error {
 func unimplemented(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrNotImplemented}, args...)...)
 }
+
+// unimplementedAt is the same but includes the current RIP and the
+// 16 surrounding bytes so the failure has enough context to
+// distinguish "missing opcode" from "jumped into data". The helper
+// reads via the page tables; any fault during the dump is swallowed
+// so it can't mask the original error.
+func (c *CPU) unimplementedAt(format string, args ...any) error {
+	rip := c.rip
+	const window = 16
+	var pre, post [window]byte
+	for i := uint64(0); i < window; i++ {
+		func() {
+			defer func() { _ = recover() }()
+			if rip >= window {
+				pre[i] = c.readMem8(rip - window + i)
+			}
+			post[i] = c.readMem8(rip + i)
+		}()
+	}
+	ctx := fmt.Sprintf(" [RIP=%#x pre=% x post=% x]", rip, pre[:], post[:])
+	return fmt.Errorf("%w: "+format+"%s",
+		append([]any{ErrNotImplemented}, append(args, ctx)...)...)
+}
+
+// stepTrace is enabled by TINYEMU_X64_TRACE=1 and prints every
+// instruction's RIP + opcode bytes to stderr. Extremely verbose for
+// a kernel boot — use to bisect "where did we jump wrong" failures.
+var stepTrace = os.Getenv("TINYEMU_X64_TRACE") == "1"
