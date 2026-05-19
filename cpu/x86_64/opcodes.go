@@ -50,6 +50,18 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		op == 0xBC, op == 0xBD, op == 0xBE, op == 0xBF:
 		return c.opMOVImmToReg(op-0xB8, rex, operandSize)
 
+	case op == 0xC7:
+		// MOV r/m, imm. ModR/M.reg must be 0 (the rest of /n are
+		// reserved / non-MOV under newer ISA additions). The immediate
+		// is operandSize bytes for 16/32-bit, and 32 bits sign-extended
+		// to 64 when operandSize is 8.
+		return c.opMOVImm(rex, operandSize)
+
+	case op == 0x83:
+		// Group 1: ADD/OR/ADC/SBB/AND/SUB/XOR/CMP r/m, imm8 (sign-
+		// extended to operand size). ModR/M.reg field is the sub-opcode.
+		return c.opGroup1Imm8(rex, operandSize)
+
 	case op >= 0x50 && op <= 0x57:
 		return c.opPUSHReg(op-0x50, rex)
 
@@ -83,6 +95,51 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	}
 
 	return unimplemented("opcode %#02x rex=%#x", op, rex)
+}
+
+// opMOVImm implements 0xC7 /0 — MOV r/m, imm. In 64-bit operand mode
+// the immediate is 32 bits, sign-extended to 64.
+func (c *CPU) opMOVImm(rex, operandSize uint8) error {
+	m := c.parseModRM64(rex)
+	if m.reg != 0 {
+		return unimplemented("0xC7 with /%d (not MOV)", m.reg)
+	}
+	var v uint64
+	switch operandSize {
+	case 8:
+		v = uint64(int64(int32(c.fetch32())))
+	case 4:
+		v = uint64(c.fetch32())
+	case 2:
+		v = uint64(c.fetch16())
+	}
+	c.writeOperand(m, v, operandSize)
+	return nil
+}
+
+// opGroup1Imm8 implements 0x83 — Group 1 with an 8-bit sign-extended
+// immediate. ModR/M.reg is the sub-opcode (000=ADD, 001=OR, 010=ADC,
+// 011=SBB, 100=AND, 101=SUB, 110=XOR, 111=CMP).
+func (c *CPU) opGroup1Imm8(rex, operandSize uint8) error {
+	m := c.parseModRM64(rex)
+	imm := uint64(int64(int8(c.fetch8())))
+	dst := c.readOperand(m, operandSize)
+	var res uint64
+	var fl flagBits
+	switch m.reg {
+	case 0: // ADD
+		res, fl = add(dst, imm, operandSize)
+		c.writeOperand(m, res, operandSize)
+	case 5: // SUB
+		res, fl = sub(dst, imm, operandSize)
+		c.writeOperand(m, res, operandSize)
+	case 7: // CMP — like SUB but no writeback
+		_, fl = sub(dst, imm, operandSize)
+	default:
+		return unimplemented("0x83 /%d (only ADD/SUB/CMP wired)", m.reg)
+	}
+	c.setArithFlags(fl)
+	return nil
 }
 
 // opMOVImmToReg implements 0xB8+rd in 64-bit, 32-bit, or 16-bit operand
