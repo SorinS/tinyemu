@@ -240,6 +240,91 @@ func TestWRMSR_FSBase(t *testing.T) {
 	}
 }
 
+// TestMOVtoSreg / TestMOVfromSreg: regression for opcode 0x8E / 0x8C.
+// The kernel's startup_64 reloads DS/ES/FS/GS via MOV Sreg, AX after
+// the long-mode transition; the first attempt at booting TinyCorePure64
+// failed here with "opcode 0x8e rex=0x0".
+func TestMOVtoSreg_Roundtrip(t *testing.T) {
+	mm := mem.NewPhysMemoryMap()
+	t.Cleanup(mm.Close)
+	if _, err := mm.RegisterRAM(0, 1<<20, 0); err != nil {
+		t.Fatalf("RegisterRAM: %v", err)
+	}
+	c := NewCPU(mm)
+	c.SetCR64(0, CR0_PE)
+	c.SetEFER(EFER_LME | EFER_LMA)
+	c.SetSegAccess(CS, csLBit)
+	c.SetSegBase(CS, 0)
+
+	// MOV DS, AX  ⇒  8E D8 (reg=011 = DS, rm=000 = AX, mod=11).
+	// MOV ES, AX  ⇒  8E C0 (reg=000 = ES, rm=000)
+	// MOV FS, AX  ⇒  8E E0 (reg=100 = FS, rm=000)
+	// MOV AX, GS  reading back: 8C E8 (reg=101 = GS, rm=000)
+	const base uint64 = 0x1000
+	c.SetReg64(RAX, 0x10)
+	prog := []byte{
+		0x8E, 0xD8, // mov ds, ax  ; DS ← 0x10
+		0x8E, 0xC0, // mov es, ax  ; ES ← 0x10
+		0x66, 0xB8, 0x28, 0x00, // mov ax, 0x28
+		0x8E, 0xE0, // mov fs, ax  ; FS ← 0x28
+		0xF4, // hlt
+	}
+	for i, b := range prog {
+		_ = mm.Write8(base+uint64(i), b)
+	}
+	c.SetRIP(base)
+	for i := 0; i < 5; i++ {
+		if c.IsPowerDown() {
+			break
+		}
+		if err := c.Step(); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+	if c.seg[DS] != 0x10 {
+		t.Errorf("DS = %#x, want 0x10", c.seg[DS])
+	}
+	if c.seg[ES] != 0x10 {
+		t.Errorf("ES = %#x, want 0x10", c.seg[ES])
+	}
+	if c.seg[FS] != 0x28 {
+		t.Errorf("FS = %#x, want 0x28", c.seg[FS])
+	}
+	// MOV to flat-segment slots forces base = 0 in long mode.
+	if c.segBase[DS] != 0 {
+		t.Errorf("DS base = %#x, want 0 (long-mode flat)", c.segBase[DS])
+	}
+}
+
+func TestMOVfromSreg(t *testing.T) {
+	mm := mem.NewPhysMemoryMap()
+	t.Cleanup(mm.Close)
+	if _, err := mm.RegisterRAM(0, 1<<20, 0); err != nil {
+		t.Fatalf("RegisterRAM: %v", err)
+	}
+	c := NewCPU(mm)
+	c.SetCR64(0, CR0_PE)
+	c.SetEFER(EFER_LME | EFER_LMA)
+	c.SetSegAccess(CS, csLBit)
+	c.SetSegBase(CS, 0)
+	c.seg[GS] = 0x42
+
+	// MOV AX, GS = 8C E8 (reg=101=GS, rm=000=AX)
+	const base uint64 = 0x1000
+	_ = mm.Write8(base, 0x8C)
+	_ = mm.Write8(base+1, 0xE8)
+	_ = mm.Write8(base+2, 0xF4)
+	c.SetRIP(base)
+	for i := 0; i < 2; i++ {
+		if err := c.Step(); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+	if c.GetReg16(AX) != 0x42 {
+		t.Errorf("AX = %#x, want 0x42 (read of GS selector)", c.GetReg16(AX))
+	}
+}
+
 // TestRDMSR_RoundTrip: WRMSR then RDMSR returns the same value.
 func TestRDMSR_RoundTrip(t *testing.T) {
 	mm := mem.NewPhysMemoryMap()

@@ -85,8 +85,19 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return c.opMOVRM(rex, operandSize)
 	case op == 0x8B:
 		return c.opMOVRfromM(rex, operandSize)
+	case op == 0x8C:
+		// MOV r/m16, Sreg — store a segment-register selector. ModR/M
+		// reg field picks the segment (0=ES, 1=CS, 2=SS, 3=DS, 4=FS,
+		// 5=GS).
+		return c.opMOVfromSreg(rex)
+
 	case op == 0x8D:
 		return c.opLEA(rex, operandSize)
+
+	case op == 0x8E:
+		// MOV Sreg, r/m16 — load a segment-register selector. The
+		// source is always 16 bits regardless of operand-size prefix.
+		return c.opMOVtoSreg(rex)
 
 	case op == 0xB8, op == 0xB9, op == 0xBA, op == 0xBB,
 		op == 0xBC, op == 0xBD, op == 0xBE, op == 0xBF:
@@ -1251,6 +1262,46 @@ func (c *CPU) opMOVRfromM(rex, operandSize uint8) error {
 	m := c.parseModRM64(rex)
 	val := c.readOperand(m, operandSize)
 	c.writeReg(m.reg, val, operandSize)
+	return nil
+}
+
+// opMOVtoSreg implements 0x8E — load a segment register from r/m16.
+// In long mode CS/DS/ES/SS bases are architecturally forced to 0;
+// FS/GS bases come from the FS_BASE/GS_BASE MSRs (set via WRMSR), so
+// this stores the selector and leaves the cached base untouched
+// except for forcing zero on the four flat segments. A real CPU
+// walks the GDT to fault on bad selectors; M-series skip that check.
+func (c *CPU) opMOVtoSreg(rex uint8) error {
+	m := c.parseModRM64(rex)
+	if m.reg > 5 {
+		return unimplemented("MOV to invalid Sreg index %d", m.reg)
+	}
+	sel := uint16(c.readOperand(m, 2))
+	idx := int(m.reg)
+	c.seg[idx] = sel
+	switch idx {
+	case CS, DS, ES, SS:
+		// Long-mode forces flat segments: base 0, limit 4 GiB. Don't
+		// disturb the access cache (the boot harness or a far jump
+		// set L/D appropriately).
+		c.segBase[idx] = 0
+		c.segLimit[idx] = 0xFFFFFFFF
+	}
+	if idx == CS {
+		c.recomputeMode()
+	}
+	return nil
+}
+
+// opMOVfromSreg implements 0x8C — store a segment-register selector
+// to r/m16. Destination width is always 16 bits.
+func (c *CPU) opMOVfromSreg(rex uint8) error {
+	m := c.parseModRM64(rex)
+	if m.reg > 5 {
+		return unimplemented("MOV from invalid Sreg index %d", m.reg)
+	}
+	sel := uint64(c.seg[m.reg])
+	c.writeOperand(m, sel, 2)
 	return nil
 }
 

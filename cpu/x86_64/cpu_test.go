@@ -378,6 +378,77 @@ func TestModeString(t *testing.T) {
 	}
 }
 
+// TestSetters_LatchLMA is a regression test against a bug where the
+// CR/EFER setter methods bypassed writeCR and the LMA latching logic.
+// The chassis bring-up sequence in machine/pc/bzimage64.go calls
+// SetEFER(LME) followed by SetCR(0, ...|PG) — exactly the order that
+// must trigger LMA on real hardware. Pinning each setter individually
+// so future refactors can't silently drop the funnel.
+func TestSetters_LatchLMA(t *testing.T) {
+	t.Run("SetCR_PG_With_LME_LatchesLMA", func(t *testing.T) {
+		c := newTestCPU(t)
+		c.SetEFER(EFER_LME)
+		if c.GetEFER()&EFER_LMA != 0 {
+			t.Fatalf("LMA latched too early (paging not yet on)")
+		}
+		c.SetCR(0, CR0_PE|CR0_PG)
+		if c.GetEFER()&EFER_LMA == 0 {
+			t.Errorf("LMA failed to latch on SetCR with PG=1 and EFER.LME set")
+		}
+	})
+
+	t.Run("SetCR64_PG_With_LME_LatchesLMA", func(t *testing.T) {
+		c := newTestCPU(t)
+		c.SetEFER(EFER_LME)
+		c.SetCR64(0, CR0_PE|CR0_PG)
+		if c.GetEFER()&EFER_LMA == 0 {
+			t.Errorf("LMA failed to latch via SetCR64")
+		}
+	})
+
+	t.Run("SetEFER_After_PG_LatchesLMA", func(t *testing.T) {
+		c := newTestCPU(t)
+		c.SetCR(0, CR0_PE|CR0_PG) // PG up first, LME still off
+		if c.GetEFER()&EFER_LMA != 0 {
+			t.Fatalf("LMA latched without LME")
+		}
+		c.SetEFER(EFER_LME) // now flip LME
+		if c.GetEFER()&EFER_LMA == 0 {
+			t.Errorf("SetEFER didn't latch LMA even though PG was already on")
+		}
+	})
+
+	t.Run("SetCR_ClearPG_DropsLMA", func(t *testing.T) {
+		c := newTestCPU(t)
+		c.SetEFER(EFER_LME)
+		c.SetCR(0, CR0_PE|CR0_PG)
+		// Sanity: LMA up.
+		if c.GetEFER()&EFER_LMA == 0 {
+			t.Fatal("setup: LMA should have latched")
+		}
+		c.SetCR(0, CR0_PE) // clear PG
+		if c.GetEFER()&EFER_LMA != 0 {
+			t.Errorf("LMA still set after PG cleared")
+		}
+	})
+
+	t.Run("SetSegAccess_CS_RecomputesMode", func(t *testing.T) {
+		c := newTestCPU(t)
+		c.SetEFER(EFER_LME)
+		c.SetCR(0, CR0_PE|CR0_PG)
+		// We're in compat32 at this point (CS.L=0).
+		if c.mode != ModeCompat32 {
+			t.Fatalf("setup: mode=%v want ModeCompat32", c.mode)
+		}
+		// Toggle CS.L=1 and confirm the cached mode flips without an
+		// explicit recompute call.
+		c.SetSegAccess(CS, csLBit)
+		if c.mode != ModeLong64 {
+			t.Errorf("SetSegAccess(CS, csLBit) didn't flip mode; got %v", c.mode)
+		}
+	})
+}
+
 // TestSatisfiesX86Core uses the *CPU through the cpu.X86Core interface
 // to confirm the contract is exercisable end-to-end (the compile-time
 // var _ assertion in exec.go covers signature presence; this drives the
