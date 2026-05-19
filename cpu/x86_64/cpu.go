@@ -352,8 +352,18 @@ func (c *CPU) GetSegBase(sel int) uint32    { return uint32(c.segBase[sel]) }
 
 func (c *CPU) GetSegLimit(sel int) uint32     { return c.segLimit[sel] }
 func (c *CPU) SetSegLimit(sel int, v uint32)  { c.segLimit[sel] = v }
-func (c *CPU) GetSegAccess(sel int) uint32    { return c.segAccess[sel] }
-func (c *CPU) SetSegAccess(sel int, v uint32) { c.segAccess[sel] = v }
+func (c *CPU) GetSegAccess(sel int) uint32 { return c.segAccess[sel] }
+
+// SetSegAccess stores the descriptor-cache access word for a segment
+// register. Writes to CS may toggle the L (long-mode-active) and D
+// (default-operand-size) bits that gate ModeLong64 vs ModeCompat32 vs
+// ModeProtected*; recomputeMode runs to keep c.mode coherent.
+func (c *CPU) SetSegAccess(sel int, v uint32) {
+	c.segAccess[sel] = v
+	if sel == CS {
+		c.recomputeMode()
+	}
+}
 
 // ===== Instruction pointer =====
 
@@ -369,13 +379,24 @@ func (c *CPU) SetRFLAGS(v uint64)   { c.rflags = v&ValidFlagMask | 2 }
 func (c *CPU) GetEFLAGS() uint32    { return uint32(c.rflags) }
 func (c *CPU) SetEFLAGS(v uint32)   { c.rflags = uint64(v)&ValidFlagMask | 2 }
 
-func (c *CPU) GetCR64(n int) uint64  { return c.cr[n] }
-func (c *CPU) SetCR64(n int, v uint64) { c.cr[n] = v }
-func (c *CPU) GetCR(n int) uint32    { return uint32(c.cr[n]) }
-func (c *CPU) SetCR(n int, v uint32) { c.cr[n] = uint64(v) }
+func (c *CPU) GetCR64(n int) uint64    { return c.cr[n] }
+func (c *CPU) SetCR64(n int, v uint64) { c.writeCR(n, v) }
+func (c *CPU) GetCR(n int) uint32      { return uint32(c.cr[n]) }
+func (c *CPU) SetCR(n int, v uint32)   { c.writeCR(n, uint64(v)) }
 
-func (c *CPU) GetEFER() uint64     { return c.efer }
-func (c *CPU) SetEFER(v uint64)    { c.efer = v }
+func (c *CPU) GetEFER() uint64 { return c.efer }
+
+// SetEFER stores the new EFER value and re-evaluates the LMA latch:
+// if paging is currently enabled and the new EFER has LME set, LMA
+// must reflect that. recomputeMode runs so the cached Mode field
+// stays coherent.
+func (c *CPU) SetEFER(v uint64) {
+	c.efer = v
+	if c.cr[0]&CR0_PG != 0 && c.efer&EFER_LME != 0 {
+		c.efer |= EFER_LMA
+	}
+	c.recomputeMode()
+}
 
 // ===== I/O wiring (cpu.X86Core) =====
 
