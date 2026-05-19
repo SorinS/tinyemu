@@ -1,7 +1,6 @@
 package x86_64
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/jtolio/tinyemu-go/cpu"
@@ -312,19 +311,6 @@ func TestPowerDownAccessors(t *testing.T) {
 	c.SetPowerDown(false)
 	if c.IsPowerDown() {
 		t.Error("SetPowerDown(false) not visible")
-	}
-}
-
-func TestStepReturnsUnimplemented(t *testing.T) {
-	c := newTestCPU(t)
-	err := c.Step()
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Errorf("Step() = %v, want wrap-of ErrNotImplemented", err)
-	}
-	// Run should surface the same error and not silently spin.
-	err = c.Run(10)
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Errorf("Run() = %v, want wrap-of ErrNotImplemented", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package x86_64
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/jtolio/tinyemu-go/cpu"
 )
@@ -10,20 +11,96 @@ import (
 // drift between the i386 and long-mode backends at build time.
 var _ cpu.X86Core = (*CPU)(nil)
 
-// ErrNotImplemented is returned by Step when the decoder for the
-// current mode has no implementation yet. It is wrapped (not equality-
-// compared) by tests; comparison should use errors.Is.
-var ErrNotImplemented = errors.New("x86_64: instruction decoder not implemented yet")
+// ErrNotImplemented wraps every "opcode not yet implemented" error so
+// callers can distinguish "instruction-level missing feature" from
+// other Step failures via errors.Is.
+var ErrNotImplemented = errors.New("x86_64: decoder feature not implemented yet")
 
-// Step executes a single instruction. The decoder is built up across
-// subsequent milestones; until then Step returns ErrNotImplemented so
-// callers that wire the CPU into a Run loop fail loudly instead of
-// spinning silently.
-func (c *CPU) Step() error {
-	return ErrNotImplemented
+// REX prefix bit positions. The four bits extend the ModR/M, SIB, and
+// immediate-size fields:
+//
+//	rexW (bit 3) — promote default operand size to 64-bit
+//	rexR (bit 2) — extend ModR/M.reg from 3 to 4 bits
+//	rexX (bit 1) — extend SIB.index from 3 to 4 bits
+//	rexB (bit 0) — extend ModR/M.rm or SIB.base from 3 to 4 bits
+const (
+	rexB uint8 = 1 << 0
+	rexX uint8 = 1 << 1
+	rexR uint8 = 1 << 2
+	rexW uint8 = 1 << 3
+)
+
+// Step executes a single instruction. On a page-fault the linear
+// address that triggered the walk is reported via the returned
+// *PageFaultError (Phase 5 will route this back through the IDT as a
+// #PF). For any other failure mode it returns a wrapped
+// ErrNotImplemented or a plain error.
+func (c *CPU) Step() (err error) {
+	origRIP := c.rip
+	defer func() {
+		if r := recover(); r != nil {
+			switch ex := r.(type) {
+			case pageFaultPanic:
+				c.rip = origRIP
+				err = ex.Err
+			default:
+				panic(r)
+			}
+		}
+	}()
+
+	if c.intrLineState != 0 && (c.rflags&RFLAGS_IF) != 0 && !c.interruptsBlocked {
+		// Interrupt delivery is wired up in Phase 5; until then we
+		// honor the interrupt by clearing the pending state but not
+		// vectoring through the IDT.
+		_ = c.ackInterruptFunc
+	}
+	c.interruptsBlocked = false
+
+	var rex uint8
+	operandSize := uint8(4)
+	addressSize := uint8(8)
+	operandOverride := false
+	segOverride := -1
+
+	for {
+		b := c.fetch8()
+		switch {
+		case b == 0x66:
+			operandOverride = true
+		case b == 0x67:
+			addressSize = 4
+		case b == 0xF0, b == 0xF2, b == 0xF3:
+			// LOCK / REPNE / REPE — accepted but no-op in M1.
+		case b == 0x2E:
+			segOverride = CS
+		case b == 0x36:
+			segOverride = SS
+		case b == 0x3E:
+			segOverride = DS
+		case b == 0x26:
+			segOverride = ES
+		case b == 0x64:
+			segOverride = FS
+		case b == 0x65:
+			segOverride = GS
+		case b >= 0x40 && b <= 0x4F:
+			// REX prefix. Only the last REX before the opcode takes
+			// effect, per Intel SDM. We capture by overwrite.
+			rex = b
+		default:
+			if rex&rexW != 0 {
+				operandSize = 8
+			} else if operandOverride {
+				operandSize = 2
+			}
+			_ = segOverride // wired in Phase 2/3 when memory operands appear
+			return c.executeOpcode(b, rex, operandSize, addressSize, segOverride)
+		}
+	}
 }
 
-// Run executes up to maxCycles cycles. Same shape as cpu/x86's Run.
+// Run executes up to maxCycles cycles.
 func (c *CPU) Run(maxCycles int) error {
 	for i := 0; i < maxCycles; i++ {
 		if c.powerDown {
@@ -38,4 +115,10 @@ func (c *CPU) Run(maxCycles int) error {
 		c.cycles++
 	}
 	return nil
+}
+
+// unimplemented wraps an opcode-not-yet-supported error so it can be
+// identified via errors.Is(err, ErrNotImplemented).
+func unimplemented(format string, args ...any) error {
+	return fmt.Errorf("%w: "+format, append([]any{ErrNotImplemented}, args...)...)
 }

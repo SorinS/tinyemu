@@ -1,0 +1,1910 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The x86_64 CPU — From i386 to Long Mode</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=JetBrains+Mono:wght@400;500&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:           #0e1117;
+  --bg-raised:    #141820;
+  --bg-panel:     #1a2030;
+  --bg-hover:     #1f2838;
+  --border:       #2a3448;
+  --border-soft:  #1e2a3a;
+  --text:         #d8d0c4;
+  --text-dim:     #7a8499;
+  --text-faint:   #3d4a5c;
+
+  --amber:        #e8a020;
+  --amber-dim:    #a06010;
+  --green:        #4daa6a;
+  --blue:         #5a9fd4;
+  --rose:         #c46060;
+  --violet:       #8b78d0;
+
+  --p1:           #e8a020;
+  --p2:           #4daa6a;
+  --p3:           #5a9fd4;
+  --p4:           #8b78d0;
+  --p5:           #c46060;
+
+  --radius:       6px;
+  --sidebar-w:    300px;
+  --font-serif:   'Libre Baskerville', Georgia, serif;
+  --font-display: 'Crimson Pro', Georgia, serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 1rem;
+  line-height: 1.75;
+  min-height: 100vh;
+  display: flex;
+  overflow: hidden;
+}
+
+#sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--bg-raised);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  transition: transform 0.3s ease;
+  z-index: 100;
+}
+#sidebar-header {
+  padding: 24px 20px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#sidebar-header h1 {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--amber);
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+}
+#sidebar-header p {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  margin-top: 4px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+#progress-bar-wrap {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#progress-label {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+}
+#progress-track {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+#progress-fill {
+  height: 100%;
+  background: var(--amber);
+  transition: width 0.4s ease;
+  border-radius: 2px;
+}
+
+#search-wrap {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#search {
+  width: 100%;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 7px 10px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+#search::placeholder { color: var(--text-faint); }
+#search:focus { border-color: var(--amber-dim); }
+
+#lesson-nav { overflow-y: auto; flex: 1; padding: 8px 0 20px; }
+#lesson-nav::-webkit-scrollbar { width: 4px; }
+#lesson-nav::-webkit-scrollbar-track { background: transparent; }
+#lesson-nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.phase-group { margin-bottom: 4px; }
+.phase-header {
+  padding: 10px 20px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.phase-header .phase-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.phase-header .phase-toggle { margin-left: auto; color: var(--text-faint); font-size: 0.7rem; transition: transform 0.2s; }
+.phase-header.collapsed .phase-toggle { transform: rotate(-90deg); }
+.phase-lessons { overflow: hidden; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 20px 7px 28px; cursor: pointer;
+  transition: background 0.15s;
+  border-left: 2px solid transparent;
+  font-size: 0.78rem; color: var(--text-dim); line-height: 1.3;
+}
+.nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.nav-item.active { color: var(--text); background: var(--bg-panel); }
+.nav-item.done .nav-check { opacity: 1; }
+.nav-check {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 1.5px solid var(--border); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.5rem; opacity: 0.4; transition: all 0.2s;
+}
+.nav-item.done .nav-check {
+  opacity: 1; background: var(--green); border-color: var(--green); color: white;
+}
+.nav-num { font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-faint); min-width: 20px; }
+
+#main { flex: 1; overflow-y: auto; height: 100vh; display: flex; flex-direction: column; }
+#main::-webkit-scrollbar { width: 6px; }
+#main::-webkit-scrollbar-track { background: transparent; }
+#main::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+#topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 48px; border-bottom: 1px solid var(--border);
+  background: var(--bg); flex-shrink: 0; position: sticky; top: 0; z-index: 10;
+}
+#topbar-phase { font-family: var(--font-mono); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); }
+#topbar-nav { display: flex; gap: 8px; }
+.nav-btn {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  color: var(--text-dim); padding: 5px 14px; border-radius: var(--radius);
+  cursor: pointer; font-family: var(--font-mono); font-size: 0.7rem;
+  transition: all 0.15s;
+}
+.nav-btn:hover { background: var(--bg-hover); color: var(--text); border-color: var(--text-dim); }
+.nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+#lesson-content {
+  max-width: 820px; width: 100%; margin: 0 auto;
+  padding: 52px 48px 80px; flex: 1; animation: fadeSlide 0.3s ease;
+}
+@keyframes fadeSlide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.lesson-eyebrow {
+  font-family: var(--font-mono); font-size: 0.65rem;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  margin-bottom: 14px; display: flex; align-items: center; gap: 12px;
+}
+.lesson-eyebrow .phase-badge { padding: 2px 8px; border-radius: 3px; font-size: 0.6rem; }
+.lesson-number { color: var(--text-faint); }
+.lesson-title {
+  font-family: var(--font-display); font-size: 2.6rem; font-weight: 600;
+  line-height: 1.1; color: #eee; margin-bottom: 8px; letter-spacing: -0.01em;
+}
+.lesson-subtitle {
+  font-family: var(--font-display); font-size: 1.2rem; font-style: italic;
+  color: var(--text-dim); margin-bottom: 36px; line-height: 1.4;
+}
+.lesson-divider { height: 1px; background: linear-gradient(to right, var(--border), transparent); margin-bottom: 36px; }
+
+.lesson-body h2 {
+  font-family: var(--font-display); font-size: 1.5rem; font-weight: 600;
+  color: #ddd; margin: 40px 0 14px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border-soft);
+}
+.lesson-body h3 {
+  font-family: var(--font-display); font-size: 1.15rem; font-weight: 600;
+  color: var(--amber); margin: 28px 0 10px; font-style: italic;
+}
+.lesson-body p { margin-bottom: 16px; color: var(--text); }
+.lesson-body p:last-child { margin-bottom: 0; }
+.lesson-body ul, .lesson-body ol { margin: 8px 0 16px 22px; color: var(--text); }
+.lesson-body li { margin-bottom: 6px; }
+
+.lesson-body code {
+  font-family: var(--font-mono); font-size: 0.82em;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 5px; color: #a8d0f0;
+}
+
+pre {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-left: 3px solid var(--amber-dim); border-radius: var(--radius);
+  padding: 20px 22px; overflow-x: auto; margin: 20px 0;
+  position: relative; font-family: var(--font-mono);
+  font-size: 0.82rem; line-height: 1.65;
+}
+pre::-webkit-scrollbar { height: 4px; }
+pre::-webkit-scrollbar-track { background: transparent; }
+pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+pre .lang-tag {
+  position: absolute; top: 8px; right: 10px;
+  font-size: 0.58rem; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-faint);
+}
+
+/* x86 / asm syntax highlighting */
+.kw  { color: #c792ea; }  /* mnemonics */
+.rg  { color: #82aaff; }  /* registers */
+.fn  { color: #82cfda; }  /* labels / function names */
+.cm  { color: #546e7a; font-style: italic; }
+.st  { color: #c3e88d; }  /* strings */
+.nm  { color: #f78c6c; }  /* numbers */
+.op  { color: #89ddff; }  /* operators / punctuation */
+.dc  { color: #ffcb6b; }  /* directives */
+.ct  { color: #ff5572; }  /* constants / labels */
+
+.box {
+  border-radius: var(--radius); padding: 16px 20px; margin: 24px 0;
+  border-left: 3px solid; font-size: 0.92rem;
+}
+.box-note   { background: #0d1e2e; border-color: var(--blue);   color: #a8c8e8; }
+.box-think  { background: #1a1400; border-color: var(--amber);  color: #c8a060; }
+.box-key    { background: #0d1e18; border-color: var(--green);  color: #90c8a0; }
+.box-warn   { background: #1e100d; border-color: var(--rose);   color: #c88080; }
+.box strong { font-weight: 700; display: block; margin-bottom: 4px; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.corr-table {
+  width: 100%; border-collapse: collapse;
+  margin: 20px 0; font-size: 0.88rem;
+}
+.corr-table th {
+  text-align: left; font-family: var(--font-mono);
+  font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-dim); border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+}
+.corr-table td { padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+.corr-table td:first-child { color: var(--blue); font-family: var(--font-mono); font-size: 0.8rem; }
+.corr-table td:last-child  { color: var(--green); font-family: var(--font-mono); font-size: 0.8rem; }
+.corr-table td:nth-child(2){ color: var(--text-dim); }
+.corr-table tr:last-child td { border-bottom: none; }
+
+.exercises { margin-top: 40px; border-top: 1px solid var(--border); padding-top: 28px; }
+.exercises h2 {
+  font-family: var(--font-display); font-size: 1.3rem; color: var(--amber);
+  margin-bottom: 18px; border: none !important; padding: 0 !important;
+}
+.exercise {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 20px; margin-bottom: 14px;
+  position: relative; transition: border-color 0.2s;
+}
+.exercise:hover { border-color: var(--amber-dim); }
+.exercise-num {
+  font-family: var(--font-mono); font-size: 0.65rem; color: var(--amber);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
+}
+.exercise p { font-size: 0.9rem; margin-bottom: 0; }
+
+.complete-wrap { margin-top: 44px; display: flex; align-items: center; gap: 14px; }
+.btn-complete {
+  background: transparent; border: 1.5px solid var(--border); color: var(--text-dim);
+  padding: 10px 24px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem;
+  text-transform: uppercase; letter-spacing: 0.06em; transition: all 0.2s;
+}
+.btn-complete:hover { border-color: var(--green); color: var(--green); }
+.btn-complete.done  { border-color: var(--green); color: var(--green); background: #0d1e18; }
+.btn-next {
+  background: var(--amber); border: none; color: var(--bg);
+  padding: 10px 24px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.06em; transition: all 0.2s;
+}
+.btn-next:hover { background: #f0b848; }
+
+#welcome { max-width: 720px; margin: 60px auto; padding: 0 48px; animation: fadeSlide 0.4s ease; }
+#welcome h1 {
+  font-family: var(--font-display); font-size: 3.2rem; font-weight: 300;
+  line-height: 1.1; color: #eee; margin-bottom: 6px;
+}
+#welcome h1 em { color: var(--amber); font-style: italic; }
+#welcome .tagline {
+  font-family: var(--font-display); font-size: 1.2rem; font-style: italic;
+  color: var(--text-dim); margin-bottom: 36px;
+}
+#welcome .welcome-body { font-size: 0.95rem; }
+#welcome .welcome-body p { margin-bottom: 16px; }
+.phase-overview { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 28px 0; }
+.phase-card {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px;
+  cursor: pointer; transition: all 0.2s;
+}
+.phase-card:hover { border-color: var(--amber-dim); background: var(--bg-hover); }
+.phase-card-num {
+  font-family: var(--font-mono); font-size: 0.6rem;
+  text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 6px;
+}
+.phase-card h3 { font-family: var(--font-display); font-size: 1rem; font-weight: 600; color: #ddd; margin-bottom: 4px; }
+.phase-card p  { font-size: 0.8rem; color: var(--text-dim); margin: 0; }
+.btn-start {
+  background: var(--amber); border: none; color: var(--bg);
+  padding: 12px 32px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.8rem; font-weight: 500;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  transition: background 0.2s; margin-top: 8px;
+}
+.btn-start:hover { background: #f0b848; }
+
+#sidebar-toggle {
+  display: none; position: fixed; bottom: 20px; left: 20px; z-index: 200;
+  background: var(--amber); color: var(--bg); border: none;
+  border-radius: 50%; width: 44px; height: 44px;
+  cursor: pointer; font-size: 1.2rem;
+  align-items: center; justify-content: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+@media (max-width: 900px) {
+  #sidebar { position: fixed; top: 0; left: 0; transform: translateX(-100%); }
+  #sidebar.open { transform: translateX(0); }
+  #sidebar-toggle { display: flex; }
+  #lesson-content { padding: 36px 24px 60px; }
+  #topbar { padding: 12px 24px; }
+  .lesson-title { font-size: 2rem; }
+  .phase-overview { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<nav id="sidebar">
+  <div id="sidebar-header">
+    <h1>The x86_64 CPU</h1>
+    <p>From i386 to Long Mode</p>
+  </div>
+  <div id="progress-bar-wrap">
+    <div id="progress-label">
+      <span>Progress</span>
+      <span id="progress-text">0 / 50</span>
+    </div>
+    <div id="progress-track"><div id="progress-fill" style="width:0%"></div></div>
+  </div>
+  <div id="search-wrap">
+    <input type="text" id="search" placeholder="Search lessons…" autocomplete="off">
+  </div>
+  <div id="lesson-nav"></div>
+</nav>
+
+<main id="main">
+  <div id="topbar">
+    <span id="topbar-phase">Overview</span>
+    <div id="topbar-nav">
+      <button class="nav-btn" id="btn-prev" disabled>← Prev</button>
+      <button class="nav-btn" id="btn-next-top">Next →</button>
+    </div>
+  </div>
+  <div id="content-area"></div>
+</main>
+
+<button id="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+
+<script>
+const PHASE_META = {
+  1: { name: "From i386 to Long Mode",         short: "Phase I",   color: "var(--p1)", lessons: "1–5"   },
+  2: { name: "REX & the 64-bit Register File", short: "Phase II",  color: "var(--p2)", lessons: "6–9"   },
+  3: { name: "Four-Level Paging",              short: "Phase III", color: "var(--p3)", lessons: "10–13" },
+  4: { name: "Long-Mode Decode & Execute",     short: "Phase IV",  color: "var(--p4)", lessons: "14–17" },
+  5: { name: "The Road Ahead",                 short: "Phase V",   color: "var(--p5)", lessons: "18–20" },
+};
+
+const LESSONS = [
+
+// ============================================================
+// PHASE 1 — From i386 to Long Mode
+// ============================================================
+{
+  id: 1, phase: 1,
+  title: "Why x86_64?",
+  subtitle: "Sixteen years of backwards-compatible CPU evolution",
+  content: `
+<h2>The setup</h2>
+<p>You already know i386 — 32-bit registers, segmented memory, the protected-mode tour the <a href="x86_tutorial.html">x86 tutorial</a> walks through. That architecture shipped in 1985 with the 80386 and was the dominant desktop ISA for two decades. By the year 2000 it had a problem: a 32-bit virtual address space caps you at 4 GiB per process, and PCs were already shipping with more than 2 GiB of RAM.</p>
+<p>Intel's answer was Itanium — a brand-new ISA, incompatible with x86. It flopped. AMD's answer, in 2003, was AMD64 — extend x86 to 64 bits while keeping all the old code working. Intel adopted AMD's design under the name Intel 64 (also written EM64T). The combined ISA is now universally called <strong>x86_64</strong>, <strong>x64</strong>, or just <strong>amd64</strong>. They all refer to the same architecture.</p>
+
+<h2>What x86_64 adds</h2>
+<ul>
+  <li><strong>Eight more general-purpose registers</strong> (R8..R15), all 64 bits wide. The old eight (RAX..RDI) keep their names but extend to 64 bits.</li>
+  <li><strong>A new instruction-pointer-relative addressing mode</strong> (RIP-relative). Position-independent code no longer needs the GOT shenanigans of i386.</li>
+  <li><strong>Four-level paging</strong> with 48-bit virtual addresses (256 TiB per process). Linear addresses must be <em>canonical</em> — bits 63..47 must all match bit 47.</li>
+  <li><strong>SYSCALL/SYSRET</strong> — a single-instruction kernel entry that replaces the slower SYSENTER/SYSEXIT pair.</li>
+  <li><strong>An NX bit</strong> in every page-table entry. Data pages can be marked non-executable.</li>
+  <li><strong>SSE2 in the baseline</strong>. Every x86_64 CPU is guaranteed to have it, so compilers don't need fallback code paths.</li>
+</ul>
+
+<h2>What x86_64 takes away</h2>
+<ul>
+  <li><strong>Segmentation almost disappears.</strong> CS/DS/ES/SS bases are forced to zero. Limits are ignored. The only segment registers that still hold information are FS and GS, whose 64-bit bases are programmed via MSRs (FSBASE, GSBASE) — used by thread-local storage and per-CPU data.</li>
+  <li><strong>Many legacy instructions are gone.</strong> AAA, AAD, AAM, AAS (BCD adjust), BOUND, INTO, LDS/LES/LFS/LGS/LSS (loads of far pointers), PUSHA/POPA — all illegal in long mode.</li>
+  <li><strong>Real-mode addressing within long mode is impossible.</strong> Once you enter long mode you stay there until you actively disable it.</li>
+</ul>
+
+<h2>Three sub-modes inside long mode</h2>
+<p>When EFER.LMA (Long Mode Active) is set, the CPU is in long mode, but there are still <em>three</em> ways code can be running:</p>
+<ul>
+  <li><strong>64-bit mode</strong>: CS.L=1. The native AMD64 runtime. 64-bit registers, RIP-relative, REX prefix, the works.</li>
+  <li><strong>Compatibility mode</strong>: CS.L=0, CS.D=1. 32-bit code running underneath a 64-bit kernel — lets a 64-bit OS run unmodified 32-bit binaries without a "thunk" layer.</li>
+  <li><strong>(16-bit compat)</strong>: CS.L=0, CS.D=0. Rare. Some firmware uses it.</li>
+</ul>
+<p>The emulator we're building uses these distinctions all over the decoder. See <code>cpu/x86_64/mode.go</code> for the Mode enum.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+The x86_64 instruction encoding is the i386 encoding plus a single optional prefix byte (REX). That one prefix unlocks 64-bit operands, the extra registers, and the new sign-extension rules. Everything that worked in i386 still works — except the cut list above. This is why operating systems were able to add 64-bit support over the course of a year or two rather than ten.
+</div>
+`,
+  exercises: [
+    "Run <code>uname -m</code> on your machine. If it says <code>x86_64</code> or <code>amd64</code> (they mean the same thing), the CPU you are running on is the same architecture this course teaches.",
+    "Read the AMD64 architecture history on Wikipedia. Find one feature AMD added in the original Hammer architecture that Intel later adopted under a different marketing name.",
+    "Inspect any 64-bit binary on your system: <code>objdump -d /bin/ls | head -50</code>. Find the first line beginning with <code>4</code> (a REX prefix). That single byte is the entire syntactic difference between x86 and x86_64."
+  ]
+},
+
+{
+  id: 2, phase: 1,
+  title: "The Five Operating Modes",
+  subtitle: "Real, protected16, protected32, compat, long64",
+  content: `
+<h2>Every x86 CPU is five CPUs in a trench coat</h2>
+<p>From power-on to running a 64-bit kernel, the same silicon executes in five distinct architectural modes. The decoder, ALU, MMU, and exception machinery all behave differently in each. Our emulator names them explicitly:</p>
+<pre><span class="cm">// cpu/x86_64/mode.go</span>
+<span class="kw">const</span> (
+    ModeReal16      <span class="kw">Mode</span> = <span class="kw">iota</span>  <span class="cm">// CR0.PE=0</span>
+    ModeProtected16                  <span class="cm">// PE=1, CS.D=0</span>
+    ModeProtected32                  <span class="cm">// PE=1, CS.D=1 — what i386 Linux runs in</span>
+    ModeCompat32                     <span class="cm">// LMA=1, CS.L=0 — 32-bit code under 64-bit kernel</span>
+    ModeLong64                       <span class="cm">// LMA=1, CS.L=1 — native AMD64</span>
+)<span class="lang-tag">go</span></pre>
+
+<h2>What changes between modes</h2>
+<table class="corr-table">
+<tr><th>Mode</th><th>Default operand</th><th>Default address</th><th>Segments</th><th>Paging</th></tr>
+<tr><td>real16</td><td>16-bit</td><td>16-bit</td><td>seg×16 + offset</td><td>none</td></tr>
+<tr><td>pm16</td><td>16-bit</td><td>16-bit</td><td>descriptor table</td><td>32-bit, 2-level</td></tr>
+<tr><td>pm32</td><td>32-bit</td><td>32-bit</td><td>descriptor table</td><td>32-bit, 2 or 3-level</td></tr>
+<tr><td>compat32</td><td>32-bit</td><td>32-bit</td><td>CS/DS/ES/SS base = 0</td><td>4-level (long-mode)</td></tr>
+<tr><td>long64</td><td>32-bit (REX.W → 64)</td><td>64-bit</td><td>CS/DS/ES/SS base = 0; FS/GS via MSR</td><td>4-level (long-mode)</td></tr>
+</table>
+<p>The single most useful row is the last one. Notice that in 64-bit mode the <em>default</em> operand size is still 32 bits — you need a REX.W prefix to get 64-bit arithmetic. That's a compromise the architects made because 32-bit ops are common and they didn't want every instruction to grow a byte. We'll cover REX in detail in Lesson 7.</p>
+
+<h2>Deriving the mode from architectural state</h2>
+<p>The mode is not stored anywhere directly on real hardware — it is computed every cycle from a few bits scattered across <code>CR0</code>, <code>EFER</code>, and the CS-descriptor cache:</p>
+<pre><span class="cm">// cpu/x86_64/mode.go — recomputeMode</span>
+<span class="kw">if</span> c.efer&amp;EFER_LMA != 0 {
+    <span class="kw">if</span> c.segAccess[CS]&amp;csLBit != 0 {
+        c.mode = ModeLong64
+    } <span class="kw">else</span> {
+        c.mode = ModeCompat32
+    }
+    <span class="kw">return</span>
+}
+<span class="kw">if</span> c.cr[0]&amp;CR0_PE == 0 {
+    c.mode = ModeReal16
+    <span class="kw">return</span>
+}
+<span class="kw">if</span> c.segAccess[CS]&amp;csDBit != 0 {
+    c.mode = ModeProtected32
+} <span class="kw">else</span> {
+    c.mode = ModeProtected16
+}<span class="lang-tag">go</span></pre>
+<p>We materialise this into a stored field so the hot path in <code>Step</code> can switch on a single byte instead of re-evaluating five bits each cycle. The catch: any code that mutates one of those input bits must call <code>recomputeMode</code>.</p>
+
+<div class="box box-note">
+<strong>Note</strong>
+EFER.LMA (Long Mode Active) is read-only from the guest's perspective — it is set by the CPU when paging is enabled with EFER.LME set, and cleared when paging turns off. The guest writes LME (Long Mode Enable, the request); LMA is the latched answer.
+</div>
+`,
+  exercises: [
+    "From the table above, which mode is the i386 kernel of the x86 tutorial running in? Which one does Linux x86_64 run user processes in?",
+    "Read <code>cpu/x86_64/mode.go</code>'s <code>recomputeMode</code> end-to-end. Trace what mode it would compute if CR0.PE=1, EFER.LMA=1, but CS.L=0 and CS.D=0. (Hint: that's not really a valid state; what happens?)",
+    "Identify two bits in the CS descriptor that determine which long-mode submode you are in. (Hint: the file calls them csDBit and csLBit.)"
+  ]
+},
+
+{
+  id: 3, phase: 1,
+  title: "Entering Long Mode",
+  subtitle: "The four-instruction sequence the kernel runs to flip the switch",
+  content: `
+<h2>You cannot enter long mode directly</h2>
+<p>A reset CPU starts in real mode. To get to long mode you must first walk through protected mode. The whole sequence — what AMD calls the "long-mode activation" path — is on every 64-bit kernel's hot path during boot.</p>
+
+<h2>The canonical sequence</h2>
+<pre><span class="cm">; 1. Disable paging temporarily (if it was on)</span>
+mov  eax, cr0
+and  eax, ~CR0_PG          <span class="cm">; bit 31 clear</span>
+mov  cr0, eax
+
+<span class="cm">; 2. Enable PAE (Physical Address Extension) — long mode requires it</span>
+mov  eax, cr4
+or   eax, CR4_PAE          <span class="cm">; bit 5</span>
+mov  cr4, eax
+
+<span class="cm">; 3. Load CR3 with the physical address of the freshly-built PML4 table</span>
+mov  cr3, edi              <span class="cm">; EDI = phys(pml4)</span>
+
+<span class="cm">; 4. Set EFER.LME (Long Mode Enable) via MSR 0xC0000080</span>
+mov  ecx, 0xC0000080
+rdmsr
+or   eax, EFER_LME         <span class="cm">; bit 8</span>
+wrmsr
+
+<span class="cm">; 5. Enable paging — this is the latch. Now LMA flips on.</span>
+mov  eax, cr0
+or   eax, CR0_PG           <span class="cm">; bit 31</span>
+mov  cr0, eax<span class="lang-tag">x86 asm</span></pre>
+
+<p>After step 5, the CPU is in long mode — but specifically in <em>compatibility</em> mode (CS.L=0), because the CS descriptor you loaded back in protected mode had L=0. To enter 64-bit mode you do one more thing:</p>
+
+<pre><span class="cm">; 6. Far jump through a code segment whose descriptor has L=1.</span>
+jmp far [code64_descriptor]
+<span class="cm">; The fetcher reloads CS, sees L=1 ⇒ mode becomes ModeLong64.</span><span class="lang-tag">x86 asm</span></pre>
+
+<h2>Why so many steps</h2>
+<p>Each precondition exists for a reason:</p>
+<ul>
+  <li><strong>PAE must be on</strong> because long-mode page-table entries are 64 bits — the old 32-bit 2-level walker (PD → PT) cannot represent them.</li>
+  <li><strong>CR3 must already point at a valid PML4</strong> when paging turns on. Otherwise the very first instruction fetch faults — and there is nowhere to deliver the fault.</li>
+  <li><strong>LME is set before PG</strong>. If you set PG with LME=0 you would get plain 32-bit PAE paging, not long mode. The combination latches LMA.</li>
+  <li><strong>The far jump is needed</strong> because CS is the only descriptor that distinguishes long from compat mode, and you cannot rewrite CS without a far jump (or syscall, or IRET).</li>
+</ul>
+
+<h2>In the emulator</h2>
+<p>Our emulator does not yet boot a real kernel through this sequence — that arrives in Phase 5 of the implementation roadmap. For M1 testing, the harness in <code>cpu/x86_64/decoder_test.go</code>'s <code>longModeFlat</code> helper preloads the post-sequence state directly:</p>
+<pre><span class="cm">// cpu/x86_64/decoder_test.go</span>
+c.SetCR64(0, CR0_PE)
+c.SetCR64(4, CR4_PAE)
+c.SetEFER(EFER_LME | EFER_LMA)
+c.SetSegAccess(CS, csLBit)   <span class="cm">// CS.L=1 ⇒ 64-bit code</span>
+c.recomputeMode()
+<span class="cm">// CR0.PG is left clear — paging off for decode-only tests.</span><span class="lang-tag">go</span></pre>
+
+<div class="box box-warn">
+<strong>Edge case</strong>
+On real hardware, executing instruction sequences <em>after</em> step 5 but <em>before</em> step 6 happens in compatibility mode — 32-bit code with long-mode paging underneath it. This is the briefest window in the boot path. Linux carefully arranges the code so the very next instruction after enabling paging is the far jump.
+</div>
+`,
+  exercises: [
+    "If you skip step 2 (PAE) and try to set CR0.PG with LME=1, what should happen on real hardware? (Look up #GP delivery conditions in the AMD APM.)",
+    "Why does CR3 need to be loaded with PAE on, given that the OS could load CR3 once paging is already enabled? Hint: think about whether CR3 writes are themselves cached.",
+    "Read the Linux kernel's <code>arch/x86/boot/compressed/head_64.S</code>. Locate the equivalents of steps 1–6 above. How does it actually arrange for the post-PG instruction to be the far jump?"
+  ]
+},
+
+{
+  id: 4, phase: 1,
+  title: "The Mode Field — Our Emulator's Cheat Sheet",
+  subtitle: "Why we cache what the hardware recomputes",
+  content: `
+<h2>Real hardware does not have a mode field</h2>
+<p>Inside a real x86_64 CPU there is no register called "current mode." Each cycle, the decoder evaluates a fixed expression over the architectural bits — CR0.PE, EFER.LMA, CS.L, CS.D, EFLAGS.VM — and that determines what the next instruction means. Modes are a useful conceptual lens, not a state variable.</p>
+<p>Our emulator <em>caches</em> the mode in <code>c.mode</code>. The trade-off:</p>
+<ul>
+  <li><strong>Win:</strong> hot-path lookups in Step (lip(), fetch, dispatch) become a single byte comparison instead of five-bit field tests.</li>
+  <li><strong>Cost:</strong> every code path that mutates one of the input bits must call <code>recomputeMode</code>. Forgetting that call is a category of bug that real hardware cannot have.</li>
+</ul>
+
+<h2>Where the mode field reads</h2>
+<p>Three places, all on the hot path:</p>
+<ol>
+  <li><strong>lip()</strong> (cpu/x86_64/mem.go) — In long modes, CS.base is forced zero regardless of the descriptor cache. lip just returns RIP. Outside long mode, lip = segBase[CS] + RIP.</li>
+  <li><strong>parseModRM64</strong> (cpu/x86_64/modrm.go) — RIP-relative addressing only exists in long mode. The mod=00, rm=101 encoding switches meaning based on whether we are in 64-bit mode.</li>
+  <li><strong>Operand-size defaulting</strong> (cpu/x86_64/exec.go's Step) — Default operand size is 32 in long mode; 16 in real mode; descriptor-dependent in protected mode.</li>
+</ol>
+
+<h2>Where it is mutated</h2>
+<p>Any time guest code (or test setup) changes one of the architectural bits:</p>
+<ul>
+  <li>MOV CR0, ... → recompute (PE bit changed)</li>
+  <li>WRMSR to EFER → recompute (LMA latch may have flipped)</li>
+  <li>Far jump / far call / IRET that loads CS → recompute (L/D may have changed)</li>
+  <li>SYSCALL/SYSRET → recompute (CS implicitly reloaded)</li>
+</ul>
+<p>In M1, only the test helpers and Reset poke these bits — guest code can't yet (the decoder doesn't implement MOV-to-CR or WRMSR). So <code>recomputeMode</code> is called explicitly from Reset and from tests. As more system instructions land, every CR0/EFER/CS write will route through a helper that calls <code>recomputeMode</code> automatically.</p>
+
+<h2>The two CS bits — L and D</h2>
+<pre><span class="cm">// cpu/x86_64/mode.go</span>
+<span class="cm">// Bit positions inside the segAccess word. Matches cpu/x86's encoding:</span>
+<span class="cm">//   bit 9  (0x0200) — L   (long-mode code segment). 1 = 64-bit code.</span>
+<span class="cm">//   bit 10 (0x0400) — D/B (default operand size).   1 = 32-bit.</span>
+<span class="kw">const</span> (
+    csLBit = 1 &lt;&lt; 9
+    csDBit = 1 &lt;&lt; 10
+)<span class="lang-tag">go</span></pre>
+
+<div class="box box-think">
+<strong>Design rule</strong>
+Any time you find yourself reading <code>c.cr</code>, <code>c.efer</code>, and <code>c.segAccess[CS]</code> together to compute behaviour, ask: is this on the hot path, or once-per-instruction? If on the hot path, cache it. If once-per-event (e.g. only when delivering an interrupt), don't bother — the cache invalidation cost outweighs the lookup savings.
+</div>
+`,
+  exercises: [
+    "Add a regression test that proves <code>recomputeMode</code> is idempotent: calling it twice in a row with no state changes should leave c.mode unchanged.",
+    "Imagine a bug where some hypothetical SetCR0 forgot to call recomputeMode. Predict what would go wrong on the very next instruction. (Hint: lip() and parseModRM64 still see the old mode.)",
+    "Real hardware re-evaluates the mode every cycle. The emulator caches it. Suppose we removed the cache and rebuilt the mode on every call. By how much would performance drop, roughly? Use cpu/x86's prefetch-buffer measurements as a baseline reference point."
+  ]
+},
+
+{
+  id: 5, phase: 1,
+  title: "Why cpu/x86_64 is a Separate Package",
+  subtitle: "Isolation, duplication, and the cpu.X86Core interface",
+  content: `
+<h2>The choice in front of us</h2>
+<p>When we decided to add x86_64 support, we had three options:</p>
+<ol>
+  <li><strong>Make cpu/x86 dual-mode.</strong> Add a long-mode branch inside every hot path of the existing emulator.</li>
+  <li><strong>Extract cpu/x86common up front.</strong> Refactor cpu/x86 to move shared helpers (ALU, flag math, SSE, descriptor parsing) into a new package both backends import.</li>
+  <li><strong>Build cpu/x86_64 as a separate package, duplicate as needed.</strong> Isolated; pay duplication cost; extract shared code later once x86_64 stabilises.</li>
+</ol>
+<p>We picked option 3. The reasons:</p>
+<ul>
+  <li>cpu/x86 boots Alpine end-to-end. We want zero regression risk on the working i386 path while x86_64 is in flux.</li>
+  <li>The genuinely shareable code is hard to identify before we have written the new backend. Premature extraction is a worse bug source than duplication.</li>
+  <li>Two packages with parallel structure are easy for a reader to compare. One dual-mode package would conceal the long-mode behaviour inside i386 paths.</li>
+</ul>
+
+<h2>The shared chassis</h2>
+<p>Even with two CPU packages, the PC machine board has to drive whichever one is wired up. We solved this by extracting the CPU surface area machine/pc actually uses into a small interface — <code>cpu.X86Core</code>:</p>
+<pre><span class="cm">// cpu/core.go</span>
+<span class="kw">type</span> X86Core <span class="kw">interface</span> {
+    Core   <span class="cm">// generic CPU: Run, Step, Reset, cycles, powerdown, ...</span>
+
+    AddCycles(uint64)
+    SetINTR(level int)
+    GetINTR() int
+
+    SetIOHandlers(...)
+    SetInterruptAckHandler(fn func() (uint8, bool))
+
+    SetSeg(sel int, v uint16)
+    SetSegBase(sel int, v uint32)
+    SetSegLimit(sel int, v uint32)
+    SetSegAccess(sel int, v uint32)
+    SetEIP(v uint32)
+    SetReg32(r int, v uint32)
+    SetCR(n int, v uint32)
+    GetCR(n int) uint32
+}<span class="lang-tag">go</span></pre>
+<p>Both <code>*x86.CPU</code> and <code>*x86_64.CPU</code> implement this interface — verified by a compile-time assertion in <code>machine/pc/pc.go</code>:</p>
+<pre><span class="kw">var</span> _ cpu.X86Core = (*x86.CPU)(<span class="kw">nil</span>)<span class="lang-tag">go</span></pre>
+
+<h2>What is duplicated, what is shared</h2>
+<table class="corr-table">
+<tr><th>Component</th><th>Strategy</th></tr>
+<tr><td>Devices (PIT, PIC, UART, virtio, slirp, ATA, VGA)</td><td><strong>Direct reuse</strong> — no changes</td></tr>
+<tr><td>mem.PhysMemoryMap, mem.PhysMemoryRange</td><td><strong>Direct reuse</strong> — already uint64-addressed</td></tr>
+<tr><td>cpu.Core interface</td><td><strong>Direct reuse</strong></td></tr>
+<tr><td>SegmentDescriptor parsing, CR/EFLAGS bit constants</td><td><strong>Duplicated</strong>; extract later if patterns stabilise</td></tr>
+<tr><td>ALU helpers (add, sub, shift, flags)</td><td><strong>Duplicated</strong>; M1 uses eager flags vs i386's lazy</td></tr>
+<tr><td>Decoder (Step, ModR/M, opcodes)</td><td><strong>Rewritten</strong> for REX + RIP-rel + 4-level paging</td></tr>
+<tr><td>MMU walk</td><td><strong>Rewritten</strong> for PML4 → PDPT → PD → PT</td></tr>
+</table>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+"Reuse" is not always the goal. Reuse forces a coupling that you must maintain forever. The right question is: what coupling reduces my <em>future</em> maintenance burden? For peripherals that have no architecture-specific behaviour, reuse is pure win. For CPU internals that differ in subtle ways across modes, duplication may be cheaper — at least until you have written both versions and can see what really overlaps.
+</div>
+`,
+  exercises: [
+    "Read <code>cpu/core.go</code> and identify which methods of the X86Core interface are about CPU state (registers, flags) versus board wiring (I/O, interrupts). Would a different ISA backend (say a hypothetical ARM CPU) be likely to satisfy this interface, or would it need a different one?",
+    "If a future commit needs to add WRMSR support to the X86Core interface (so the board can program MSRs at boot), what would break? (Hint: nothing — Go interfaces are structural; adding a method does not break existing implementations until callers use the new method.)",
+    "Inspect <code>machine/pc/pic.go</code>. It only uses <code>SetINTR</code>/<code>GetINTR</code> on its CPU dependency. Argue for whether the PIC should depend on the full X86Core interface or a narrower one defined inline."
+  ]
+},
+
+// ============================================================
+// PHASE 2 — REX & the 64-bit Register File
+// ============================================================
+{
+  id: 6, phase: 2,
+  title: "Sixteen GPRs and the Partial-Write Rules",
+  subtitle: "RAX..R15, and three ways an 8-bit write differs from a 64-bit one",
+  content: `
+<h2>The new register names</h2>
+<p>i386 has eight 32-bit GPRs: EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI. x86_64 extends each to 64 bits (RAX, RCX, ..., RDI) and adds eight more (R8..R15). All sixteen are addressable as 64, 32, 16, or 8 bits via different operand-size encodings and the REX prefix.</p>
+<table class="corr-table">
+<tr><th>64-bit</th><th>32-bit</th><th>16-bit</th><th>8-bit hi</th><th>8-bit lo (no REX)</th><th>8-bit lo (REX)</th></tr>
+<tr><td>RAX</td><td>EAX</td><td>AX</td><td>AH</td><td>AL</td><td>AL</td></tr>
+<tr><td>RCX</td><td>ECX</td><td>CX</td><td>CH</td><td>CL</td><td>CL</td></tr>
+<tr><td>RDX</td><td>EDX</td><td>DX</td><td>DH</td><td>DL</td><td>DL</td></tr>
+<tr><td>RBX</td><td>EBX</td><td>BX</td><td>BH</td><td>BL</td><td>BL</td></tr>
+<tr><td>RSP</td><td>ESP</td><td>SP</td><td>—</td><td>—</td><td>SPL</td></tr>
+<tr><td>RBP</td><td>EBP</td><td>BP</td><td>—</td><td>—</td><td>BPL</td></tr>
+<tr><td>RSI</td><td>ESI</td><td>SI</td><td>—</td><td>—</td><td>SIL</td></tr>
+<tr><td>RDI</td><td>EDI</td><td>DI</td><td>—</td><td>—</td><td>DIL</td></tr>
+<tr><td>R8..R15</td><td>R8D..R15D</td><td>R8W..R15W</td><td>—</td><td>—</td><td>R8B..R15B</td></tr>
+</table>
+<p>Notice that <code>AH/CH/DH/BH</code> (the "high byte" registers, AL+1, etc.) are <em>only</em> accessible without a REX prefix. The instant any REX byte appears, the encoding for those four 8-bit names is rerouted to <code>SPL/BPL/SIL/DIL</code>. This is the encoding price for getting access to the new R8B..R15B registers.</p>
+
+<h2>The three partial-write rules</h2>
+<p>The width of a write to a register changes what happens to the bits you didn't touch:</p>
+<ol>
+  <li><strong>64-bit write</strong> (operand size 8, REX.W=1): all 64 bits replaced.</li>
+  <li><strong>32-bit write</strong>: low 32 bits replaced, <strong>upper 32 zero-extended</strong>. <em>This is unique to long mode.</em></li>
+  <li><strong>16-bit write</strong>: low 16 replaced, upper 48 preserved.</li>
+  <li><strong>8-bit write</strong>: low 8 replaced, upper 56 preserved.</li>
+</ol>
+<p>The 32-bit-write rule is the one that catches people. In i386 there is no "upper 32" — but in long mode there is, and it gets zeroed on every 32-bit operation. That changes how compilers emit code:</p>
+<pre><span class="kw">mov</span> <span class="rg">eax</span>, <span class="rg">ebx</span>     <span class="cm">; in long mode: also clears top 32 of RAX</span>
+<span class="kw">xor</span> <span class="rg">eax</span>, <span class="rg">eax</span>     <span class="cm">; idiomatic "zero RAX" — shorter than xor rax, rax</span><span class="lang-tag">x86_64 asm</span></pre>
+
+<h2>In the emulator</h2>
+<p>Our register file is one 16-element array of uint64. The accessors enforce the partial-write rules:</p>
+<pre><span class="cm">// cpu/x86_64/cpu.go</span>
+<span class="kw">func</span> (c *<span class="kw">CPU</span>) <span class="fn">SetReg64</span>(r <span class="kw">int</span>, v <span class="kw">uint64</span>) { c.reg64[r&amp;0xF] = v }
+
+<span class="kw">func</span> (c *<span class="kw">CPU</span>) <span class="fn">SetReg32</span>(r <span class="kw">int</span>, v <span class="kw">uint32</span>) {
+    c.reg64[r&amp;0xF] = <span class="kw">uint64</span>(v)   <span class="cm">// zero-extend</span>
+}
+
+<span class="kw">func</span> (c *<span class="kw">CPU</span>) <span class="fn">SetReg16</span>(r <span class="kw">int</span>, v <span class="kw">uint16</span>) {
+    idx := (r &gt;&gt; 1) &amp; 0xF
+    c.reg64[idx] = (c.reg64[idx] &amp; ^<span class="kw">uint64</span>(0xFFFF)) | <span class="kw">uint64</span>(v)
+}<span class="lang-tag">go</span></pre>
+
+<div class="box box-note">
+<strong>Why this matters for emulation</strong>
+A bug we don't have to write: forgetting to zero-extend on a 32-bit write in long mode. Every code path that writes to a register through SetReg32 (including the boot-time setup from machine/pc) is automatically correct. The dedicated test <code>TestReg32_ZeroExtends</code> pins this contract.
+</div>
+`,
+  exercises: [
+    "Predict the value of RAX after this sequence, starting with RAX=0xFFFFFFFF_FFFFFFFF: <code>MOV EAX, 0x12345678</code> then <code>MOV AX, 0xAABB</code> then <code>MOV AL, 0x99</code>. (Hint: each step has its own partial-write rule.) Verify by writing a Go test against cpu/x86_64.",
+    "Why did AMD make 32-bit writes zero-extend instead of preserve the upper 32 bits? Two possible answers exist; one is about register renaming inside the CPU. Look it up.",
+    "If you use AH after a REX prefix appears in the instruction (an illegal encoding), what does the CPU do? (Look up the SDM entry; this is a #UD on real hardware.)"
+  ]
+},
+
+{
+  id: 7, phase: 2,
+  title: "The REX Prefix",
+  subtitle: "One byte to rule them all",
+  content: `
+<h2>The whole syntactic difference</h2>
+<p>An instruction that exists in i386 has the same encoding in x86_64 — unless a REX prefix is needed. REX is a single byte in the range <code>0x40</code> through <code>0x4F</code>. The low four bits are four independent flags:</p>
+<pre>     7 6 5 4   3   2   1   0
+    +--+--+--+--+---+---+---+---+
+    | 0  1  0  0|<span class="ct">W</span>|<span class="ct">R</span>|<span class="ct">X</span>|<span class="ct">B</span>|
+    +--+--+--+--+---+---+---+---+
+                |     |
+                |     ↳ extends ModRM.reg (R), SIB.index (X), ModRM.rm/SIB.base (B)
+                ↳ promotes default operand size to 64 bits<span class="lang-tag">encoding</span></pre>
+
+<table class="corr-table">
+<tr><th>Bit</th><th>Mask</th><th>Effect</th></tr>
+<tr><td>REX.W</td><td>0x08</td><td>Operand size = 64 bits (overrides 0x66 prefix)</td></tr>
+<tr><td>REX.R</td><td>0x04</td><td>ModR/M.reg gains a 4th bit, indexing R8..R15 as destinations</td></tr>
+<tr><td>REX.X</td><td>0x02</td><td>SIB.index gains a 4th bit, allowing R8..R15 as index registers</td></tr>
+<tr><td>REX.B</td><td>0x01</td><td>ModR/M.rm or SIB.base gains a 4th bit, allowing R8..R15 as base/rm</td></tr>
+</table>
+
+<h2>Worked example: MOV R15, R8</h2>
+<p>Encoding: <code>4D 89 C7</code></p>
+<ul>
+  <li><code>4D</code> = 0100 1101 = REX with W=1, R=1, X=0, B=1.</li>
+  <li><code>89</code> = MOV r/m, r (Ev, Gv).</li>
+  <li><code>C7</code> = ModR/M: mod=11 (register), reg=000, rm=111. With REX.R=1 the reg becomes 1000 = R8 (the source). With REX.B=1 the rm becomes 1111 = R15 (the destination).</li>
+  <li>REX.W=1 makes the operand size 64-bit, so all 64 bits of R15 get the value of R8.</li>
+</ul>
+
+<h2>The prefix loop</h2>
+<p>Our decoder scans prefixes one byte at a time. REX is just one more case — and it must come <em>last</em> before the opcode (Intel SDM rule that our M1 decoder accepts laxly):</p>
+<pre><span class="cm">// cpu/x86_64/exec.go — Step</span>
+<span class="kw">for</span> {
+    b := c.<span class="fn">fetch8</span>()
+    <span class="kw">switch</span> {
+    <span class="kw">case</span> b == 0x66: operandOverride = <span class="kw">true</span>
+    <span class="kw">case</span> b == 0x67: addressSize = 4
+    <span class="kw">case</span> b == 0xF0, b == 0xF2, b == 0xF3: <span class="cm">// LOCK / REPNE / REPE</span>
+    <span class="kw">case</span> b &gt;= 0x40 &amp;&amp; b &lt;= 0x4F:
+        rex = b
+    <span class="kw">default</span>:
+        <span class="kw">if</span> rex&amp;rexW != 0 { operandSize = 8 }
+        <span class="kw">else if</span> operandOverride { operandSize = 2 }
+        <span class="kw">return</span> c.<span class="fn">executeOpcode</span>(b, rex, operandSize, addressSize, segOverride)
+    }
+}<span class="lang-tag">go</span></pre>
+
+<h2>The encoding price</h2>
+<p>Every instruction that touches R8..R15 or uses 64-bit operands grows by one byte. That is the entire encoding overhead of x86_64 over i386 — about a 5% increase in code size for typical compiled programs. AVX later widened this to two- and three-byte VEX/EVEX prefixes that pack more information per byte.</p>
+
+<div class="box box-think">
+<strong>Trade-off</strong>
+REX is a clever piece of encoding archaeology. AMD spent zero bits in the legacy opcode space — every existing instruction kept its meaning — by stealing 16 opcodes (the old INC/DEC short forms 0x40-0x4F, which were redundant with the longer modr/m forms). In long mode the short forms went away and the 16-byte block became the REX prefix.
+</div>
+`,
+  exercises: [
+    "Decode <code>48 B8 EF BE AD DE 00 00 00 00</code> by hand. (Hint: 48 is REX with W=1; B8 is MOV imm to reg; the imm is 8 bytes wide because W=1.) Confirm against <code>TestDecode_MOV_RAX_imm64</code>.",
+    "What does <code>0x40</code> alone mean? (REX with all flags 0 — a no-op REX.) Why might a compiler emit one? Hint: alignment padding.",
+    "If you put two REX prefixes back-to-back, what happens? Read the SDM and compare to our emulator's behavior in <code>Step</code>."
+  ]
+},
+
+{
+  id: 8, phase: 2,
+  title: "64-bit Immediates and the Zero-Extend Rule",
+  subtitle: "Why MOV is the only 64-bit-immediate instruction",
+  content: `
+<h2>Immediate sizes by operand size</h2>
+<p>For most instructions, the immediate operand size matches the operand size:</p>
+<table class="corr-table">
+<tr><th>Operand size</th><th>Immediate size</th></tr>
+<tr><td>8 bits</td><td>8 bits</td></tr>
+<tr><td>16 bits</td><td>16 bits</td></tr>
+<tr><td>32 bits</td><td>32 bits</td></tr>
+<tr><td>64 bits (REX.W=1)</td><td><strong>32 bits, sign-extended to 64</strong></td></tr>
+</table>
+<p>That last row is unusual. For nearly every instruction with REX.W=1, the immediate is still only 32 bits in the encoding — it gets sign-extended to 64 at execution time. The reason: code size. A 64-bit immediate in every <code>ADD RAX, 5</code> would bloat the binary enormously. Sign-extension covers the common case where the immediate is "small."</p>
+
+<h2>The one exception — MOV r64, imm64</h2>
+<p>The opcode range <code>B8..BF</code> (with REX.W=1) is the <em>only</em> place you'll find a true 64-bit immediate in the instruction stream. It is used when you actually need a 64-bit constant — typically a pointer literal.</p>
+<pre><span class="kw">mov</span> <span class="rg">rax</span>, <span class="nm">0x123456789ABCDEF0</span>     <span class="cm">; 48 B8 F0 DE BC 9A 78 56 34 12</span><span class="lang-tag">x86_64 asm</span></pre>
+
+<h2>Why <code>MOV EAX, imm32</code> zero-extends</h2>
+<p>This trips people up. The plain (non-REX.W) form of MOV imm-to-reg writes 32 bits — but in long mode, every 32-bit write zero-extends to 64. So:</p>
+<pre><span class="kw">mov</span> <span class="rg">rax</span>, <span class="nm">-1</span>          <span class="cm">; 48 C7 C0 FF FF FF FF</span>
+                          <span class="cm">; 7 bytes; sign-extended imm32</span>
+
+<span class="kw">mov</span> <span class="rg">eax</span>, <span class="nm">0xFFFFFFFF</span>  <span class="cm">; B8 FF FF FF FF</span>
+                          <span class="cm">; 5 bytes; result is 0x00000000_FFFFFFFF (zero-extended)</span><span class="lang-tag">x86_64 asm</span></pre>
+<p>Same low 32 bits in both. Different high 32. Different instruction sizes. Compilers know this and pick the right form based on whether the constant is small enough to sign-extend correctly.</p>
+
+<h2>In the emulator</h2>
+<p>The decoder uses three immediate-read paths:</p>
+<pre><span class="cm">// cpu/x86_64/opcodes.go — opMOVImmToReg</span>
+<span class="kw">switch</span> operandSize {
+<span class="kw">case</span> 8:
+    c.reg64[idx] = c.<span class="fn">fetch64</span>()                <span class="cm">// 8-byte imm</span>
+<span class="kw">case</span> 4:
+    c.reg64[idx] = <span class="kw">uint64</span>(c.<span class="fn">fetch32</span>())       <span class="cm">// zero-extend</span>
+<span class="kw">case</span> 2:
+    c.reg64[idx] = (c.reg64[idx] &amp; ^<span class="kw">uint64</span>(0xFFFF)) |
+                   <span class="kw">uint64</span>(c.<span class="fn">fetch16</span>())          <span class="cm">// preserve upper 48</span>
+}<span class="lang-tag">go</span></pre>
+<p>And the test pins the contract:</p>
+<pre><span class="kw">func</span> <span class="fn">TestDecode_MOV_EAX_imm32_ZeroExtends</span>(t *<span class="kw">testing</span>.<span class="kw">T</span>) {
+    c.<span class="fn">SetReg64</span>(<span class="ct">RAX</span>, 0xFFFFFFFF_FFFFFFFF)
+    <span class="cm">// B8 DE C0 AD 0B   mov eax, 0x0BADC0DE</span>
+    <span class="fn">loadCode</span>(t, c, mm, 0x100, []<span class="kw">byte</span>{0xB8, 0xDE, 0xC0, 0xAD, 0x0B})
+    <span class="fn">stepN</span>(t, c, 1)
+    <span class="kw">if</span> got := c.<span class="fn">GetReg64</span>(<span class="ct">RAX</span>); got != 0x0BADC0DE { ... }
+}<span class="lang-tag">go</span></pre>
+
+<div class="box box-key">
+<strong>Takeaway</strong>
+When you see a constant near the start of an x86_64 instruction, it's almost certainly 32 bits even if the operand is 64-bit. The two exceptions: <code>MOV r64, imm64</code> with the dedicated <code>B8+r</code> encoding, and <code>MOVABS</code> mnemonics in some assemblers, which compile to the same encoding.
+</div>
+`,
+  exercises: [
+    "Hand-assemble <code>MOV RAX, 1</code>. There are two ways: the <code>C7</code> form (sign-extended imm32) and the <code>B8</code> form (full imm64). Compute both. Which would NASM pick by default?",
+    "Why is the 32→64 immediate path sign-extended (not zero-extended) when most everything else in long mode zero-extends? Hint: it's about constant negatives.",
+    "Read <code>cpu/x86_64/opcodes.go</code>'s <code>opMOVImmToReg</code>. Add a test for the 16-bit form: <code>66 B8 11 22 mov ax, 0x2211</code> from a non-zero RAX, asserting the upper 48 bits are preserved."
+  ]
+},
+
+{
+  id: 9, phase: 2,
+  title: "RIP-Relative Addressing",
+  subtitle: "The single most useful new addressing mode in x86_64",
+  content: `
+<h2>The PIC problem in i386</h2>
+<p>Position-independent code on i386 is awkward. To read a variable from another part of the same shared library you need to know the variable's address relative to wherever your library was loaded — which you don't know at compile time. The standard workaround is the GOT (Global Offset Table): the linker plants a per-shared-library table whose address gets discovered at runtime via a special prologue, and every load goes through that table.</p>
+<p>x86_64 fixes this with a single new addressing mode: <strong>RIP-relative</strong>.</p>
+
+<h2>The encoding</h2>
+<p>In long mode, the ModR/M combination <code>mod=00, rm=101</code> means "RIP + signed 32-bit displacement." This is the same encoding that in i386 meant "absolute 32-bit displacement" (raw disp32 with no register). AMD repurposed it because absolute addressing in 64-bit mode is much less useful — you'd need a 64-bit displacement to cover the whole address space.</p>
+<pre><span class="kw">lea</span>  <span class="rg">rax</span>, [<span class="rg">rip</span> + msg]    <span class="cm">; 48 8D 05 xx xx xx xx</span><span class="lang-tag">x86_64 asm</span></pre>
+
+<h2>What "RIP" means here</h2>
+<p>RIP-relative <em>does not</em> use the value of RIP at the start of the instruction. It uses the value RIP <em>would have</em> after the instruction completes — i.e. RIP after the disp32 has been consumed. This gives intuitive offsets in disassembly: "lea rax, [rip+0]" really does load the address of the next instruction.</p>
+
+<h2>The emulator's decode</h2>
+<p>parseModRM64 handles this in a dedicated case:</p>
+<pre><span class="cm">// cpu/x86_64/modrm.go</span>
+<span class="kw">case</span> mod == 0 &amp;&amp; rm == 5:
+    <span class="cm">// RIP-relative + disp32 in long mode.</span>
+    disp := int64(int32(c.<span class="fn">fetch32</span>()))
+    ea = c.rip + <span class="kw">uint64</span>(disp)
+    r.ripRelative = <span class="kw">true</span><span class="lang-tag">go</span></pre>
+<p>By the time we compute <code>c.rip + disp</code>, the four bytes of disp32 have been consumed by <code>fetch32</code> and <code>c.rip</code> has advanced past them — so it correctly points at the next instruction, matching the SDM semantics.</p>
+
+<h2>Watch out — REX.B doesn't change this case</h2>
+<p>In every other ModR/M encoding where <code>rm=5</code>, you'd expect REX.B to promote it to R13. Not for the RIP-relative case. Mod=00, rm=101 stays RIP-relative regardless of REX.B. To use [R13] as a base register you must use the encoding mod=01, rm=101, disp8=0 (a one-byte-larger encoding). The decoder reflects this by checking mod and rm together before looking at REX.B.</p>
+
+<h2>The two tests we pin this with</h2>
+<pre><span class="cm">// TestDecode_LEA_RIPRelative — positive displacement</span>
+<span class="cm">// 48 8D 05 10 00 00 00   lea rax, [rip+0x10]</span>
+<span class="kw">const</span> base = <span class="kw">uint64</span>(0x100)
+<span class="fn">loadCode</span>(t, c, mm, base, []<span class="kw">byte</span>{0x48, 0x8D, 0x05, 0x10, 0, 0, 0})
+<span class="fn">stepN</span>(t, c, 1)
+want := base + 7 + 0x10   <span class="cm">// 7 = instruction length</span>
+
+<span class="cm">// TestDecode_LEA_RIPRelative_Negative — negative displacement</span>
+<span class="cm">// 48 8D 05 F0 FF FF FF   lea rax, [rip-0x10]</span>
+disp32 = 0xFFFFFFF0       <span class="cm">// sign-extends to -16</span><span class="lang-tag">go</span></pre>
+
+<div class="box box-key">
+<strong>The big win</strong>
+RIP-relative addressing eliminates a whole class of relocations in shared libraries. The linker can leave the disp32 in the binary as-is, since "next instruction + 16" is the same no matter where the library lands in memory. The compiler emits about 30% less indirection in PIC code on x86_64 versus i386 because of this one feature.
+</div>
+`,
+  exercises: [
+    "Look at the disassembly of <code>/lib/x86_64-linux-gnu/libc.so.6</code>. Count how often you see <code>[rip + ...]</code>. Compare to a 32-bit binary's use of <code>%ebx</code> (the conventional GOT base).",
+    "Suppose you wanted [R13] as a base — produce the smallest encoding. Then explain why the encoding is one byte longer than the equivalent encoding for [RAX].",
+    "Why did AMD reuse mod=00, rm=101 for RIP-relative rather than picking a new ModR/M encoding? (Hint: backward-compat economy of encoding space.)"
+  ]
+},
+
+// ============================================================
+// PHASE 3 — Four-Level Paging
+// ============================================================
+{
+  id: 10, phase: 3,
+  title: "The 48-bit Canonical Address",
+  subtitle: "Why bits 63..47 of every virtual address must agree",
+  content: `
+<h2>64-bit addresses, but not really</h2>
+<p>x86_64 has 64-bit pointers, but the hardware does not actually wire up 64 bits of virtual address space. Why?</p>
+<ul>
+  <li>A full 64-bit virtual space is 16 exabytes. No one wants to pay for a four-level walker covering all of it.</li>
+  <li>Mapping every address requires page-table entries. At full coverage the page tables alone would exceed the address space.</li>
+  <li>OS designers wanted room to grow without recompiling. Reserve some bits now; we can use them later.</li>
+</ul>
+<p>The compromise: x86_64 uses 48-bit virtual addresses. (The CR4.LA57 extension lifts this to 57 bits with a 5-level paging walker; not yet modeled in the emulator.) The remaining 16 high bits (63..48) must equal bit 47 — what the architecture calls a <strong>canonical address</strong>.</p>
+
+<h2>The canonical rule, in one expression</h2>
+<pre><span class="cm">// cpu/x86_64/mmu.go</span>
+<span class="kw">func</span> <span class="fn">IsCanonicalAddr</span>(addr <span class="kw">uint64</span>) <span class="kw">bool</span> {
+    top := addr &gt;&gt; 47
+    <span class="kw">return</span> top == 0 || top == 0x1FFFF
+}<span class="lang-tag">go</span></pre>
+<p>If you sign-extend bit 47 into bits 63..48, the value is canonical. Otherwise it is not.</p>
+
+<h2>The two halves of virtual address space</h2>
+<p>With this rule, virtual addresses naturally divide into two regions:</p>
+<table class="corr-table">
+<tr><th>Range</th><th>Use</th></tr>
+<tr><td>0x00000000_00000000 .. 0x00007FFF_FFFFFFFF</td><td>User space (128 TiB)</td></tr>
+<tr><td>0xFFFF8000_00000000 .. 0xFFFFFFFF_FFFFFFFF</td><td>Kernel space (128 TiB)</td></tr>
+</table>
+<p>Everything in between is non-canonical and triggers a fault on any access. Operating systems exploit this for free guard pages — the entire 16-EB hole between user and kernel space is unreachable without any page-table entries.</p>
+
+<h2>What happens on a non-canonical access</h2>
+<p>Real hardware raises <strong>#GP (General Protection)</strong>, not #PF. The reasoning: a non-canonical address never even gets to the page walker — it's filtered out at the input stage.</p>
+<p>Our emulator currently reports non-canonical faults through the page-fault path with errorCode=0, because the #PF delivery infrastructure is the only fault path wired up in M1. Phase 4 will route this through proper #GP delivery.</p>
+<pre><span class="cm">// cpu/x86_64/mmu.go — Translate</span>
+<span class="kw">if</span> !<span class="fn">IsCanonicalAddr</span>(linAddr) {
+    <span class="cm">// Non-canonical addresses raise #GP, not #PF, in real hardware</span>
+    <span class="cm">// — but #PF is what M1's only caller (the data-path memory</span>
+    <span class="cm">// accessors) reports today. Phase 4 (long-mode entry / fault</span>
+    <span class="cm">// delivery) re-routes this to #GP.</span>
+    <span class="kw">return</span> 0, &amp;<span class="kw">PageFaultError</span>{Addr: linAddr}
+}<span class="lang-tag">go</span></pre>
+
+<h2>Why bit 47 specifically</h2>
+<p>The PML4 (Page-Map Level 4) has 512 entries — 9 bits of index. Four levels × 9 bits = 36 bits of table indexing. Plus 12 bits of page offset. 36 + 12 = 48. That's exactly the number of bits in a canonical address. Bit 47 is the sign bit of the canonical region; everything above must match.</p>
+
+<div class="box box-warn">
+<strong>Common bug</strong>
+A common emulator bug is to forget the canonical check and let non-canonical addresses run through the page walker. The walk may "succeed" (because the high bits never get inspected by the masks) and return a phantom physical address. Then guest writes silently corrupt unrelated memory. Our test <code>TestTranslate_NonCanonical</code> pins this.
+</div>
+`,
+  exercises: [
+    "Compute whether <code>0xDEAD_BEEF_CAFE_F00D</code> is canonical. Show your work.",
+    "Why doesn't the hardware just ignore the high bits silently? (Hint: forward compatibility — if a future CPU widens to 57 bits, code that 'reused' the high bits for tagging would break.)",
+    "Some software stores tag bits in the upper portion of pointers anyway (e.g. ARM has TBI — Top-Byte Ignore — which actually lets you do this). What's the equivalent x86_64 feature, and how recently did it land in production CPUs?"
+  ]
+},
+
+{
+  id: 11, phase: 3,
+  title: "Walking the Four Levels",
+  subtitle: "PML4 → PDPT → PD → PT, one byte at a time",
+  content: `
+<h2>The shape of a long-mode virtual address</h2>
+<pre> 63      48 47      39 38     30 29      21 20      12 11        0
++----------+-----------+----------+-----------+----------+-----------+
+|  sign-ext|   PML4    |   PDPT   |    PD     |    PT    |  offset   |
+| (= bit47)|  9 bits   |  9 bits  |  9 bits   |  9 bits  |  12 bits  |
++----------+-----------+----------+-----------+----------+-----------+
+       must equal bit 47 (canonical)<span class="lang-tag">layout</span></pre>
+<p>Four 9-bit indices select one entry at each level. The last 12 bits index inside the 4 KiB page. Each table has 512 entries × 8 bytes = 4 KiB, exactly fitting in one page.</p>
+
+<h2>The walk</h2>
+<p>CR3 holds the physical address of the PML4. We extract each 9-bit slice, multiply by 8 (entry size), add to the table base, read the entry, mask its physical-address bits, and repeat for the next level.</p>
+<pre><span class="cm">// cpu/x86_64/mmu.go — Translate, simplified</span>
+cr3 := c.cr[3] &amp; pte4KMask
+
+<span class="cm">// PML4</span>
+pml4Addr := cr3 + ((linAddr&gt;&gt;39)&amp;0x1FF)*8
+e := <span class="fn">readWalkEntry</span>(pml4Addr, ...)
+
+<span class="cm">// PDPT</span>
+pdptAddr := (e &amp; pte4KMask) + ((linAddr&gt;&gt;30)&amp;0x1FF)*8
+e = <span class="fn">readWalkEntry</span>(pdptAddr, ...)
+<span class="kw">if</span> e&amp;ptePS != 0 {
+    <span class="cm">// 1 GiB huge page leaf at PDPT level</span>
+    <span class="kw">return</span> (e &amp; pte1GMask) | (linAddr &amp; 0x3FFF_FFFF), <span class="kw">nil</span>
+}
+
+<span class="cm">// PD</span>
+pdAddr := (e &amp; pte4KMask) + ((linAddr&gt;&gt;21)&amp;0x1FF)*8
+e = <span class="fn">readWalkEntry</span>(pdAddr, ...)
+<span class="kw">if</span> e&amp;ptePS != 0 {
+    <span class="cm">// 2 MiB huge page leaf at PD level</span>
+    <span class="kw">return</span> (e &amp; pte2MMask) | (linAddr &amp; 0x1F_FFFF), <span class="kw">nil</span>
+}
+
+<span class="cm">// PT</span>
+ptAddr := (e &amp; pte4KMask) + ((linAddr&gt;&gt;12)&amp;0x1FF)*8
+e = <span class="fn">readWalkEntry</span>(ptAddr, ...)
+<span class="kw">return</span> (e &amp; pte4KMask) | (linAddr &amp; 0xFFF), <span class="kw">nil</span><span class="lang-tag">go</span></pre>
+
+<h2>The entry format</h2>
+<p>Every entry — PML4E, PDPTE, PDE, PTE — has the same 64-bit layout:</p>
+<table class="corr-table">
+<tr><th>Bit</th><th>Name</th><th>Meaning</th></tr>
+<tr><td>0</td><td>P</td><td>Present</td></tr>
+<tr><td>1</td><td>R/W</td><td>1 = writable</td></tr>
+<tr><td>2</td><td>U/S</td><td>1 = userland-accessible</td></tr>
+<tr><td>3,4</td><td>PWT, PCD</td><td>caching policy</td></tr>
+<tr><td>5</td><td>A</td><td>Accessed (set by CPU on first ref)</td></tr>
+<tr><td>6</td><td>D</td><td>Dirty (set by CPU on first write to leaf)</td></tr>
+<tr><td>7</td><td>PS</td><td>Page Size — 1 at non-leaf means "leaf here"</td></tr>
+<tr><td>8</td><td>G</td><td>Global (leaf only)</td></tr>
+<tr><td>12..51</td><td>—</td><td>Physical address (40 bits)</td></tr>
+<tr><td>52..62</td><td>—</td><td>Reserved / protection key</td></tr>
+<tr><td>63</td><td>NX</td><td>No-Execute (honoured only when EFER.NXE=1)</td></tr>
+</table>
+<p>The interior-vs-leaf distinction is encoded entirely in the PS bit at the non-leaf levels. A PDPT entry with PS=1 is a 1 GiB leaf; PS=0 means it points at a PD.</p>
+
+<h2>Where the walker lives</h2>
+<p>The whole implementation is in <code>cpu/x86_64/mmu.go</code>, around 200 lines including comments. The tests in <code>cpu/x86_64/mmu_test.go</code> cover every fault case: not-present at each level, write-to-readonly, user-to-supervisor, NX, reserved bits, non-canonical, huge pages with leftover bits in the page-frame field, A/D bit setting.</p>
+
+<div class="box box-key">
+<strong>The shape that matters</strong>
+Every page table you'll ever encounter on x86_64 is a 4 KiB block of 512 little-endian 64-bit entries with that same bit layout. PML4, PDPT, PD, PT — interchangeable structurally. The only thing that varies between levels is what you do with the result.
+</div>
+`,
+  exercises: [
+    "Hand-walk the translation for virtual address <code>0xFFFFFFFF_80000000</code> (Linux kernel virtual base). What are the four 9-bit indices?",
+    "Why is CR3 only required to be 4 KiB-aligned? (Hint: bottom 12 bits hold PCD/PWT/PCID flags, not address bits.)",
+    "Suppose you wanted to map all 128 TiB of user-space with 1 GiB huge pages. How many PDPT entries would you need? How many pages of page-table memory does that take?"
+  ]
+},
+
+{
+  id: 12, phase: 3,
+  title: "Huge Pages: 2 MiB and 1 GiB",
+  subtitle: "The shortcut that skips an entire level",
+  content: `
+<h2>Why huge pages exist</h2>
+<p>If every page in a system is 4 KiB, the kernel needs about 256 page-table entries for every megabyte mapped. For a 16 GiB process, that's millions of entries and thousands of page-table pages — a TLB-thrashing nightmare. The fix: bigger pages.</p>
+
+<h2>How the PS bit works</h2>
+<p>At the PD level, setting bit 7 (PS) turns the entry into a 2 MiB leaf instead of a pointer to a PT. The address field at this level holds a 2 MiB-aligned physical frame instead of a 4 KiB-aligned table pointer.</p>
+<p>At the PDPT level, setting bit 7 turns the entry into a 1 GiB leaf. The address field holds a 1 GiB-aligned physical frame. (1 GiB pages are an AMD64v2 feature; not every CPU supports them. Modern ones do.)</p>
+
+<h2>The address masks at each level</h2>
+<pre><span class="cm">// cpu/x86_64/mmu.go</span>
+<span class="kw">const</span> (
+    pte4KMask <span class="kw">uint64</span> = 0x000F_FFFF_FFFF_F000   <span class="cm">// bits 12..51</span>
+    pte2MMask <span class="kw">uint64</span> = 0x000F_FFFF_FFE0_0000   <span class="cm">// bits 21..51</span>
+    pte1GMask <span class="kw">uint64</span> = 0x000F_FFFF_C000_0000   <span class="cm">// bits 30..51</span>
+)<span class="lang-tag">go</span></pre>
+<p>A 2 MiB-aligned address has bits 0..20 = 0. A 1 GiB-aligned address has bits 0..29 = 0. The masks reflect this — they zero out the unused bits and combine with the offset-within-page on lookup.</p>
+
+<h2>The reserved-bits trap</h2>
+<p>If software sets the PS bit but leaves non-zero values in the bits that should be page-aligned-zero, that's a reserved-bit violation and the CPU raises #PF with the RSVD error-code bit set. Our walker checks this:</p>
+<pre><span class="cm">// 1 GiB huge page leaf at PDPT level</span>
+<span class="kw">if</span> e&amp;ptePS != 0 {
+    <span class="cm">// Verify bits 21..29 (which would otherwise index into PD/PT)</span>
+    <span class="cm">// are zero — non-zero bits there are reserved-bit violations.</span>
+    <span class="kw">if</span> e&amp;0x3FFF_E000 != 0 {
+        <span class="kw">return</span> 0, &amp;<span class="kw">PageFaultError</span>{
+            Addr: linAddr,
+            ErrorCode: <span class="fn">faultCode</span>(<span class="kw">true</span>, isWrite, isUser, isFetch, <span class="kw">true</span>),
+        }
+    }
+    <span class="kw">return</span> (e &amp; pte1GMask) | (linAddr &amp; 0x3FFF_FFFF), <span class="kw">nil</span>
+}<span class="lang-tag">go</span></pre>
+<p>The same pattern applies at the 2 MiB level with bits 12..20.</p>
+
+<h2>TLB pressure savings</h2>
+<p>A 4 KiB page covers ... 4 KiB. A 2 MiB page covers 2 MiB — 512× more. A 1 GiB page covers ... 1 GiB — 262144× more than the 4 KiB baseline. The TLB only has a few hundred entries; using huge pages lets the same TLB cover hundreds of GiB of working set.</p>
+<p>This matters most for two scenarios:</p>
+<ul>
+  <li><strong>The kernel direct map</strong>: Linux maps all of physical RAM into kernel virtual addresses, almost always using 2 MiB or 1 GiB pages.</li>
+  <li><strong>Large database working sets</strong>: PostgreSQL, MySQL, etc., have configuration options to allocate their buffer pool out of huge pages.</li>
+</ul>
+
+<h2>The tests pinning huge-page semantics</h2>
+<ul>
+  <li><code>TestTranslate_2MHugePage</code> — leaf at PD with several offsets verifies offset-in-page works.</li>
+  <li><code>TestTranslate_1GHugePage</code> — leaf at PDPT.</li>
+  <li><code>TestTranslate_2M_ReservedAddrBits</code> — a non-zero bit in [12..20] of a 2 MiB leaf faults with RSVD.</li>
+  <li><code>TestTranslate_1G_ReservedAddrBits</code> — same for [21..29] in a 1 GiB leaf.</li>
+  <li><code>TestTranslate_2M_PermissionsAtLeaf</code> — leaf permission bits (RW etc.) apply just like for 4 KiB pages.</li>
+</ul>
+
+<div class="box box-note">
+<strong>Note</strong>
+The page walker we wrote does not implement a TLB cache — every translate walks the tables from scratch. Real hardware caches walks aggressively. Our hot-path optimisation will likely be a TLB at the cpu/x86_64 level mirroring what cpu/x86's tlb.go provides for i386.
+</div>
+`,
+  exercises: [
+    "Manually compute the entry layout for: PDPT entry at physical 0x10000, mapping virtual 0x40000000 (1 GiB-aligned) to physical 0x80000000 (1 GiB-aligned), writable, kernel-only. Verify bits 21..29 are zero in your encoding.",
+    "Read the Linux kernel boot code for the direct map. It uses 1 GiB pages where possible. Find the function that decides between 4 KiB, 2 MiB, and 1 GiB.",
+    "Add a test (don't write it yet — just specify it) for the case where a 2 MiB leaf has PS bit clear but everything else looks like a 2 MiB leaf. What should happen?"
+  ]
+},
+
+{
+  id: 13, phase: 3,
+  title: "The Page-Fault Error Code",
+  subtitle: "Five bits that tell the OS exactly what went wrong",
+  content: `
+<h2>The pushed-on-stack value</h2>
+<p>When the CPU delivers a #PF (interrupt vector 14), it pushes a 32-bit error code onto the kernel stack. Five bits in that code describe the failure:</p>
+<table class="corr-table">
+<tr><th>Bit</th><th>Name</th><th>Meaning</th></tr>
+<tr><td>0</td><td>P</td><td>0 = page not present; 1 = protection violation</td></tr>
+<tr><td>1</td><td>W</td><td>1 = the access was a write</td></tr>
+<tr><td>2</td><td>U</td><td>1 = the access was from user mode (CPL=3)</td></tr>
+<tr><td>3</td><td>RSVD</td><td>1 = a reserved bit in a page-table entry was set</td></tr>
+<tr><td>4</td><td>I/F</td><td>1 = the access was an instruction fetch (with NX violation)</td></tr>
+</table>
+
+<h2>How the OS uses this</h2>
+<p>The error code is a complete summary of the kernel's response policy:</p>
+<ul>
+  <li><strong>P=0:</strong> "Page is just missing" — Linux pages in the file-backed mapping, COW, or grows the stack. Common, fast path.</li>
+  <li><strong>P=1, W=1, RSVD=0:</strong> "Page is present but the access was a write to read-only" — Linux's COW path: if this is a writable PTE turned read-only for COW, duplicate the page; otherwise SIGSEGV the process.</li>
+  <li><strong>P=1, U=1, U/S in PTE was 0:</strong> A user process tried to access kernel memory. SIGSEGV.</li>
+  <li><strong>RSVD=1:</strong> Reserved-bit violation. Almost always a kernel bug — userspace can't directly write PTEs.</li>
+  <li><strong>I/F=1:</strong> The instruction at RIP can't execute because the page is NX. Often a sign of a stack-smashing attack hitting a guard page that data ended up on, or W^X violation.</li>
+</ul>
+
+<h2>The emulator's representation</h2>
+<pre><span class="cm">// cpu/x86_64/mmu.go</span>
+<span class="kw">type</span> PageFaultError <span class="kw">struct</span> {
+    Addr      <span class="kw">uint64</span>   <span class="cm">// goes into CR2</span>
+    ErrorCode <span class="kw">uint32</span>   <span class="cm">// pushed on stack in Phase 4</span>
+}
+
+<span class="kw">const</span> (
+    PFErrP     <span class="kw">uint32</span> = 1 &lt;&lt; 0
+    PFErrWrite <span class="kw">uint32</span> = 1 &lt;&lt; 1
+    PFErrUser  <span class="kw">uint32</span> = 1 &lt;&lt; 2
+    PFErrRsvd  <span class="kw">uint32</span> = 1 &lt;&lt; 3
+    PFErrFetch <span class="kw">uint32</span> = 1 &lt;&lt; 4
+)<span class="lang-tag">go</span></pre>
+<p>For now, faults are returned through Step as a typed error. Phase 4 of the implementation will deliver them through the IDT — at that point the kernel's #PF handler reads the same struct, CR2 gets <code>Addr</code>, and ErrorCode lands on the stack.</p>
+
+<h2>The faultCode builder</h2>
+<pre><span class="kw">func</span> <span class="fn">faultCode</span>(present, isWrite, isUser, isFetch, rsvd <span class="kw">bool</span>) <span class="kw">uint32</span> {
+    <span class="kw">var</span> ec <span class="kw">uint32</span>
+    <span class="kw">if</span> present { ec |= PFErrP }
+    <span class="kw">if</span> isWrite { ec |= PFErrWrite }
+    <span class="kw">if</span> isUser  { ec |= PFErrUser }
+    <span class="kw">if</span> rsvd    { ec |= PFErrRsvd }
+    <span class="kw">if</span> isFetch { ec |= PFErrFetch }
+    <span class="kw">return</span> ec
+}<span class="lang-tag">go</span></pre>
+<p>This makes the fault sites in Translate easy to read — at each point of failure we say "is this a present-fault or not-present? was it a write? a user access? an instruction fetch? a reserved-bit violation?" and the bits assemble themselves.</p>
+
+<div class="box box-key">
+<strong>Why this matters</strong>
+The kernel makes hundreds of millions of decisions per second based on these five bits. The accuracy of an emulator's error-code reporting is critical: a kernel that gets the wrong code will SIGSEGV programs that should keep running, or COW pages it shouldn't, or fail to deliver demand-paged file contents.
+</div>
+`,
+  exercises: [
+    "Write the error code you'd expect when a userspace program writes to a kernel-only page in a non-canonical address. (Trick: non-canonical doesn't even reach the page walker; the answer is from a different fault.)",
+    "Linux's <code>do_page_fault</code> is the kernel function that consumes this error code. Read its top of file (arch/x86/mm/fault.c) and identify how each of the five bits steers the fault path.",
+    "If you wanted to detect rowhammer-style RSVD-bit attacks, what would you watch for? (Hint: a guest setting RSVD bits is suspect; emulators should log it.)"
+  ]
+},
+
+// ============================================================
+// PHASE 4 — Long-Mode Decode & Execute
+// ============================================================
+{
+  id: 14, phase: 4,
+  title: "Step and the Prefix Scan",
+  subtitle: "How a single byte decides what the rest of the instruction means",
+  content: `
+<h2>The shape of every Step call</h2>
+<p>Step does five things in order:</p>
+<ol>
+  <li>Save RIP in case we need to back out on a fault.</li>
+  <li>Set up a deferred recover for panics raised by the memory subsystem.</li>
+  <li>Loop over prefix bytes until we see a non-prefix.</li>
+  <li>Dispatch the opcode through <code>executeOpcode</code>.</li>
+  <li>Let the deferred recover convert any pageFaultPanic back into a returned error.</li>
+</ol>
+
+<h2>The deferred recover pattern</h2>
+<pre><span class="cm">// cpu/x86_64/exec.go</span>
+<span class="kw">func</span> (c *<span class="kw">CPU</span>) <span class="fn">Step</span>() (err <span class="kw">error</span>) {
+    origRIP := c.rip
+    <span class="kw">defer</span> <span class="kw">func</span>() {
+        <span class="kw">if</span> r := <span class="fn">recover</span>(); r != <span class="kw">nil</span> {
+            <span class="kw">switch</span> ex := r.(<span class="kw">type</span>) {
+            <span class="kw">case</span> pageFaultPanic:
+                c.rip = origRIP    <span class="cm">// rewind so the handler restarts cleanly</span>
+                err = ex.Err
+            <span class="kw">default</span>:
+                <span class="kw">panic</span>(r)
+            }
+        }
+    }()
+    ...
+}<span class="lang-tag">go</span></pre>
+<p>Why panic-and-recover instead of error returns everywhere? The memory accessors are called from dozens of places in the decoder. Threading <code>error</code> through every read and write would clutter the call sites and create dozens of opportunities for a forgotten check. Panic gives us "fault unwinding" cleanly — every accessor either succeeds or longjmps to Step's recover.</p>
+
+<h2>The prefix loop</h2>
+<p>The seven valid prefix bytes (excluding REX, which is special) are encoded as a switch:</p>
+<pre><span class="kw">for</span> {
+    b := c.<span class="fn">fetch8</span>()
+    <span class="kw">switch</span> {
+    <span class="kw">case</span> b == 0x66: operandOverride = <span class="kw">true</span>
+    <span class="kw">case</span> b == 0x67: addressSize = 4
+    <span class="kw">case</span> b == 0xF0, b == 0xF2, b == 0xF3:    <span class="cm">// LOCK / REPNE / REPE</span>
+    <span class="kw">case</span> b == 0x2E: segOverride = CS
+    <span class="kw">case</span> b == 0x36: segOverride = SS
+    <span class="kw">case</span> b == 0x3E: segOverride = DS
+    <span class="kw">case</span> b == 0x26: segOverride = ES
+    <span class="kw">case</span> b == 0x64: segOverride = FS
+    <span class="kw">case</span> b == 0x65: segOverride = GS
+    <span class="kw">case</span> b &gt;= 0x40 &amp;&amp; b &lt;= 0x4F:
+        rex = b
+    <span class="kw">default</span>:
+        <span class="kw">return</span> c.<span class="fn">executeOpcode</span>(b, rex, operandSize, addressSize, segOverride)
+    }
+}<span class="lang-tag">go</span></pre>
+
+<h2>Prefix interactions</h2>
+<p>Most prefixes can stack — you can have <code>67 65 48 8B</code> (address-override + GS-override + REX.W + MOV r,r/m). Some can't:</p>
+<ul>
+  <li>REP/REPE/REPNE are valid only on string instructions; on others they may have alternate meanings (e.g. REPNE BSF = TZCNT on BMI1+).</li>
+  <li>0x66 and REX.W both target operand size; REX.W wins.</li>
+  <li>Segment override prefixes ignore CS/DS in 64-bit mode for memory operands (the segments are forced to base=0). FS and GS still work.</li>
+</ul>
+
+<h2>Address size handling</h2>
+<p>In long mode the default address size is 64 bits. A 0x67 prefix shrinks it to 32 bits. There's no way to get 16-bit addressing — the 0x67 prefix in long mode means "32-bit," not "16-bit" as it would in i386.</p>
+<p>Our M1 decoder only handles 64-bit address-size mode (the default). 32-bit addressing under 0x67 will arrive when we wire up the compatibility-mode path in a later phase.</p>
+
+<div class="box box-note">
+<strong>Tip</strong>
+A surprising amount of x86_64 decoder logic is taken up by the prefix loop and the various "REX may or may not appear" branches. Once the opcode byte arrives, the rest is comparatively straightforward — the dispatch table.
+</div>
+`,
+  exercises: [
+    "Decode the instruction bytes <code>F0 48 89 01</code>. The first byte is LOCK. The second is REX.W. The third is MOV Ev,Gv. The fourth is ModR/M. What does it do?",
+    "What happens if you stack two segment overrides, e.g. <code>2E 64 8B 06</code>? (Hint: only the last one takes effect — see how our loop overwrites segOverride.)",
+    "Look at <code>cpu/x86/exec.go</code>'s prefix loop in the i386 backend. Compare to ours. What's identical, what's different, and what do those differences imply about the trade-off between the two backends?"
+  ]
+},
+
+{
+  id: 15, phase: 4,
+  title: "ModR/M with REX",
+  subtitle: "Two bytes, sometimes three, that say where the operands live",
+  content: `
+<h2>The same ModR/M as i386, plus three bits</h2>
+<p>The ModR/M byte is structurally identical to i386: mod (2 bits) + reg (3) + rm (3). The REX prefix adds:</p>
+<ul>
+  <li><strong>REX.R</strong> extends ModR/M.reg from 3 to 4 bits, allowing R8..R15 as the "other" operand of an instruction.</li>
+  <li><strong>REX.X</strong> extends SIB.index from 3 to 4 bits.</li>
+  <li><strong>REX.B</strong> extends ModR/M.rm (or SIB.base, depending on encoding) from 3 to 4 bits.</li>
+</ul>
+<p>If no REX prefix is present, all three bits are implicitly zero. So an instruction that uses RAX..RDI doesn't need a REX byte unless it wants the 64-bit operand size (REX.W).</p>
+
+<h2>The decode function</h2>
+<p>Our <code>parseModRM64</code> is around 90 lines in <code>cpu/x86_64/modrm.go</code>. The structure mirrors i386's <code>parseModRM32</code> but with three new branches:</p>
+<ol>
+  <li>Apply REX.R to the reg field after the byte is split.</li>
+  <li>For register operands (mod=3), apply REX.B to the rm field.</li>
+  <li>For SIB byte parsing, apply REX.X to index and REX.B to base.</li>
+  <li>For the special mod=00, rm=101 case, do <em>not</em> apply REX.B — that encoding is RIP-relative in long mode and REX.B is ignored there.</li>
+</ol>
+
+<h2>The SIB byte's special cases</h2>
+<p>SIB itself has two ugly corners that pre-date REX:</p>
+<table class="corr-table">
+<tr><th>Encoding</th><th>Meaning</th></tr>
+<tr><td>SIB.index = 100 with REX.X=0</td><td>"No index" — RSP cannot be an index register</td></tr>
+<tr><td>SIB.index = 100 with REX.X=1</td><td>R12 <em>is</em> a valid index — REX.X reclaims the encoding</td></tr>
+<tr><td>SIB.base = 101 with mod=00</td><td>"No base register" — a disp32 follows instead</td></tr>
+<tr><td>SIB.base = 101 with mod≠0</td><td>RBP+disp; default segment SS</td></tr>
+</table>
+<p>The decoder honours all four:</p>
+<pre><span class="cm">// cpu/x86_64/modrm.go — SIB branch</span>
+<span class="kw">if</span> !(idx == 4 &amp;&amp; rex&amp;rexX == 0) {
+    idxReg := idx
+    <span class="kw">if</span> rex&amp;rexX != 0 { idxReg |= 0x8 }
+    indexContrib = c.reg64[idxReg] * scale
+}
+
+<span class="kw">if</span> base == 5 &amp;&amp; mod == 0 {
+    <span class="cm">// SIB with base==5, mod==00: disp32 instead of base register.</span>
+    baseContrib = <span class="kw">uint64</span>(int64(int32(c.<span class="fn">fetch32</span>())))
+} <span class="kw">else</span> {
+    baseReg := base
+    <span class="kw">if</span> rex&amp;rexB != 0 { baseReg |= 0x8 }
+    baseContrib = c.reg64[baseReg]
+    <span class="kw">if</span> base == 4 || base == 5 {
+        r.defaultSeg = SS
+    }
+}<span class="lang-tag">go</span></pre>
+
+<h2>The default segment rule</h2>
+<p>Each addressing mode has an implicit segment register — typically DS, but SS when the encoding uses RSP or RBP as a base. In 64-bit mode the segment bases for CS/DS/ES/SS are all zero, so the segment selection only matters for FS/GS overrides. We still track it so future segment-override code paths can route correctly without re-parsing the ModR/M.</p>
+
+<div class="box box-key">
+<strong>What this lets us encode</strong>
+With ModR/M + SIB + REX, x86_64 instructions can address:
+<ul>
+  <li>Any of 16 GPRs as source/destination (REX.R/B)</li>
+  <li>Memory with any of 16 base + 16 index registers, scale 1/2/4/8 (REX.B + REX.X)</li>
+  <li>Memory with a 32-bit immediate displacement (SIB no-base)</li>
+  <li>RIP + disp32 (the long-mode-only encoding)</li>
+</ul>
+About 1.4 million distinct effective addresses are encodable per opcode — and the encoding is variable-length, only as wide as it needs to be.
+</div>
+`,
+  exercises: [
+    "Decode <code>4C 03 24 06</code>. (REX.WR, ADD Gv Ev, ModR/M=00 100 100 with SIB=00 000 110.) What is the destination? What's the effective address?",
+    "Why does the encoding <code>mod=00, rm=100, SIB.base=101</code> exist? (Hint: you might want disp32+index*scale without any base.)",
+    "Write a test that creates two encodings of <code>MOV [R13], RAX</code>: one valid (using disp8=0), one invalid (trying to use mod=00, rm=101). Confirm the disassembler/assembler agrees the second form is not allowed."
+  ]
+},
+
+{
+  id: 16, phase: 4,
+  title: "Memory Access and Fault Recovery",
+  subtitle: "The plumbing between the decoder and the page walker",
+  content: `
+<h2>The shape of an access</h2>
+<p>The decoder asks for read/write of 1, 2, 4, or 8 bytes at a virtual address. The memory layer:</p>
+<ol>
+  <li>Translates the virtual address through the page walker (if paging is on).</li>
+  <li>Reads/writes the physical address through the memMap.</li>
+  <li>Panics with <code>pageFaultPanic</code> on any failure.</li>
+</ol>
+<p>The single-byte version is the primitive; wider accesses byte-at-a-time. That's slow (each byte gets its own page-walk) but correct against cross-page reads. Optimisation arrives later.</p>
+
+<pre><span class="cm">// cpu/x86_64/mem.go</span>
+<span class="kw">func</span> (c *<span class="kw">CPU</span>) <span class="fn">readMem8</span>(addr <span class="kw">uint64</span>) <span class="kw">uint8</span> {
+    phys, perr := c.<span class="fn">translateForData</span>(addr, <span class="kw">false</span>)
+    <span class="kw">if</span> perr != <span class="kw">nil</span> {
+        <span class="kw">panic</span>(pageFaultPanic{Err: perr})
+    }
+    v, err := c.memMap.<span class="fn">Read8</span>(phys)
+    <span class="kw">if</span> err != <span class="kw">nil</span> {
+        <span class="kw">panic</span>(pageFaultPanic{Err: &amp;<span class="kw">PageFaultError</span>{Addr: addr}})
+    }
+    <span class="kw">return</span> v
+}<span class="lang-tag">go</span></pre>
+
+<h2>Why panic and not return error</h2>
+<p>Every accessor returns a value (the byte/halfword/word/qword). Adding a second return for error would force the decoder to check 30+ call sites for every instruction. With panic-and-recover:</p>
+<ul>
+  <li>Accessors stay one-return signatures: <code>readMem8(addr) uint8</code>.</li>
+  <li>Step's deferred recover catches any fault and rewinds RIP.</li>
+  <li>No risk of "forgot to check error" — the panic propagates automatically.</li>
+</ul>
+<p>The cost is a small performance hit from the deferred function. The alternative — explicit error returns everywhere — is more expensive in maintenance burden than the runtime cost.</p>
+
+<h2>The translate split</h2>
+<p>Two helpers wrap <code>Translate</code> for the two access flavours:</p>
+<pre><span class="kw">func</span> (c *<span class="kw">CPU</span>) <span class="fn">translateForData</span>(addr <span class="kw">uint64</span>, isWrite <span class="kw">bool</span>) (<span class="kw">uint64</span>, *<span class="kw">PageFaultError</span>) {
+    <span class="kw">if</span> c.cr[0]&amp;CR0_PG == 0 {
+        <span class="kw">return</span> addr, <span class="kw">nil</span>          <span class="cm">// paging off ⇒ identity</span>
+    }
+    <span class="kw">return</span> c.<span class="fn">Translate</span>(addr, isWrite, c.cpl == 3, <span class="kw">false</span>)
+}
+
+<span class="kw">func</span> (c *<span class="kw">CPU</span>) <span class="fn">translateForFetch</span>(addr <span class="kw">uint64</span>) (<span class="kw">uint64</span>, *<span class="kw">PageFaultError</span>) {
+    <span class="kw">if</span> c.cr[0]&amp;CR0_PG == 0 {
+        <span class="kw">return</span> addr, <span class="kw">nil</span>
+    }
+    <span class="kw">return</span> c.<span class="fn">Translate</span>(addr, <span class="kw">false</span>, c.cpl == 3, <span class="kw">true</span>)
+}<span class="lang-tag">go</span></pre>
+<p>The fetch path passes <code>isFetch=true</code> so an NX page faults with the I/F bit set. The data path passes the actual W/R direction so the walker enforces RW permissions.</p>
+
+<h2>lip() — the linear instruction pointer</h2>
+<p>What is "the linear address of the next instruction"? It depends on the mode:</p>
+<pre><span class="kw">func</span> (c *<span class="kw">CPU</span>) <span class="fn">lip</span>() <span class="kw">uint64</span> {
+    <span class="kw">if</span> c.mode == ModeLong64 || c.mode == ModeCompat32 {
+        <span class="kw">return</span> c.rip   <span class="cm">// CS.base is forced zero in long mode</span>
+    }
+    <span class="kw">return</span> c.segBase[CS] + c.rip
+}<span class="lang-tag">go</span></pre>
+<p>This is the one place outside the dispatcher that the mode field is consulted on every instruction. Hot path.</p>
+
+<h2>The fault-restart contract</h2>
+<p>When Step catches a pageFaultPanic, it rewinds RIP to its value at the start of the instruction. That means:</p>
+<ul>
+  <li>The kernel's #PF handler can fix the underlying issue (page in the data, set up COW, grow the stack) and IRETQ back. Execution restarts at the same instruction.</li>
+  <li>Half-completed instructions (e.g. the first push of a multi-push sequence) leave a defined state — RSP changes get rolled back implicitly because they only become visible after the instruction commits.</li>
+</ul>
+<p>The "implicit rollback" works in M1 because most instructions modify register state at the end of their execute path. Multi-step instructions like REP MOVS would need explicit rollback strategies; those arrive when we implement string ops.</p>
+
+<div class="box box-warn">
+<strong>Gotcha</strong>
+RIP rewind alone isn't always enough. If an instruction has already written one byte of a 4-byte memory store and faults on the second byte (cross-page write), partial writes are visible. Real hardware spec says page-fault delivery is "as if the instruction had not started" — but the bus has already moved bytes. Our M1 emulator simply accepts this; the test programs we've written so far don't cross pages.
+</div>
+`,
+  exercises: [
+    "Why does <code>translateForData</code> short-circuit when CR0.PG=0? Read the Intel SDM: is it valid for long mode to have paging off?",
+    "Trace the call stack when a kernel-mode write to a read-only page happens. Start at <code>writeMem8</code>, follow the panic, and end at Step's recover.",
+    "Implement a TLB cache (similar to <code>cpu/x86/tlb.go</code>) for the long-mode walker. The cache should be invalidated on CR3 writes and INVLPG. Spec the changes you'd need to <code>mem.go</code> and <code>mmu.go</code>."
+  ]
+},
+
+{
+  id: 17, phase: 4,
+  title: "ALU and RFLAGS",
+  subtitle: "Carry, sign, overflow — the side-effects that matter",
+  content: `
+<h2>What RFLAGS is</h2>
+<p>RFLAGS is a 64-bit register, but only the low 32 bits — identical to i386's EFLAGS — carry meaningful information. The upper 32 are reserved and read back as zero. Every arithmetic and logical instruction updates a subset of these flags.</p>
+<p>The flags relevant to M1's ADD/SUB:</p>
+<table class="corr-table">
+<tr><th>Bit</th><th>Name</th><th>Set when</th></tr>
+<tr><td>0</td><td>CF</td><td>Unsigned overflow (carry-out of the high bit)</td></tr>
+<tr><td>2</td><td>PF</td><td>Low byte of the result has even parity</td></tr>
+<tr><td>4</td><td>AF</td><td>Carry from bit 3 to bit 4 (BCD aid)</td></tr>
+<tr><td>6</td><td>ZF</td><td>Result is zero</td></tr>
+<tr><td>7</td><td>SF</td><td>Result's high bit (treated as a sign bit) is 1</td></tr>
+<tr><td>11</td><td>OF</td><td>Signed overflow</td></tr>
+</table>
+
+<h2>Eager vs lazy flags</h2>
+<p>The i386 backend uses a <em>lazy</em> flag scheme — it stores the operation type and operands, computing each flag only when the next instruction reads it. That's a 5-10% speedup on hot loops because most flag values are never read.</p>
+<p>The M1 long-mode backend uses <em>eager</em> flags — every ADD/SUB writes all six bits directly. Simpler to read, simpler to test, slower in theory. We'll switch to lazy flags after the decoder is feature-complete and we have profile data showing it actually matters.</p>
+
+<h2>The math</h2>
+<pre><span class="cm">// cpu/x86_64/opcodes.go — add</span>
+<span class="kw">func</span> <span class="fn">add</span>(a, b <span class="kw">uint64</span>, size <span class="kw">uint8</span>) (<span class="kw">uint64</span>, flagBits) {
+    m := <span class="fn">mask</span>(size)
+    a &amp;= m
+    b &amp;= m
+    r := (a + b) &amp; m
+    <span class="kw">var</span> fl flagBits
+    fl.cf = (a + b) &lt; a              <span class="cm">// unsigned overflow on full 64-bit add</span>
+    <span class="kw">if</span> size != 8 {
+        fl.cf = (a+b)&amp;(m+1) != 0     <span class="cm">// narrower widths: carry out of bit size*8</span>
+    }
+    fl.af = ((a ^ b ^ r) &amp; 0x10) != 0
+    fl.zf = r == 0
+    fl.sf = r&amp;<span class="fn">signBit</span>(size) != 0
+    fl.of = ((^(a ^ b)) &amp; (a ^ r) &amp; <span class="fn">signBit</span>(size)) != 0
+    fl.pf = <span class="fn">parity8</span>(<span class="kw">uint8</span>(r))
+    <span class="kw">return</span> r, fl
+}<span class="lang-tag">go</span></pre>
+<p>The two-line OF formula is worth memorising:</p>
+<ul>
+  <li>For addition: OF = (~(a^b) &amp; (a^r) &amp; signBit). Translation: the inputs have the same sign, but the result has a different sign — signed overflow.</li>
+  <li>For subtraction: OF = ((a^b) &amp; (a^r) &amp; signBit). Translation: the inputs have different signs, and the result's sign differs from a's.</li>
+</ul>
+
+<h2>The setArithFlags writeback</h2>
+<pre><span class="kw">func</span> (c *<span class="kw">CPU</span>) <span class="fn">setArithFlags</span>(fl flagBits) {
+    f := c.rflags
+    f &amp;^= RFLAGS_CF | RFLAGS_PF | RFLAGS_AF | RFLAGS_ZF | RFLAGS_SF | RFLAGS_OF
+    <span class="kw">if</span> fl.cf { f |= RFLAGS_CF }
+    ...
+    c.rflags = f | 2   <span class="cm">// preserve bit 1 reserved-always-set</span>
+}<span class="lang-tag">go</span></pre>
+<p>Bit 1 of RFLAGS is reserved and reads as 1 on real hardware. We preserve it explicitly so any code that pushes flags onto the stack and inspects them sees the correct value.</p>
+
+<h2>The 64-bit tests pin this</h2>
+<pre><span class="kw">func</span> <span class="fn">TestDecode_ADD_64_Flags</span>(t *<span class="kw">testing</span>.<span class="kw">T</span>) {
+    c.<span class="fn">SetReg64</span>(<span class="ct">RAX</span>, 0xFFFFFFFF_FFFFFFFE)
+    c.<span class="fn">SetReg64</span>(<span class="ct">RBX</span>, 2)
+    <span class="cm">// 48 01 D8   add rax, rbx</span>
+    <span class="fn">stepN</span>(t, c, 1)
+    <span class="cm">// RAX = 0; CF set (unsigned overflow); ZF set; SF clear</span>
+}<span class="lang-tag">go</span></pre>
+
+<div class="box box-think">
+<strong>Why both CF and OF exist</strong>
+A CPU doesn't know whether you're using a register as a signed or an unsigned number. So it computes <em>both</em> overflow indicators on every arithmetic op. The branch instructions then pick which one matters: <code>JC</code> tests CF (unsigned), <code>JO</code> tests OF (signed). The same instruction with two flag readings supports two universes of branch conditions.
+</div>
+`,
+  exercises: [
+    "Trace the flags for <code>SUB AL, AL</code> starting from AL=0x80. (Expected: result=0, ZF=1, all others 0.) Now <code>SUB AL, AL</code> starting from AL=0xFF — same flags?",
+    "Why is parity computed on only the low byte of the result, regardless of operand width? (Hint: legacy from 8088 days when PF mattered for serial-line correctness.)",
+    "Add a test for SUB triggering OF (signed overflow): subtract -128 from 0 in 8-bit operands. Verify OF=1, CF=0."
+  ]
+},
+
+// ============================================================
+// PHASE 5 — The Road Ahead
+// ============================================================
+{
+  id: 18, phase: 5,
+  title: "Long-Mode Interrupts and IRETQ (Planned)",
+  subtitle: "Why the IDT got 50% bigger in 64-bit mode",
+  content: `
+<h2>What this lesson will cover</h2>
+<p>This lesson lands when the long-mode interrupt path is implemented. The scope:</p>
+<ul>
+  <li>The 16-byte IDT gate. i386 uses 8-byte gates; long mode doubles them to hold a 64-bit offset plus the new IST (Interrupt Stack Table) index.</li>
+  <li>IST: a per-process array of seven alternate kernel stacks. Specific interrupts (NMI, double fault, machine check) can switch to a designated stack regardless of where the faulting context was running.</li>
+  <li>IRETQ: the long-mode interrupt return. Pops five 8-byte values from the stack (RIP, CS, RFLAGS, RSP, SS) — always all five, even within the same privilege level. This is different from i386's IRET which only pops the privilege-change words on a privilege transition.</li>
+  <li>The #PF, #GP, #UD, #DF handlers we'll wire up.</li>
+</ul>
+
+<h2>Why this is non-trivial</h2>
+<p>Interrupt delivery in long mode involves:</p>
+<ol>
+  <li>Vector lookup in the IDT (CR4.IDTR.base + vec*16).</li>
+  <li>Privilege check vs the gate's DPL.</li>
+  <li>Optional stack switch via IST.</li>
+  <li>Saving the interrupted context — RIP, CS, RFLAGS, RSP, SS, and optionally an error code — on the new stack.</li>
+  <li>Loading the handler's CS:RIP from the gate.</li>
+  <li>Clearing TF/RF (and IF for interrupt gates) in RFLAGS.</li>
+</ol>
+<p>Each step has its own failure modes (stack fault during context save, mismatched CS for the handler, IST index out of range). That's why this is its own phase.</p>
+
+<h2>Today's status</h2>
+<p>In M1, page faults from Translate are surfaced as a returned <code>*PageFaultError</code> from Step. No interrupt is delivered. The Run loop sees the error and returns it. Future Linux boot code will need this:</p>
+<pre><span class="kw">case</span> pageFaultPanic:
+    c.rip = origRIP
+    err = ex.Err            <span class="cm">// M1: return as error</span>
+    <span class="cm">// Phase 4: deliver as INT 14 with CR2=Err.Addr, error-code on stack</span><span class="lang-tag">go</span></pre>
+
+<div class="box box-note">
+<strong>Not yet implemented</strong>
+This is a roadmap entry. The lesson body will be expanded when the long-mode interrupt path lands in the emulator. Until then, treat this as a preview of what's coming.
+</div>
+`,
+  exercises: [
+    "Read the AMD APM Vol 2, Chapter 8 (Exceptions and Interrupts) — specifically the IDT gate format and IST mechanism. Note what differs from the i386 chapter.",
+    "Why does long-mode IRETQ always pop SS and RSP, even within the same privilege level? (Hint: it has to do with x86_64 dropping the implicit stack-switch rule.)",
+    "Sketch the layout of a 16-byte IDT gate. What's where? (Hint: 64-bit RIP split into 16+16+32 bits across the gate, plus selector, IST, type, DPL, P.)"
+  ]
+},
+
+{
+  id: 19, phase: 5,
+  title: "SYSCALL, SWAPGS, and FSGSBASE (Planned)",
+  subtitle: "The fast path between user and kernel",
+  content: `
+<h2>What this lesson will cover</h2>
+<ul>
+  <li><strong>SYSCALL</strong>: a single-instruction kernel entry. Replaces SYSENTER/SYSEXIT. Loads RIP from MSR LSTAR, CS from STAR, masks RFLAGS by MSR SFMASK. About 3× faster than INT 80h on a modern CPU.</li>
+  <li><strong>SYSRET</strong>: the return. Loads RIP from RCX, RFLAGS from R11.</li>
+  <li><strong>SWAPGS</strong>: atomic swap of the current GS.base and KernelGSBase MSRs. Used at every kernel entry/exit to flip from per-CPU kernel data to the user's TLS pointer.</li>
+  <li><strong>FSGSBASE</strong>: an instruction family (RDFSBASE, RDGSBASE, WRFSBASE, WRGSBASE) that lets userspace read/write its own FS/GS base without going through a system call. CR4.FSGSBASE gates this.</li>
+</ul>
+
+<h2>Why this is on the critical path</h2>
+<p>Every Linux system call goes through SYSCALL. Linking up the SYSCALL fast path is what makes the difference between an emulator that loads init and one that gets to a shell prompt. Per-CPU data (current task pointer, scheduler state, percpu variables) lives off GS — so SWAPGS is on the literal hot path of every interrupt and system call entry.</p>
+
+<h2>The MSRs we need to model</h2>
+<pre><span class="cm">// cpu/x86_64/cpu.go — already declared</span>
+msrStar   <span class="kw">uint64</span>   <span class="cm">// SYSCALL target CS/SS + 32-bit entry RIP</span>
+msrLstar  <span class="kw">uint64</span>   <span class="cm">// SYSCALL 64-bit entry RIP</span>
+msrCstar  <span class="kw">uint64</span>   <span class="cm">// SYSCALL compat-mode RIP</span>
+msrSFMask <span class="kw">uint64</span>   <span class="cm">// RFLAGS clear-mask on SYSCALL entry</span>
+msrFSBase       <span class="kw">uint64</span>
+msrGSBase       <span class="kw">uint64</span>
+msrKernelGSBase <span class="kw">uint64</span>   <span class="cm">// what SWAPGS swaps in/out</span><span class="lang-tag">go</span></pre>
+
+<h2>The SYSCALL semantics</h2>
+<p>On SYSCALL:</p>
+<ol>
+  <li>RCX ← RIP (save return)</li>
+  <li>R11 ← RFLAGS (save flags)</li>
+  <li>RIP ← LSTAR (jump to entry point)</li>
+  <li>CS, SS ← STAR[47:32] | 0/8 (load kernel selectors)</li>
+  <li>RFLAGS &amp;= ~SFMASK (mask interrupt-unsafe bits)</li>
+</ol>
+<p>The interesting wrinkle: SYSCALL does <em>not</em> switch stacks. The kernel must do that itself via SWAPGS + RSP-load-from-GS, or — on PTI-enabled kernels — a more involved trampoline.</p>
+
+<div class="box box-note">
+<strong>Not yet implemented</strong>
+Phase 6 in the implementation roadmap. The MSR slots are already in the CPU struct so the decoder can later hook into WRMSR cleanly.
+</div>
+`,
+  exercises: [
+    "Read Linux's <code>arch/x86/entry/entry_64.S</code> — specifically <code>entry_SYSCALL_64</code>. Count the instructions executed between the SYSCALL and the C-level system-call dispatcher.",
+    "Why does SYSCALL save RIP to RCX and RFLAGS to R11 (rather than a kernel stack)? (Hint: speed; the kernel doesn't trust the user stack and won't touch it until SWAPGS gets per-CPU data accessible.)",
+    "If a user process executes SWAPGS directly (not via SYSCALL), what happens? (Hint: SWAPGS is a privileged instruction; #GP on CPL=3.)"
+  ]
+},
+
+{
+  id: 20, phase: 5,
+  title: "Booting a 64-bit Linux Kernel (Planned)",
+  subtitle: "The end goal — and what stands between us and it",
+  content: `
+<h2>The end state</h2>
+<p>Run <code>./bin/temu -machine x86_64 -kernel vmlinux-x86_64 -initrd initrd.cpio.gz</code> and get a shell prompt. The kernel does the real-mode → protected-mode → long-mode walk under our emulator, mounts the initrd, runs <code>/init</code>, and lands you at busybox.</p>
+
+<h2>What's in the way</h2>
+<p>Working from the bottom up:</p>
+<ol>
+  <li><strong>Real-mode + protected-mode opcodes (Phase 3 of implementation).</strong> The Linux x86_64 boot path runs real-mode code briefly before going protected → long. We need to handle all the 16- and 32-bit opcodes the boot stub uses. Most of these can be ported almost verbatim from cpu/x86's exec.go.</li>
+  <li><strong>Long-mode interrupts and IRETQ (Phase 4).</strong> The kernel will program the IDT and trigger #PF / #GP / NMI on the boot path. Without working delivery, the first page fault hangs the boot.</li>
+  <li><strong>SYSCALL/SYSRET (Phase 5).</strong> Userspace init needs system-call delivery.</li>
+  <li><strong>FSGSBASE + SWAPGS.</strong> Per-CPU data; required for any meaningful kernel execution.</li>
+  <li><strong>SSE/SSE2 widening.</strong> glibc + musl use SSE memcpy/memset variants. The XMM register file extension (XMM8..XMM15 via REX.R) is mechanical work; SSE2 itself is mostly portable from cpu/x86/mmx.go.</li>
+  <li><strong>The PC chassis interface.</strong> machine/pc currently constructs <code>*x86.CPU</code>. We need a knob (or factory parameter) to select either backend at machine creation time.</li>
+</ol>
+
+<h2>The interface in place</h2>
+<p><code>cpu.X86Core</code> is already the contract machine/pc programs against. The factory in <code>machine/factory.go</code> needs one new case:</p>
+<pre><span class="kw">case</span> <span class="st">"x86_64"</span>:
+    pcCfg := pc.<span class="kw">Config</span>{...}
+    <span class="kw">return</span> pc.<span class="fn">New64</span>(pcCfg)   <span class="cm">// constructs *x86_64.CPU instead of *x86.CPU</span><span class="lang-tag">go</span></pre>
+<p>That small refactor is the only chassis-side change.</p>
+
+<h2>What survives unchanged</h2>
+<p>Every device — UART, PIT, PIC, RTC, ATA, virtio-blk, virtio-net, slirp, VGA — is CPU-agnostic. They take an X86Core, register I/O ports through the dispatcher, and raise IRQs through the PIC. None of them need to know whether the CPU running them is i386 or AMD64. That's the entire point of the chassis design we settled on in Lesson 5.</p>
+
+<h2>What you'll be looking at when it works</h2>
+<pre>$ ./bin/temu -machine x86_64 -kernel vmlinuz-6.6-x86_64 -initrd alpine-initrd
+[    0.000000] Linux version 6.6.x (build@host) (gcc 12.2.0)
+[    0.000000] Command line: console=ttyS0
+[    0.000123] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.000245] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+...
+Welcome to Alpine Linux 3.19
+Kernel 6.6.x on an x86_64 (/dev/ttyS0)
+localhost login: _<span class="lang-tag">future</span></pre>
+
+<div class="box box-key">
+<strong>The shape of the work</strong>
+None of the remaining phases require new algorithms — every piece is well-specified in the AMD APM and Intel SDM. The challenge is the long tail: each phase has dozens of edge cases, and you discover them by trying to boot. Same way Alpine i386 was brought up: pick the next failure, fix it, repeat. Every phase ends when a real binary stops crashing.
+</div>
+`,
+  exercises: [
+    "Walk through the Linux x86_64 boot protocol (Documentation/x86/boot.rst). What state must the boot loader (us, the emulator's machine/pc) leave the kernel in before jumping to the entry point?",
+    "Compare the M1 status to <code>project_x86_boot_achieved.md</code>'s account of the i386 bring-up. Estimate effort to reach the same end state for x86_64. What's the same? What's different?",
+    "If a Phase X bug shows up that none of the existing tests catch, what's the value of writing a regression test before fixing it? Reflect on how the i386 bring-up tracked bugs in its memory files."
+  ]
+},
+
+];
+
+// ============================================================
+// APP STATE
+// ============================================================
+let currentLesson = null;
+let completed = JSON.parse(localStorage.getItem('x64tut_done') || '[]');
+
+function isComplete(id) { return completed.includes(id); }
+function markComplete(id) {
+  if (!completed.includes(id)) completed.push(id);
+  localStorage.setItem('x64tut_done', JSON.stringify(completed));
+  updateProgress(); renderNav();
+}
+function unmarkComplete(id) {
+  completed = completed.filter(x => x !== id);
+  localStorage.setItem('x64tut_done', JSON.stringify(completed));
+  updateProgress(); renderNav();
+}
+function updateProgress() {
+  const pct = LESSONS.length ? Math.round(completed.length / LESSONS.length * 100) : 0;
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('progress-text').textContent = `${completed.length} / ${LESSONS.length}`;
+}
+
+let collapsedPhases = new Set(JSON.parse(localStorage.getItem('x64tut_collapsed') || '[]'));
+
+function renderNav(filter = '') {
+  const nav = document.getElementById('lesson-nav');
+  nav.innerHTML = '';
+  const f = filter.toLowerCase();
+  for (let ph = 1; ph <= 5; ph++) {
+    const meta = PHASE_META[ph];
+    const lessons = LESSONS.filter(l => l.phase === ph && (
+      !f || l.title.toLowerCase().includes(f) || l.subtitle.toLowerCase().includes(f)
+    ));
+    if (lessons.length === 0) continue;
+    const collapsed = collapsedPhases.has(ph);
+    const group = document.createElement('div');
+    group.className = 'phase-group';
+    group.innerHTML = `
+      <div class="phase-header ${collapsed ? 'collapsed' : ''}" data-phase="${ph}"
+           style="color:${meta.color}">
+        <span class="phase-dot" style="background:${meta.color}"></span>
+        ${meta.short}: ${meta.name}
+        <span class="phase-toggle">▾</span>
+      </div>
+      <div class="phase-lessons" ${collapsed ? 'style="display:none"' : ''}>
+        ${lessons.map(l => `
+          <div class="nav-item ${currentLesson === l.id ? 'active' : ''} ${isComplete(l.id) ? 'done' : ''}"
+               data-id="${l.id}"
+               style="${currentLesson === l.id ? `border-left-color:${meta.color}` : ''}">
+            <span class="nav-check">${isComplete(l.id) ? '✓' : ''}</span>
+            <span class="nav-num">${l.id}</span>
+            ${l.title}
+          </div>
+        `).join('')}
+      </div>
+    `;
+    nav.appendChild(group);
+  }
+  nav.querySelectorAll('.phase-header').forEach(h => {
+    h.addEventListener('click', () => {
+      const ph = parseInt(h.dataset.phase);
+      const lessons = h.nextElementSibling;
+      if (collapsedPhases.has(ph)) {
+        collapsedPhases.delete(ph);
+        h.classList.remove('collapsed');
+        lessons.style.display = '';
+      } else {
+        collapsedPhases.add(ph);
+        h.classList.add('collapsed');
+        lessons.style.display = 'none';
+      }
+      localStorage.setItem('x64tut_collapsed', JSON.stringify([...collapsedPhases]));
+    });
+  });
+  nav.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', () => showLesson(parseInt(item.dataset.id)));
+  });
+}
+
+function showLesson(id) {
+  const lesson = LESSONS.find(l => l.id === id);
+  if (!lesson) return;
+  currentLesson = id;
+  const phase = PHASE_META[lesson.phase];
+  const prev = LESSONS.find(l => l.id === id - 1);
+  const next = LESSONS.find(l => l.id === id + 1);
+
+  document.getElementById('topbar-phase').textContent = `${phase.short} — ${phase.name}`;
+  const prevBtn = document.getElementById('btn-prev');
+  const nextBtn = document.getElementById('btn-next-top');
+  prevBtn.disabled = !prev;
+  nextBtn.disabled = !next;
+  prevBtn.onclick = () => prev && showLesson(prev.id);
+  nextBtn.onclick = () => next && showLesson(next.id);
+
+  const done = isComplete(id);
+  document.getElementById('content-area').innerHTML = `
+    <div id="lesson-content">
+      <div class="lesson-eyebrow">
+        <span class="phase-badge" style="background:${phase.color}22;color:${phase.color}">${phase.short}</span>
+        <span class="lesson-number">Lesson ${lesson.id} of ${LESSONS.length}</span>
+      </div>
+      <h1 class="lesson-title">${lesson.title}</h1>
+      <p class="lesson-subtitle">${lesson.subtitle}</p>
+      <div class="lesson-divider"></div>
+      <div class="lesson-body">${lesson.content}</div>
+      <div class="exercises">
+        <h2>Exercises</h2>
+        ${lesson.exercises.map((ex, i) => `
+          <div class="exercise">
+            <div class="exercise-num">Exercise ${i + 1}</div>
+            <p>${ex}</p>
+          </div>
+        `).join('')}
+      </div>
+      <div class="complete-wrap">
+        <button class="btn-complete ${done ? 'done' : ''}" id="btn-done">
+          ${done ? '✓ Completed' : 'Mark Complete'}
+        </button>
+        ${next ? `<button class="btn-next" id="btn-next-lesson">Next: ${next.title} →</button>` : ''}
+      </div>
+    </div>
+  `;
+  document.getElementById('btn-done').onclick = () => {
+    if (isComplete(id)) unmarkComplete(id); else markComplete(id);
+    renderNav();
+    document.getElementById('btn-done').className = `btn-complete ${isComplete(id) ? 'done' : ''}`;
+    document.getElementById('btn-done').textContent = isComplete(id) ? '✓ Completed' : 'Mark Complete';
+  };
+  const nl = document.getElementById('btn-next-lesson');
+  if (nl) nl.onclick = () => showLesson(next.id);
+  renderNav();
+  document.getElementById('main').scrollTo(0, 0);
+  if (window.innerWidth < 900) document.getElementById('sidebar').classList.remove('open');
+}
+
+function showWelcome() {
+  currentLesson = null;
+  document.getElementById('topbar-phase').textContent = 'Overview';
+  document.getElementById('btn-prev').disabled = true;
+  document.getElementById('btn-next-top').disabled = false;
+  document.getElementById('btn-next-top').onclick = () => showLesson(1);
+  document.getElementById('content-area').innerHTML = `
+    <div id="welcome">
+      <h1>The <em>x86_64 CPU</em></h1>
+      <p class="tagline">From i386 to long mode — a working emulator's field guide.</p>
+      <div class="welcome-body">
+        <p>This course walks you through the architectural changes x86_64 (also written x64 or amd64) brought to the i386 baseline you may already know: the 64-bit register file, the REX prefix, RIP-relative addressing, 4-level paging, the NX bit, and the new fast system-call path.</p>
+        <p>Every lesson points back at a real, working emulator in this repository — <code>cpu/x86_64/</code> alongside the existing <code>cpu/x86/</code> backend — that is being built up incrementally. The first four phases document what has already landed (the M1 milestone: REX decode + 4-level paging + a minimal opcode set). The fifth phase previews what comes next: long-mode interrupts, SYSCALL/SYSRET, and finally booting a 64-bit Linux kernel.</p>
+        <p>If you have not already read the <a href="x86_tutorial.html">x86 (i386) tutorial</a>, that one is a strict prerequisite. This course builds on top of it — what changes, what stays, and why.</p>
+        <p>20 lessons across five phases. Progress is saved automatically in your browser.</p>
+        <div class="phase-overview">
+          ${[1,2,3,4,5].map(ph => {
+            const m = PHASE_META[ph];
+            const done = LESSONS.filter(l => l.phase === ph && isComplete(l.id)).length;
+            const total = LESSONS.filter(l => l.phase === ph).length;
+            return `
+              <div class="phase-card" onclick="showLesson(${(LESSONS.find(l=>l.phase===ph)||{id:1}).id})">
+                <div class="phase-card-num" style="color:${m.color}">${m.short} — Lessons ${m.lessons}</div>
+                <h3>${m.name}</h3>
+                <p>${done}/${total} complete</p>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <button class="btn-start" onclick="showLesson(${completed.length > 0 ? Math.max(...completed) + 1 : 1})">
+          ${completed.length > 0 ? 'Continue →' : 'Start from Lesson 1 →'}
+        </button>
+      </div>
+    </div>
+  `;
+  renderNav();
+}
+
+document.getElementById('search').addEventListener('input', e => renderNav(e.target.value));
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowRight' || e.key === 'j') {
+    const next = currentLesson && LESSONS.find(l => l.id === currentLesson + 1);
+    if (next) showLesson(next.id);
+  }
+  if (e.key === 'ArrowLeft' || e.key === 'k') {
+    const prev = currentLesson && LESSONS.find(l => l.id === currentLesson - 1);
+    if (prev) showLesson(prev.id);
+  }
+  if (e.key === 'h') showWelcome();
+});
+
+function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
+document.getElementById('sidebar-header').style.cursor = 'pointer';
+document.getElementById('sidebar-header').onclick = showWelcome;
+
+updateProgress();
+showWelcome();
+</script>
+</body>
+</html>
