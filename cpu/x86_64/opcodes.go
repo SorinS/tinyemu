@@ -327,6 +327,12 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 		// SYSCALL — fast kernel entry. EFER.SCE must be set; we
 		// honor that lazily by always allowing the entry.
 		return c.opSYSCALL()
+
+	case op2 == 0xA2:
+		// CPUID. Inputs in EAX (+ ECX for some leaves); outputs in
+		// EAX/EBX/ECX/EDX. Advertises the minimum feature set Linux
+		// x86_64 requires (LM, SSE/SSE2, FPU, MSR, PAE, CMOV, etc.).
+		return c.opCPUID()
 	case op2 == 0x07:
 		// SYSRET — fast kernel exit. REX.W picks 64-bit-return (SYSRETQ);
 		// REX.W=0 is the 32-bit compat-mode form (SYSRETL).

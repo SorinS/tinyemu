@@ -86,6 +86,76 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 	return nil
 }
 
+// CPUID. The Linux x86_64 boot path probes several leaves before
+// printk works — most importantly leaf 0 (vendor string, max basic
+// leaf), leaf 1 (family/model + base feature flags including SSE2),
+// leaf 0x80000000 (max extended leaf), and 0x80000001 (LM + SYSCALL
+// + NX bits). Brand string leaves 0x80000002-0x80000004 fill the
+// CPU model name shown in /proc/cpuinfo.
+//
+// We deliberately advertise SSE/SSE2 here even though the decoder
+// doesn't implement the corresponding XMM opcodes yet — without
+// them the kernel won't even leave early-boot. Each missing opcode
+// surfaces as the next ErrNotImplemented and the implementation
+// catches up incrementally.
+func (c *CPU) opCPUID() error {
+	leaf := c.GetReg32(EAX)
+	var a, b, cx, d uint32
+	switch leaf {
+	case 0:
+		// Max basic leaf = 1; vendor = "GenuineIntel".
+		a = 1
+		b = 0x756E6547 // "Genu"
+		d = 0x49656E69 // "ineI"
+		cx = 0x6C65746E // "ntel"
+	case 1:
+		// Signature: family 6, model 0, stepping 0.
+		a = 0x00000600
+		b = 0
+		// ECX features: keep minimal — most kernels probe a few specific
+		// bits (SSE3=0, SSSE3=9, SSE4_1=19, SSE4_2=20). Advertise SSE3
+		// (bit 0) for the rare cases that expect it; nothing else.
+		cx = 1 << 0
+		// EDX features (bits): FPU(0), TSC(4), MSR(5), PAE(6), CX8(8),
+		// APIC(9), SEP(11), PGE(13), CMOV(15), PAT(16), PSE36(17),
+		// MMX(23), FXSR(24), SSE(25), SSE2(26).
+		d = 1<<0 | 1<<4 | 1<<5 | 1<<6 | 1<<8 | 1<<9 | 1<<11 |
+			1<<13 | 1<<15 | 1<<16 | 1<<17 | 1<<23 | 1<<24 | 1<<25 | 1<<26
+	case 0x80000000:
+		a = 0x80000004
+	case 0x80000001:
+		// EDX: SYSCALL(11), NX(20), LM(29). The LM bit is the
+		// "long mode supported" advertisement Linux uses to decide
+		// whether to even attempt 64-bit boot.
+		d = 1<<11 | 1<<20 | 1<<29
+	case 0x80000002, 0x80000003, 0x80000004:
+		// Brand string: 48 bytes split across 3 leaves × 16 bytes
+		// (4 dwords each). "tinyemu-go x86_64 long-mode emulator     ".
+		brand := []byte("tinyemu-go x86_64 long-mode emulator             ")
+		off := int(leaf-0x80000002) * 16
+		a = leUint32(brand, off)
+		b = leUint32(brand, off+4)
+		cx = leUint32(brand, off+8)
+		d = leUint32(brand, off+12)
+	default:
+		// Unrecognised leaves return zero, matching what real CPUs do
+		// for invalid leaves above the advertised maximums.
+	}
+	c.SetReg32(EAX, a)
+	c.SetReg32(EBX, b)
+	c.SetReg32(ECX, cx)
+	c.SetReg32(EDX, d)
+	return nil
+}
+
+func leUint32(buf []byte, off int) uint32 {
+	if off+4 > len(buf) {
+		return 0
+	}
+	return uint32(buf[off]) | uint32(buf[off+1])<<8 |
+		uint32(buf[off+2])<<16 | uint32(buf[off+3])<<24
+}
+
 // opSYSCALL — 0x0F 0x05 — fast kernel entry. Saves RIP to RCX and
 // RFLAGS to R11 (no stack push), loads RIP from LSTAR, builds CS and
 // SS selectors out of STAR[47:32], drops to CPL 0, and masks RFLAGS
