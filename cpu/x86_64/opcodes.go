@@ -81,10 +81,25 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 
 	// ===== MOV family =====
 
+	case op == 0x88:
+		// MOV r/m8, r8 — byte form. Source is the 8-bit register
+		// picked by ModR/M.reg with REX-aware decoding (read8FromModRM-
+		// style indexing).
+		return c.opMOVRM8(rex)
+	case op == 0x8A:
+		// MOV r8, r/m8.
+		return c.opMOVRfromM8(rex)
+
 	case op == 0x89:
 		return c.opMOVRM(rex, operandSize)
 	case op == 0x8B:
 		return c.opMOVRfromM(rex, operandSize)
+
+	case op >= 0xB0 && op <= 0xB7:
+		// MOV r8, imm8 — REX-aware: the destination encoding follows
+		// the same AH/CH/DH/BH vs SPL/BPL/SIL/DIL rule as MODR/M for
+		// the low 3 bits.
+		return c.opMOVImm8ToReg(op-0xB0, rex)
 	case op == 0x8C:
 		// MOV r/m16, Sreg — store a segment-register selector. ModR/M
 		// reg field picks the segment (0=ES, 1=CS, 2=SS, 3=DS, 4=FS,
@@ -1290,6 +1305,77 @@ func (c *CPU) opMOVRfromM(rex, operandSize uint8) error {
 	m := c.parseModRM64(rex)
 	val := c.readOperand(m, operandSize)
 	c.writeReg(m.reg, val, operandSize)
+	return nil
+}
+
+// opMOVRM8 implements 0x88 — MOV r/m8, r8. ModR/M.reg picks the
+// source 8-bit register; rm picks the destination. read8FromModRM /
+// write8FromModRM honour the no-REX vs REX-present split for
+// AH/CH/DH/BH vs SPL/BPL/SIL/DIL.
+func (c *CPU) opMOVRM8(rex uint8) error {
+	m := c.parseModRM64(rex)
+	// Build a "reg-as-rm" marker so read8FromModRM can apply the
+	// same rule to the reg field. The reg field has REX.R applied
+	// in parseModRM64.
+	src := c.read8RegField(m)
+	if m.isReg {
+		c.write8FromModRM(m, src)
+	} else {
+		c.writeMem8(m.ea, src)
+	}
+	return nil
+}
+
+// opMOVRfromM8 implements 0x8A — MOV r8, r/m8.
+func (c *CPU) opMOVRfromM8(rex uint8) error {
+	m := c.parseModRM64(rex)
+	var src uint8
+	if m.isReg {
+		src = c.read8FromModRM(m)
+	} else {
+		src = c.readMem8(m.ea)
+	}
+	c.write8RegField(m, src)
+	return nil
+}
+
+// read8RegField / write8RegField apply the REX-aware 8-bit register
+// encoding to ModR/M.reg (rather than rm). reg already had REX.R
+// applied in parseModRM64.
+func (c *CPU) read8RegField(m modRMResult) uint8 {
+	if m.hasREX || m.reg < 4 {
+		return uint8(c.reg64[m.reg&0xF])
+	}
+	return uint8(c.reg64[m.reg-4] >> 8) // AH/CH/DH/BH
+}
+
+func (c *CPU) write8RegField(m modRMResult, v uint8) {
+	if m.hasREX || m.reg < 4 {
+		i := m.reg & 0xF
+		c.reg64[i] = (c.reg64[i] & ^uint64(0xFF)) | uint64(v)
+		return
+	}
+	i := m.reg - 4
+	c.reg64[i] = (c.reg64[i] & ^uint64(0xFF00)) | (uint64(v) << 8)
+}
+
+// opMOVImm8ToReg implements 0xB0+rb — MOV r8, imm8. The low three
+// bits of opcode pick the destination; REX.B extends to R8B..R15B.
+// Without REX, rb 4..7 means AH/CH/DH/BH (the high-byte aliases).
+func (c *CPU) opMOVImm8ToReg(rb, rex uint8) error {
+	imm := c.fetch8()
+	if rex != 0 || rb < 4 {
+		idx := rb
+		if rex&rexB != 0 {
+			idx |= 0x8
+		}
+		c.reg64[idx] = (c.reg64[idx] & ^uint64(0xFF)) | uint64(imm)
+		return nil
+	}
+	// No-REX, high-byte alias: AH=4, CH=5, DH=6, BH=7 → high byte of
+	// reg64[rb-4].
+	i := rb - 4
+	c.reg64[i] = (c.reg64[i] & ^uint64(0xFF00)) | (uint64(imm) << 8)
 	return nil
 }
 

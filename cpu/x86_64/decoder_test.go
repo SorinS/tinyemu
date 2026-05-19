@@ -378,6 +378,66 @@ func TestDecode_Unimplemented(t *testing.T) {
 	}
 }
 
+// TestDecode_MOV_r8_imm8 / TestDecode_MOV_rm8_r8 / TestDecode_MOV_r8_rm8
+// — regression for the "opcode 0x88 rex=0x40" failure during
+// TinyCorePure64 boot. Covers the 8-bit MOV family with REX-aware
+// register encoding.
+func TestDecode_MOV_r8_imm8(t *testing.T) {
+	c, mm := longModeFlat(t, 4096)
+	c.SetReg64(RAX, 0xAABBCCDDEEFF1122)
+	// B0 99   mov al, 0x99  (low byte of RAX)
+	// B4 77   mov ah, 0x77  (no-REX: bH alias)
+	// F4      hlt
+	loadCode(t, c, mm, 0x100, []byte{0xB0, 0x99, 0xB4, 0x77, 0xF4})
+	if err := c.Run(50); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := c.GetReg64(RAX); got != 0xAABBCCDDEEFF7799 {
+		t.Errorf("RAX = %#x, want 0xAA..7799", got)
+	}
+}
+
+func TestDecode_MOV_r8_imm8_REXLowByte(t *testing.T) {
+	c, mm := longModeFlat(t, 4096)
+	c.SetReg64(RSP, 0x1234567890ABCDEF)
+	// 40 B4 55   mov spl, 0x55  (REX present → low byte of RSP, not AH)
+	loadCode(t, c, mm, 0x100, []byte{0x40, 0xB4, 0x55, 0xF4})
+	if err := c.Run(50); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := c.GetReg64(RSP); got != 0x1234567890ABCD55 {
+		t.Errorf("RSP = %#x, want low byte = 0x55 (SPL semantic)", got)
+	}
+}
+
+func TestDecode_MOV_rm8_r8(t *testing.T) {
+	c, mm := longModeFlat(t, 4096)
+	c.SetReg64(RAX, 0x42)
+	c.SetReg64(RBX, 0xFFFFFFFFFFFFFFFF)
+	// 88 C3   mov bl, al  (modrm 11 000 011 — reg=AL, rm=BL)
+	loadCode(t, c, mm, 0x100, []byte{0x88, 0xC3, 0xF4})
+	if err := c.Run(50); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Only low byte of RBX should change.
+	if got := c.GetReg64(RBX); got != 0xFFFFFFFFFFFFFF42 {
+		t.Errorf("RBX = %#x, want low byte 0x42, upper preserved", got)
+	}
+}
+
+func TestDecode_MOV_r8_rm8(t *testing.T) {
+	c, mm := longModeFlat(t, 4096)
+	c.SetReg64(RBX, 0x99)
+	// 8A C3   mov al, bl  (reg=AL, rm=BL)
+	loadCode(t, c, mm, 0x100, []byte{0x8A, 0xC3, 0xF4})
+	if err := c.Run(50); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := c.GetReg64(RAX); got != 0x99 {
+		t.Errorf("RAX = %#x", got)
+	}
+}
+
 // TestDecode_PushImm8 / TestDecode_PushImm32 — regression for the
 // "opcode 0x6a rex=0x0" failure during TinyCorePure64 boot (early in
 // startup_64 the kernel uses PUSH imm to seed an iretq frame).
