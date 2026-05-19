@@ -167,8 +167,13 @@ func run() int {
 	}
 	defer term.Restore()
 
-	// Create console device
+	// Create console device + start the async stdin reader goroutine.
+	// The reader blocks in poll(2) so the main emulator loop doesn't
+	// pay a unix.Read syscall per iteration (was ~28% of CPU time per
+	// profile before this change).
 	console := NewConsoleDevice(term)
+	console.StartReader()
+	defer console.StopReader()
 
 	// Create machine configuration
 	machineCfg := machine.Config{

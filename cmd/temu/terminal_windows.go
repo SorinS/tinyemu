@@ -24,6 +24,13 @@ func (t *Terminal) Read(buf []byte) int {
 	return 0
 }
 
+// ReadBlocking is a stub on Windows. We don't construct Terminal here
+// (NewTerminal returns an error), so the async reader goroutine never
+// runs. Defined to keep the cross-platform interface consistent.
+func (t *Terminal) ReadBlocking(buf []byte) int {
+	select {}
+}
+
 // Write writes to stdout.
 func (t *Terminal) Write(buf []byte) (int, error) {
 	return os.Stdout.Write(buf)

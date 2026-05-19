@@ -120,6 +120,35 @@ func (t *Terminal) Read(buf []byte) int {
 	return n
 }
 
+// ReadBlocking blocks until at least one byte is readable on the
+// terminal (or an error), then reads available data. Intended for use
+// from a dedicated reader goroutine so the emulator's main loop
+// doesn't have to poll stdin every iteration. Sleeps in the kernel
+// via poll(2) when there's nothing to read — costs no CPU.
+func (t *Terminal) ReadBlocking(buf []byte) int {
+	pfds := []unix.PollFd{{Fd: int32(t.fd), Events: unix.POLLIN}}
+	for {
+		_, err := unix.Poll(pfds, -1)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return 0
+		}
+		if pfds[0].Revents&(unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
+			return 0
+		}
+		n, err := unix.Read(t.fd, buf)
+		if err == unix.EAGAIN {
+			continue
+		}
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+}
+
 // Write writes data to the terminal (stdout).
 // Reference: tinyemu-2019-12-21/temu.c:99-103 (console_write)
 func (t *Terminal) Write(buf []byte) (int, error) {
