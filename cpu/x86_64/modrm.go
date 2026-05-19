@@ -6,11 +6,18 @@ package x86_64
 // memory operands ea is the effective address and defaultSeg is the
 // segment register implied by the addressing encoding (DS in most
 // cases; SS when the encoding uses RSP/RBP as a base).
+//
+// hasREX records whether any REX prefix preceded the opcode. For
+// 8-bit operands this changes how rm field bits 0..2 map to the
+// register file: without REX, rm=4..7 means AH/CH/DH/BH (the high
+// byte of the first four GPRs); with REX, rm=4..7 means SPL/BPL/SIL/
+// DIL (low byte of RSP/RBP/RSI/RDI).
 type modRMResult struct {
 	mod         uint8
 	reg         uint8 // 0..15, REX.R applied
 	rm          uint8 // 0..15, REX.B applied for the register-operand case
 	isReg       bool
+	hasREX      bool
 	ea          uint64
 	defaultSeg  int
 	ripRelative bool
@@ -32,6 +39,7 @@ func (c *CPU) parseModRM64(rex uint8) modRMResult {
 		mod:        mod,
 		reg:        reg,
 		defaultSeg: DS,
+		hasREX:     rex != 0,
 	}
 
 	if mod == 3 {

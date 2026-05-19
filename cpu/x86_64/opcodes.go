@@ -141,6 +141,26 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
+	// ===== Group 2 (shifts and rotates) =====
+
+	case op == 0xD1:
+		// SHL/SHR/SAR r/m, 1 — count is implicit.
+		return c.opGroup2(rex, operandSize, 1)
+	case op == 0xD3:
+		// SHL/SHR/SAR r/m, CL — count comes from CL register.
+		return c.opGroup2(rex, operandSize, uint64(c.GetReg8(CL)))
+	case op == 0xC1:
+		// SHL/SHR/SAR r/m, imm8 — count is an 8-bit immediate.
+		return c.opGroup2(rex, operandSize, 0) // count read inside opGroup2
+
+	// ===== Sign-extending integer move (MOVSXD r64, r/m32) =====
+
+	case op == 0x63:
+		// In long mode 0x63 is MOVSXD (in 32-bit mode it was ARPL).
+		// Destination is the reg field, full 64 bits; source is a
+		// 32-bit r/m that gets sign-extended.
+		return c.opMOVSXD(rex)
+
 	// ===== Group 5 (Inc/Dec/Call/Jmp/Push) =====
 
 	case op == 0xFF:
@@ -155,25 +175,123 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	return unimplemented("opcode %#02x rex=%#x", op, rex)
 }
 
-// opTwoByte dispatches the 0x0F escape opcode family. M2 covers the
-// near-form Jcc set (0x80..0x8F rel32). MOVZX/MOVSX and the SSE/AVX
-// space come later.
+// opTwoByte dispatches the 0x0F escape opcode family. Covers near-form
+// Jcc (0x80..0x8F rel32), CMOVcc (0x40..0x4F), SETcc (0x90..0x9F), and
+// MOVZX/MOVSX (0xB6/0xB7/0xBE/0xBF).
 func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 	_ = segOverride
-	_ = operandSize
 	op2 := c.fetch8()
 	switch {
+	case op2 >= 0x40 && op2 <= 0x4F:
+		// CMOVcc r, r/m — conditional move. Operand size follows the
+		// usual rules (REX.W → 64, 0x66 → 16, else 32). Destination
+		// reg always gets updated *with the source* if the condition
+		// holds; otherwise no change to the destination — and crucially
+		// no zero-extension of the upper bits in the fall-through case.
+		m := c.parseModRM64(rex)
+		src := c.readOperand(m, operandSize)
+		if c.evalCond(op2 & 0xF) {
+			c.writeReg(m.reg, src, operandSize)
+		}
+		return nil
+
 	case op2 >= 0x80 && op2 <= 0x8F:
 		// Jcc rel32 — even in 64-bit mode the displacement is 32 bits
-		// sign-extended (operand-size override would shrink to 16 but
+		// sign-extended (operand-size override could shrink to 16 but
 		// modern code never uses that).
 		disp := int64(int32(c.fetch32()))
 		if c.evalCond(op2 & 0xF) {
 			c.rip = uint64(int64(c.rip) + disp)
 		}
 		return nil
+
+	case op2 >= 0x90 && op2 <= 0x9F:
+		// SETcc r/m8 — store 1 if condition holds, 0 otherwise. The
+		// destination is always 8 bits regardless of operand-size prefix.
+		m := c.parseModRM64(rex)
+		var v uint8
+		if c.evalCond(op2 & 0xF) {
+			v = 1
+		}
+		if m.isReg {
+			c.write8FromModRM(m, v)
+		} else {
+			c.writeMem8(m.ea, v)
+		}
+		return nil
+
+	case op2 == 0xB6:
+		// MOVZX r, r/m8.
+		return c.opMOVZX(rex, operandSize, 1)
+	case op2 == 0xB7:
+		// MOVZX r, r/m16.
+		return c.opMOVZX(rex, operandSize, 2)
+	case op2 == 0xBE:
+		// MOVSX r, r/m8.
+		return c.opMOVSX(rex, operandSize, 1)
+	case op2 == 0xBF:
+		// MOVSX r, r/m16.
+		return c.opMOVSX(rex, operandSize, 2)
 	}
 	return unimplemented("0F %#02x rex=%#x", op2, rex)
+}
+
+// opMOVZX implements MOVZX r, r/m{8,16}. srcSize is 1 or 2; the
+// destination width follows operandSize and writes through writeReg,
+// which already handles the 32-bit-write-zero-extends-to-64 rule.
+func (c *CPU) opMOVZX(rex, operandSize, srcSize uint8) error {
+	m := c.parseModRM64(rex)
+	var src uint64
+	switch {
+	case m.isReg && srcSize == 1:
+		src = uint64(c.read8FromModRM(m))
+	case m.isReg:
+		src = c.readReg(m.rm, srcSize)
+	case srcSize == 1:
+		src = uint64(c.readMem8(m.ea))
+	default:
+		src = uint64(c.readMem16(m.ea))
+	}
+	c.writeReg(m.reg, src, operandSize)
+	return nil
+}
+
+// opMOVSX implements MOVSX r, r/m{8,16}.
+func (c *CPU) opMOVSX(rex, operandSize, srcSize uint8) error {
+	m := c.parseModRM64(rex)
+	var src uint64
+	switch {
+	case m.isReg && srcSize == 1:
+		src = uint64(c.read8FromModRM(m))
+	case m.isReg:
+		src = c.readReg(m.rm, srcSize)
+	case srcSize == 1:
+		src = uint64(c.readMem8(m.ea))
+	default:
+		src = uint64(c.readMem16(m.ea))
+	}
+	if srcSize == 1 {
+		src = uint64(int64(int8(src)))
+	} else {
+		src = uint64(int64(int16(src)))
+	}
+	c.writeReg(m.reg, src, operandSize)
+	return nil
+}
+
+// opMOVSXD implements 0x63 — MOVSXD r64, r/m32. The 32-bit source is
+// sign-extended into the full 64-bit destination. (In 32-bit mode this
+// opcode was ARPL; long mode reuses the encoding.)
+func (c *CPU) opMOVSXD(rex uint8) error {
+	m := c.parseModRM64(rex)
+	var src uint32
+	if m.isReg {
+		src = uint32(c.readReg(m.rm, 4))
+	} else {
+		src = c.readMem32(m.ea)
+	}
+	c.writeReg(m.reg, uint64(int64(int32(src))), 8)
+	return nil
 }
 
 // evalCond evaluates the four-bit condition code (the low nibble of
@@ -306,6 +424,79 @@ func (c *CPU) opALUImmRAX(operandSize uint8, op aluOp) error {
 	if op != aluCMP {
 		c.writeReg(RAX, res, operandSize)
 	}
+	c.setArithFlags(fl)
+	return nil
+}
+
+// opGroup2 dispatches the shift/rotate family — 0xD1 (count=1),
+// 0xD3 (count=CL), 0xC1 (count=imm8). Sub-op /4=SHL, /5=SHR, /7=SAR.
+// /0..3 (ROL/ROR/RCL/RCR) are deferred until needed.
+//
+// If implicitCount is 0 (the 0xC1 case), the immediate count is read
+// from the instruction stream; otherwise the caller passes 1 or CL.
+func (c *CPU) opGroup2(rex, operandSize uint8, implicitCount uint64) error {
+	m := c.parseModRM64(rex)
+	var count uint64
+	if implicitCount == 0 {
+		count = uint64(c.fetch8())
+	} else {
+		count = implicitCount
+	}
+	// Mask count per Intel SDM: 5 bits for 8/16/32 ops, 6 bits for 64.
+	if operandSize == 8 {
+		count &= 0x3F
+	} else {
+		count &= 0x1F
+	}
+	if count == 0 {
+		return nil // flags unchanged
+	}
+	dst := c.readOperand(m, operandSize)
+	var res uint64
+	var fl flagBits
+	switch m.reg {
+	case 4, 6: // SHL / SAL (alias)
+		// CF = bit shifted out of the high end on the last shift.
+		// Pre-pad dst to 64 bits, shift, then mask. The shifted-out
+		// bit is bit (size*8 - 1) of (dst << (count-1)).
+		preShift := dst << (count - 1)
+		fl.cf = preShift&signBit(operandSize) != 0
+		res = (dst << count) & mask(operandSize)
+		// OF (count==1): set if sign bit changed.
+		if count == 1 {
+			origSign := dst & signBit(operandSize)
+			newSign := res & signBit(operandSize)
+			fl.of = origSign != newSign
+		}
+	case 5: // SHR
+		res = (dst & mask(operandSize)) >> count
+		fl.cf = ((dst & mask(operandSize)) >> (count - 1) & 1) != 0
+		if count == 1 {
+			// OF for SHR-1 = high bit of original.
+			fl.of = dst&signBit(operandSize) != 0
+		}
+	case 7: // SAR
+		// Arithmetic right shift: sign-extend.
+		signed := int64(dst & mask(operandSize))
+		// Re-sign-extend from operandSize to 64 first.
+		switch operandSize {
+		case 4:
+			signed = int64(int32(uint32(dst)))
+		case 2:
+			signed = int64(int16(uint16(dst)))
+		case 1:
+			signed = int64(int8(uint8(dst)))
+		}
+		fl.cf = uint64(signed>>(count-1))&1 != 0
+		res = uint64(signed>>count) & mask(operandSize)
+		// OF for SAR-1 = 0 (sign bit can't change).
+	default:
+		return unimplemented("Group 2 /%d", m.reg)
+	}
+	fl.zf = res == 0
+	fl.sf = res&signBit(operandSize) != 0
+	fl.pf = parity8(uint8(res))
+	c.writeOperand(m, res, operandSize)
 	c.setArithFlags(fl)
 	return nil
 }
@@ -490,6 +681,13 @@ func (c *CPU) readReg(idx, size uint8) uint64 {
 		return v & 0xFFFFFFFF
 	case 2:
 		return v & 0xFFFF
+	case 1:
+		// Width-1 access via this path is only legal when the caller
+		// has already resolved AH/CH/DH/BH vs SPL/.../R15B for itself —
+		// i.e. when REX was present on the instruction. Otherwise the
+		// caller must use read8FromModRM with the rex byte. We do the
+		// "REX-only low-byte" case here.
+		return v & 0xFF
 	}
 	return v
 }
@@ -503,7 +701,32 @@ func (c *CPU) writeReg(idx uint8, v uint64, size uint8) {
 		c.reg64[i] = v & 0xFFFFFFFF
 	case 2:
 		c.reg64[i] = (c.reg64[i] & ^uint64(0xFFFF)) | (v & 0xFFFF)
+	case 1:
+		c.reg64[i] = (c.reg64[i] & ^uint64(0xFF)) | (v & 0xFF)
 	}
+}
+
+// read8FromModRM reads an 8-bit register value where the encoding may
+// be the "no-REX" form (rm 4..7 are AH/CH/DH/BH) or the "REX present"
+// form (rm 4..7 are SPL/BPL/SIL/DIL). modRMResult.hasREX picks.
+//
+// rmRaw is the ModRM.rm field with REX.B applied — i.e. m.rm.
+func (c *CPU) read8FromModRM(m modRMResult) uint8 {
+	if m.hasREX || m.rm < 4 {
+		return uint8(c.reg64[m.rm&0xF])
+	}
+	// No-REX, rm in 4..7: AH/CH/DH/BH = high byte of reg64[rm-4].
+	return uint8(c.reg64[m.rm-4] >> 8)
+}
+
+func (c *CPU) write8FromModRM(m modRMResult, v uint8) {
+	if m.hasREX || m.rm < 4 {
+		i := m.rm & 0xF
+		c.reg64[i] = (c.reg64[i] & ^uint64(0xFF)) | uint64(v)
+		return
+	}
+	i := m.rm - 4
+	c.reg64[i] = (c.reg64[i] & ^uint64(0xFF00)) | (uint64(v) << 8)
 }
 
 func (c *CPU) readOperand(m modRMResult, size uint8) uint64 {
