@@ -499,14 +499,13 @@ func (c *CPU) handleJccNear(opcode2 uint8, operandSize uint8) error {
 	return nil
 }
 
-// EFLAGS condition helpers. CF is always eager; the others may have a
-// pending lazy snapshot — materialize before reading.
+// EFLAGS condition helpers.
 func (c *CPU) getCF() bool { return c.eflags&EFLAGS_CF != 0 }
-func (c *CPU) getOF() bool { c.materializeFlags(); return c.eflags&EFLAGS_OF != 0 }
-func (c *CPU) getSF() bool { c.materializeFlags(); return c.eflags&EFLAGS_SF != 0 }
-func (c *CPU) getZF() bool { c.materializeFlags(); return c.eflags&EFLAGS_ZF != 0 }
-func (c *CPU) getPF() bool { c.materializeFlags(); return c.eflags&EFLAGS_PF != 0 }
-func (c *CPU) getAF() bool { c.materializeFlags(); return c.eflags&EFLAGS_AF != 0 }
+func (c *CPU) getOF() bool { return c.eflags&EFLAGS_OF != 0 }
+func (c *CPU) getSF() bool { return c.eflags&EFLAGS_SF != 0 }
+func (c *CPU) getZF() bool { return c.eflags&EFLAGS_ZF != 0 }
+func (c *CPU) getPF() bool { return c.eflags&EFLAGS_PF != 0 }
+func (c *CPU) getAF() bool { return c.eflags&EFLAGS_AF != 0 }
 
 // handleCMOVcc handles conditional 32/16-bit moves (0F 40..0F 4F).
 // The destination is updated with the source only if the condition holds.

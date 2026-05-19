@@ -137,7 +137,7 @@ func TestSegmentOverrideCMPS(t *testing.T) {
 		t.Fatalf("CMPS step error: %v", err)
 	}
 
-	zf := c.getZF()
+	zf := c.eflags&EFLAGS_ZF != 0
 	if !zf {
 		t.Fatalf("CMPS with FS override: ZF=false, want true. "+
 			"Compared DS source (0xEF) instead of FS source (0xAB)")
