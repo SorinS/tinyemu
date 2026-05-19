@@ -271,6 +271,35 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		// exercises it. Treat REX.W=0 as IRETQ for simplicity.
 		return c.opIRETQ()
 
+	case op == 0xE4: // IN AL, imm8
+		port := uint16(c.fetch8())
+		c.SetReg8(AL, c.ioRead8(port))
+		return nil
+	case op == 0xE5: // IN eAX, imm8 — width follows operandSize
+		port := uint16(c.fetch8())
+		return c.opINEAX(port, operandSize)
+	case op == 0xE6: // OUT imm8, AL
+		port := uint16(c.fetch8())
+		c.ioWrite8(port, c.GetReg8(AL))
+		return nil
+	case op == 0xE7: // OUT imm8, eAX
+		port := uint16(c.fetch8())
+		return c.opOUTEAX(port, operandSize)
+	case op == 0xEC: // IN AL, DX
+		port := c.GetReg16(DX)
+		c.SetReg8(AL, c.ioRead8(port))
+		return nil
+	case op == 0xED: // IN eAX, DX
+		port := c.GetReg16(DX)
+		return c.opINEAX(port, operandSize)
+	case op == 0xEE: // OUT DX, AL
+		port := c.GetReg16(DX)
+		c.ioWrite8(port, c.GetReg8(AL))
+		return nil
+	case op == 0xEF: // OUT DX, eAX
+		port := c.GetReg16(DX)
+		return c.opOUTEAX(port, operandSize)
+
 	case op == 0xE8:
 		disp := int64(int32(c.fetch32()))
 		c.push64(c.rip)
@@ -1704,6 +1733,65 @@ func (c *CPU) opLEA(rex, operandSize uint8) error {
 	}
 	c.writeReg(m.reg, m.ea, operandSize)
 	return nil
+}
+
+// opINEAX / opOUTEAX handle the 16- and 32-bit forms of IN/OUT.
+// In long mode the operand size for these instructions never grows
+// to 64 bits (no REX.W effect). 0x66 prefix selects 16-bit; default
+// is 32-bit. The CPU's I/O handlers, set by machine/pc, dispatch to
+// the appropriate device.
+func (c *CPU) opINEAX(port uint16, operandSize uint8) error {
+	switch operandSize {
+	case 2:
+		c.SetReg16(AX, c.ioRead16(port))
+	default:
+		c.SetReg32(EAX, c.ioRead32(port))
+	}
+	return nil
+}
+
+func (c *CPU) opOUTEAX(port uint16, operandSize uint8) error {
+	switch operandSize {
+	case 2:
+		c.ioWrite16(port, c.GetReg16(AX))
+	default:
+		c.ioWrite32(port, c.GetReg32(EAX))
+	}
+	return nil
+}
+
+func (c *CPU) ioRead8(port uint16) uint8 {
+	if c.ioRead8Func == nil {
+		return 0xFF
+	}
+	return c.ioRead8Func(port)
+}
+func (c *CPU) ioRead16(port uint16) uint16 {
+	if c.ioRead16Func == nil {
+		return 0xFFFF
+	}
+	return c.ioRead16Func(port)
+}
+func (c *CPU) ioRead32(port uint16) uint32 {
+	if c.ioRead32Func == nil {
+		return 0xFFFFFFFF
+	}
+	return c.ioRead32Func(port)
+}
+func (c *CPU) ioWrite8(port uint16, v uint8) {
+	if c.ioWrite8Func != nil {
+		c.ioWrite8Func(port, v)
+	}
+}
+func (c *CPU) ioWrite16(port uint16, v uint16) {
+	if c.ioWrite16Func != nil {
+		c.ioWrite16Func(port, v)
+	}
+}
+func (c *CPU) ioWrite32(port uint16, v uint32) {
+	if c.ioWrite32Func != nil {
+		c.ioWrite32Func(port, v)
+	}
 }
 
 func (c *CPU) opPUSHReg(rd, rex uint8) error {
