@@ -67,7 +67,13 @@ func (c *CPU) Step() (err error) {
 				break
 			}
 		}
-		fmt.Fprintf(os.Stderr, "[strwatch] RDI=%#x str=%q\n", rdi, string(buf[:n]))
+		// Trim trailing zeros for readability.
+		end := 0
+		for end < len(buf) && buf[end] != 0 {
+			end++
+		}
+		fmt.Fprintf(os.Stderr, "[strwatch] RDI=%#x RAX=%#x RDX=%#x RSI=%#x str=%q\n",
+			rdi, c.GetReg64(RAX), c.GetReg64(RDX), c.GetReg64(RSI), string(buf[:end]))
 	}
 	defer func() {
 		if r := recover(); r != nil {
