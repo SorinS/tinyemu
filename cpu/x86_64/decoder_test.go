@@ -378,6 +378,46 @@ func TestDecode_Unimplemented(t *testing.T) {
 	}
 }
 
+// TestDecode_PushImm8 / TestDecode_PushImm32 — regression for the
+// "opcode 0x6a rex=0x0" failure during TinyCorePure64 boot (early in
+// startup_64 the kernel uses PUSH imm to seed an iretq frame).
+func TestDecode_PushImm8(t *testing.T) {
+	c, mm := longModeFlat(t, 4096)
+	c.SetReg64(RSP, 0x800)
+	// 6A FF       push -1 (sign-extended)
+	// 6A 7F       push 127
+	// F4          hlt
+	loadCode(t, c, mm, 0x100, []byte{0x6A, 0xFF, 0x6A, 0x7F, 0xF4})
+	if err := c.Run(100); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Stack grows down. First push lands at RSP-8 = 0x7F8; second at
+	// 0x7F0 (now the new top).
+	if got, _ := mm.Read64(0x7F8); got != 0xFFFFFFFFFFFFFFFF {
+		t.Errorf("first push (PUSH -1) = %#x, want all-ones", got)
+	}
+	if got, _ := mm.Read64(0x7F0); got != 0x7F {
+		t.Errorf("second push (PUSH 0x7F) = %#x, want 0x7F", got)
+	}
+	if c.GetReg64(RSP) != 0x800-16 {
+		t.Errorf("RSP = %#x after two PUSH imm8", c.GetReg64(RSP))
+	}
+}
+
+func TestDecode_PushImm32(t *testing.T) {
+	c, mm := longModeFlat(t, 4096)
+	c.SetReg64(RSP, 0x800)
+	// 68 78 56 34 12   push 0x12345678  ; sign-extends to 0x0000000012345678
+	// F4               hlt
+	loadCode(t, c, mm, 0x100, []byte{0x68, 0x78, 0x56, 0x34, 0x12, 0xF4})
+	if err := c.Run(100); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, _ := mm.Read64(0x800 - 8); got != 0x12345678 {
+		t.Errorf("pushed = %#x, want 0x12345678", got)
+	}
+}
+
 // Fetch under paging with no PML4 mapping surfaces as a PageFaultError
 // from Step (Phase 5 will route this through the IDT as #PF).
 func TestDecode_FetchPagedNotPresent(t *testing.T) {

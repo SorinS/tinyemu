@@ -122,6 +122,25 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	case op >= 0x58 && op <= 0x5F:
 		return c.opPOPReg(op-0x58, rex)
 
+	case op == 0x68:
+		// PUSH imm32 (or imm16 with 0x66) sign-extended to operand
+		// size. In long mode the pushed value occupies 8 bytes on
+		// the stack regardless.
+		var v int64
+		if operandSize == 2 {
+			v = int64(int16(c.fetch16()))
+		} else {
+			v = int64(int32(c.fetch32()))
+		}
+		c.push64(uint64(v))
+		return nil
+
+	case op == 0x6A:
+		// PUSH imm8 sign-extended.
+		v := int64(int8(c.fetch8()))
+		c.push64(uint64(v))
+		return nil
+
 	// ===== Control flow =====
 
 	case op == 0xC3:
