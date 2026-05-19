@@ -156,6 +156,55 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 
 	// ===== MOV family =====
 
+	case op == 0x86:
+		// XCHG r/m8, r8 — atomic swap (always atomic on real
+		// hardware; in our single-CPU model it's just a swap).
+		return c.opXCHGRM(rex, 1)
+	case op == 0x87:
+		return c.opXCHGRM(rex, operandSize)
+
+	case op == 0x8F:
+		// POP r/m. ModR/M.reg must be 0; the rest are reserved.
+		m := c.parseModRM64(rex)
+		if m.reg != 0 {
+			return unimplemented("0x8F /%d (reserved)", m.reg)
+		}
+		v := c.pop64()
+		c.writeOperand(m, v, 8) // long mode: always 64-bit stack ops
+		return nil
+
+	case op == 0xC2:
+		// RET imm16 — pops return then pops imm16 bytes off stack.
+		imm := uint64(c.fetch16())
+		c.rip = c.pop64()
+		c.SetReg64(RSP, c.GetReg64(RSP)+imm)
+		return nil
+
+	case op == 0xE0, op == 0xE1, op == 0xE2:
+		// LOOPNE / LOOPE / LOOP — decrement RCX, branch if !=0
+		// (with ZF condition for LOOPNE/LOOPE).
+		disp := int64(int8(c.fetch8()))
+		rcx := c.GetReg64(RCX) - 1
+		c.SetReg64(RCX, rcx)
+		take := rcx != 0
+		switch op {
+		case 0xE0:
+			take = take && c.rflags&RFLAGS_ZF == 0
+		case 0xE1:
+			take = take && c.rflags&RFLAGS_ZF != 0
+		}
+		if take {
+			c.rip = uint64(int64(c.rip) + disp)
+		}
+		return nil
+	case op == 0xE3:
+		// JCXZ / JRCXZ — branch if RCX is zero (no decrement).
+		disp := int64(int8(c.fetch8()))
+		if c.GetReg64(RCX) == 0 {
+			c.rip = uint64(int64(c.rip) + disp)
+		}
+		return nil
+
 	case op == 0x88:
 		// MOV r/m8, r8 — byte form. Source is the 8-bit register
 		// picked by ModR/M.reg with REX-aware decoding (read8FromModRM-
@@ -621,6 +670,20 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 		// IMUL r, r/m — two-operand signed multiply, destination is reg.
 		return c.opIMUL2Op(rex, operandSize)
 
+	case op2 == 0xB0:
+		// CMPXCHG r/m8, r8 — atomic compare-and-swap. Compares AL
+		// against r/m: if equal, write r into r/m and set ZF; else
+		// load r/m into AL and clear ZF.
+		return c.opCMPXCHG(rex, 1)
+	case op2 == 0xB1:
+		return c.opCMPXCHG(rex, operandSize)
+
+	case op2 == 0xC0:
+		// XADD r/m8, r8 — exchange + add. Atomic on real hw.
+		return c.opXADD(rex, 1)
+	case op2 == 0xC1:
+		return c.opXADD(rex, operandSize)
+
 	case op2 == 0xAE:
 		// Group 15 — FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/XSAVE/LFENCE/
 		// MFENCE/SFENCE etc. mod=11 forms are the memory fences,
@@ -990,6 +1053,114 @@ func (c *CPU) opBTC(rex, operandSize uint8) error {
 	}
 	dst ^= 1 << bitNum
 	c.writeOperand(m, dst, operandSize)
+	return nil
+}
+
+// opXCHGRM implements 0x86 / 0x87 — XCHG r/m, r. The LOCK prefix
+// is implicit on the memory form per Intel SDM; we treat the swap
+// atomically by virtue of being single-threaded.
+func (c *CPU) opXCHGRM(rex, operandSize uint8) error {
+	m := c.parseModRM64(rex)
+	var src, dst uint64
+	if operandSize == 1 {
+		src = uint64(c.read8RegField(m))
+		if m.isReg {
+			dst = uint64(c.read8FromModRM(m))
+		} else {
+			dst = uint64(c.readMem8(m.ea))
+		}
+	} else {
+		src = c.readReg(m.reg, operandSize)
+		dst = c.readOperand(m, operandSize)
+	}
+	if operandSize == 1 {
+		c.write8RegField(m, uint8(dst))
+		if m.isReg {
+			c.write8FromModRM(m, uint8(src))
+		} else {
+			c.writeMem8(m.ea, uint8(src))
+		}
+	} else {
+		c.writeReg(m.reg, dst, operandSize)
+		c.writeOperand(m, src, operandSize)
+	}
+	return nil
+}
+
+// opCMPXCHG implements 0x0F 0xB0 / 0xB1 — CMPXCHG. The accumulator
+// (AL/AX/EAX/RAX) is compared with the destination. On match the
+// source register is stored; on miss the destination is loaded into
+// the accumulator. ZF tracks the comparison outcome.
+func (c *CPU) opCMPXCHG(rex, operandSize uint8) error {
+	m := c.parseModRM64(rex)
+	var dst, src, acc uint64
+	if operandSize == 1 {
+		src = uint64(c.read8RegField(m))
+		if m.isReg {
+			dst = uint64(c.read8FromModRM(m))
+		} else {
+			dst = uint64(c.readMem8(m.ea))
+		}
+		acc = uint64(c.GetReg8(AL))
+	} else {
+		src = c.readReg(m.reg, operandSize)
+		dst = c.readOperand(m, operandSize)
+		acc = c.readReg(RAX, operandSize)
+	}
+	// SUB acc, dst — sets flags as for CMP; CMPXCHG uses these
+	// same flag semantics so ZF reflects equality.
+	_, fl := sub(acc, dst, operandSize)
+	c.setArithFlags(fl)
+	if fl.zf {
+		if operandSize == 1 {
+			if m.isReg {
+				c.write8FromModRM(m, uint8(src))
+			} else {
+				c.writeMem8(m.ea, uint8(src))
+			}
+		} else {
+			c.writeOperand(m, src, operandSize)
+		}
+	} else {
+		if operandSize == 1 {
+			c.SetReg8(AL, uint8(dst))
+		} else {
+			c.writeReg(RAX, dst, operandSize)
+		}
+	}
+	return nil
+}
+
+// opXADD implements 0x0F 0xC0 / 0xC1 — XADD. Exchange the
+// destination with the source, then add: dst_new = old_dst + src,
+// src_new = old_dst.
+func (c *CPU) opXADD(rex, operandSize uint8) error {
+	m := c.parseModRM64(rex)
+	var dst, src uint64
+	if operandSize == 1 {
+		src = uint64(c.read8RegField(m))
+		if m.isReg {
+			dst = uint64(c.read8FromModRM(m))
+		} else {
+			dst = uint64(c.readMem8(m.ea))
+		}
+	} else {
+		src = c.readReg(m.reg, operandSize)
+		dst = c.readOperand(m, operandSize)
+	}
+	res, fl := add(dst, src, operandSize)
+	if operandSize == 1 {
+		c.write8RegField(m, uint8(dst))
+		if m.isReg {
+			c.write8FromModRM(m, uint8(res))
+		} else {
+			c.writeMem8(m.ea, uint8(res))
+		}
+	} else {
+		c.writeReg(m.reg, dst, operandSize)
+		c.writeOperand(m, res, operandSize)
+	}
+	c.setArithFlags(fl)
 	return nil
 }
 
