@@ -141,6 +141,20 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
+	// ===== Group 3 (TEST/NOT/NEG/MUL/IMUL/DIV/IDIV) =====
+
+	case op == 0xF7:
+		return c.opGroup3(rex, operandSize)
+
+	// ===== IMUL signed-integer forms =====
+
+	case op == 0x69:
+		// IMUL r, r/m, imm32 (sign-extended to operand size).
+		return c.opIMULImm(rex, operandSize, false)
+	case op == 0x6B:
+		// IMUL r, r/m, imm8 (sign-extended).
+		return c.opIMULImm(rex, operandSize, true)
+
 	// ===== Group 2 (shifts and rotates) =====
 
 	case op == 0xD1:
@@ -218,6 +232,22 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 		} else {
 			c.writeMem8(m.ea, v)
 		}
+		return nil
+
+	case op2 == 0xAF:
+		// IMUL r, r/m — two-operand signed multiply, destination is reg.
+		return c.opIMUL2Op(rex, operandSize)
+
+	case op2 >= 0xC8 && op2 <= 0xCF:
+		// BSWAP r{32,64}: byte-swap the destination register. Only
+		// defined for 32- and 64-bit operand sizes; the 16-bit form
+		// is "undefined" per Intel SDM (we still permit it for
+		// completeness).
+		idx := uint8(op2 - 0xC8)
+		if rex&rexB != 0 {
+			idx |= 0x8
+		}
+		c.reg64[idx] = bswap(c.reg64[idx], operandSize)
 		return nil
 
 	case op2 == 0xB6:
@@ -426,6 +456,274 @@ func (c *CPU) opALUImmRAX(operandSize uint8, op aluOp) error {
 	}
 	c.setArithFlags(fl)
 	return nil
+}
+
+// opGroup3 dispatches 0xF7 — Group 3 with non-byte operand size.
+// Sub-ops: 0=TEST r/m,imm, 1=reserved, 2=NOT, 3=NEG, 4=MUL, 5=IMUL,
+// 6=DIV, 7=IDIV. The 0xF6 byte-operand variant is not yet wired.
+func (c *CPU) opGroup3(rex, operandSize uint8) error {
+	m := c.parseModRM64(rex)
+	switch m.reg {
+	case 0, 1: // TEST r/m, imm
+		var imm uint64
+		switch operandSize {
+		case 2:
+			imm = uint64(c.fetch16())
+		default:
+			imm = uint64(int64(int32(c.fetch32())))
+		}
+		dst := c.readOperand(m, operandSize)
+		r := (dst & imm) & mask(operandSize)
+		c.setArithFlags(logicalFlags(r, operandSize))
+		return nil
+	case 2: // NOT r/m — does not affect flags
+		dst := c.readOperand(m, operandSize)
+		c.writeOperand(m, ^dst&mask(operandSize), operandSize)
+		return nil
+	case 3: // NEG r/m
+		dst := c.readOperand(m, operandSize)
+		res, fl := sub(0, dst, operandSize)
+		fl.cf = dst != 0 // CF = "source was non-zero" per SDM (overrides sub's CF rule)
+		c.writeOperand(m, res, operandSize)
+		c.setArithFlags(fl)
+		return nil
+	case 4: // MUL r/m — unsigned: rDX:rAX = rAX × r/m
+		dst := c.readOperand(m, operandSize)
+		return c.opMUL(dst, operandSize)
+	case 5: // IMUL r/m (one-operand) — signed: rDX:rAX = rAX × r/m
+		dst := c.readOperand(m, operandSize)
+		return c.opIMUL1Op(dst, operandSize)
+	case 6: // DIV r/m — unsigned
+		dst := c.readOperand(m, operandSize)
+		return c.opDIV(dst, operandSize)
+	case 7: // IDIV r/m — signed
+		dst := c.readOperand(m, operandSize)
+		return c.opIDIV(dst, operandSize)
+	}
+	return unimplemented("Group 3 /%d", m.reg)
+}
+
+// opMUL: unsigned multiply of rAX (operandSize wide) by src; the
+// product fills rDX:rAX. CF and OF are set if the upper half is
+// nonzero — i.e. the product didn't fit in the low operand-width.
+func (c *CPU) opMUL(src uint64, operandSize uint8) error {
+	a := c.readReg(RAX, operandSize) & mask(operandSize)
+	src &= mask(operandSize)
+	var hi, lo uint64
+	switch operandSize {
+	case 8:
+		hi, lo = bits.Mul64(a, src)
+	default:
+		prod := a * src
+		hi = prod >> (uint(operandSize) * 8)
+		lo = prod & mask(operandSize)
+	}
+	// Write back. For 8-bit MUL the entire product lands in AX (no
+	// RDX); we don't model the 8-bit form yet so 16/32/64 only.
+	c.writeReg(RAX, lo, operandSize)
+	c.writeReg(RDX, hi, operandSize)
+	var fl flagBits
+	fl.cf = hi != 0
+	fl.of = hi != 0
+	// SF/ZF/PF/AF are "undefined" per SDM; setArithFlags clears them
+	// (which is a common but not architecturally guaranteed result).
+	c.setArithFlags(fl)
+	return nil
+}
+
+// opIMUL1Op: one-operand signed multiply rDX:rAX = rAX × src. CF/OF
+// set if the result doesn't fit in operandSize bits (the high half
+// is not just the sign extension of the low half).
+func (c *CPU) opIMUL1Op(src uint64, operandSize uint8) error {
+	a := c.readReg(RAX, operandSize) & mask(operandSize)
+	src &= mask(operandSize)
+	// Sign-extend both to 64 bits, multiply, then split.
+	as := signExtend(a, operandSize)
+	ss := signExtend(src, operandSize)
+	prod128hi, prod128lo := mul128(uint64(as), uint64(ss))
+	// Low half goes to rAX, high half to rDX, at operandSize width.
+	c.writeReg(RAX, prod128lo, operandSize)
+	c.writeReg(RDX, prod128hi, operandSize)
+	// CF/OF: set if the sign-extended low half does NOT equal the full
+	// 128-bit product. Equivalent: hi part not just sign-fill of lo.
+	expectedHi := uint64(0)
+	if prod128lo&signBit(operandSize) != 0 {
+		expectedHi = mask(operandSize) // all-ones in the operand-width
+	}
+	// For operandSize < 8 we only compare within the operand width.
+	var fl flagBits
+	fl.cf = prod128hi&mask(operandSize) != expectedHi
+	fl.of = fl.cf
+	c.setArithFlags(fl)
+	return nil
+}
+
+// opIMUL2Op: 0x0F 0xAF — IMUL r, r/m. Destination = reg = reg × r/m.
+// Only the low operandSize bits of the product are kept; flags
+// indicate whether the truncation lost meaningful information.
+func (c *CPU) opIMUL2Op(rex, operandSize uint8) error {
+	m := c.parseModRM64(rex)
+	a := signExtend(c.readReg(m.reg, operandSize), operandSize)
+	b := signExtend(c.readOperand(m, operandSize), operandSize)
+	prod128hi, prod128lo := mul128(uint64(a), uint64(b))
+	c.writeReg(m.reg, prod128lo, operandSize)
+	expectedHi := uint64(0)
+	if prod128lo&signBit(operandSize) != 0 {
+		expectedHi = mask(operandSize)
+	}
+	var fl flagBits
+	fl.cf = prod128hi&mask(operandSize) != expectedHi
+	fl.of = fl.cf
+	c.setArithFlags(fl)
+	return nil
+}
+
+// opIMULImm: 0x69 (imm32 sign-extended) or 0x6B (imm8 sign-extended)
+// — three-operand IMUL: destination = r/m × imm. ModR/M.reg is the
+// destination; ModR/M.rm is the source.
+func (c *CPU) opIMULImm(rex, operandSize uint8, imm8 bool) error {
+	m := c.parseModRM64(rex)
+	var imm int64
+	if imm8 {
+		imm = int64(int8(c.fetch8()))
+	} else {
+		switch operandSize {
+		case 2:
+			imm = int64(int16(c.fetch16()))
+		default:
+			imm = int64(int32(c.fetch32()))
+		}
+	}
+	src := signExtend(c.readOperand(m, operandSize), operandSize)
+	prod128hi, prod128lo := mul128(uint64(src), uint64(imm))
+	c.writeReg(m.reg, prod128lo, operandSize)
+	expectedHi := uint64(0)
+	if prod128lo&signBit(operandSize) != 0 {
+		expectedHi = mask(operandSize)
+	}
+	var fl flagBits
+	fl.cf = prod128hi&mask(operandSize) != expectedHi
+	fl.of = fl.cf
+	c.setArithFlags(fl)
+	return nil
+}
+
+// opDIV: unsigned divide of rDX:rAX by src, quotient to rAX,
+// remainder to rDX. Divide-by-zero or quotient overflow raises #DE on
+// real hardware; we surface as an error for now (Phase 7 wires up
+// #DE delivery through the IDT).
+func (c *CPU) opDIV(src uint64, operandSize uint8) error {
+	src &= mask(operandSize)
+	if src == 0 {
+		return unimplemented("#DE on division by zero — IDT delivery pending")
+	}
+	switch operandSize {
+	case 8:
+		hi := c.GetReg64(RDX)
+		lo := c.GetReg64(RAX)
+		if hi >= src {
+			return unimplemented("#DE on quotient overflow — IDT delivery pending")
+		}
+		q, r := bits.Div64(hi, lo, src)
+		c.SetReg64(RAX, q)
+		c.SetReg64(RDX, r)
+	default:
+		// 32-bit: dividend = EDX:EAX (assembled into a 64-bit value).
+		hi := uint64(c.readReg(RDX, operandSize))
+		lo := uint64(c.readReg(RAX, operandSize))
+		dividend := (hi << (uint(operandSize) * 8)) | lo
+		q := dividend / src
+		r := dividend % src
+		if q > mask(operandSize) {
+			return unimplemented("#DE on quotient overflow")
+		}
+		c.writeReg(RAX, q, operandSize)
+		c.writeReg(RDX, r, operandSize)
+	}
+	// DIV leaves SF/ZF/PF/AF/CF/OF undefined; we clear them.
+	c.setArithFlags(flagBits{})
+	return nil
+}
+
+// opIDIV: signed counterpart.
+func (c *CPU) opIDIV(src uint64, operandSize uint8) error {
+	srcS := signExtend(src&mask(operandSize), operandSize)
+	if srcS == 0 {
+		return unimplemented("#DE on signed division by zero")
+	}
+	switch operandSize {
+	case 8:
+		hi := int64(c.GetReg64(RDX))
+		lo := c.GetReg64(RAX)
+		// Compose a signed 128-bit dividend and divide. Most cases the
+		// dividend fits in 64 signed bits (RDX is just sign-extension of
+		// RAX). M4 handles that common case; the full 128-bit IDIV
+		// arrives if/when we see real code emit it.
+		if hi != int64(-1) && hi != 0 {
+			return unimplemented("IDIV with non-trivial RDX hi half")
+		}
+		dividend := int64(lo)
+		q := dividend / srcS
+		r := dividend % srcS
+		c.SetReg64(RAX, uint64(q))
+		c.SetReg64(RDX, uint64(r))
+	default:
+		hi := signExtend(c.readReg(RDX, operandSize), operandSize)
+		lo := uint64(c.readReg(RAX, operandSize))
+		// Compose signed dividend at 2× width.
+		dividend := (hi << (uint(operandSize) * 8)) | int64(lo)
+		q := dividend / srcS
+		r := dividend % srcS
+		c.writeReg(RAX, uint64(q), operandSize)
+		c.writeReg(RDX, uint64(r), operandSize)
+	}
+	c.setArithFlags(flagBits{})
+	return nil
+}
+
+// signExtend interprets v (operandSize bits) as a signed value and
+// sign-extends it into a Go int64.
+func signExtend(v uint64, operandSize uint8) int64 {
+	switch operandSize {
+	case 1:
+		return int64(int8(v))
+	case 2:
+		return int64(int16(v))
+	case 4:
+		return int64(int32(v))
+	default:
+		return int64(v)
+	}
+}
+
+// mul128 returns the high and low 64 bits of a signed 64x64
+// multiplication. Goes through unsigned bits.Mul64 and corrects the
+// high half using the "subtract-on-negative" identity.
+func mul128(a, b uint64) (uint64, uint64) {
+	hi, lo := bits.Mul64(a, b)
+	if int64(a) < 0 {
+		hi -= b
+	}
+	if int64(b) < 0 {
+		hi -= a
+	}
+	return hi, lo
+}
+
+// bswap byte-swaps the low operandSize bytes of v (BSWAP). The 16-bit
+// form is "undefined" per Intel SDM (older silicon zeroed the result);
+// we mirror what most modern CPUs do: leave upper bits unchanged and
+// swap the low pair.
+func bswap(v uint64, operandSize uint8) uint64 {
+	switch operandSize {
+	case 8:
+		return bits.ReverseBytes64(v)
+	case 4:
+		return uint64(bits.ReverseBytes32(uint32(v)))
+	case 2:
+		return (v & ^uint64(0xFFFF)) | uint64(bits.ReverseBytes16(uint16(v)))
+	}
+	return v
 }
 
 // opGroup2 dispatches the shift/rotate family — 0xD1 (count=1),
