@@ -369,6 +369,12 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 
 	// ===== Flag manipulation =====
 
+	case op == 0xC9: // LEAVE — restore RBP, pop saved RBP
+		// LEAVE := mov rsp, rbp ; pop rbp
+		c.SetReg64(RSP, c.GetReg64(RBP))
+		c.SetReg64(RBP, c.pop64())
+		return nil
+
 	case op == 0x9C: // PUSHFQ — push RFLAGS as 8 bytes (long-mode default)
 		c.push64(c.rflags)
 		return nil
@@ -497,6 +503,29 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 		// is discarded.
 		c.parseModRM64(rex)
 		return nil
+
+	case op2 >= 0x18 && op2 <= 0x1E:
+		// 0F 18..1E are "prefetch hint" NOPs — PREFETCHNTA/T0/T1/T2
+		// and reserved-NOP encodings the compiler emits for code
+		// padding. All take a ModR/M operand and do nothing
+		// observable in our model.
+		c.parseModRM64(rex)
+		return nil
+
+	case op2 == 0x09:
+		// WBINVD — invalidate cache. We don't model caches, so the
+		// instruction is observably a no-op (kernel uses it for
+		// boot-time cache flushing).
+		return nil
+
+	case op2 == 0x31:
+		// RDTSC — read time-stamp counter into EDX:EAX. Our cycle
+		// counter is monotonic; bind RDTSC to it.
+		v := c.cycles
+		c.SetReg32(EAX, uint32(v))
+		c.SetReg32(EDX, uint32(v>>32))
+		return nil
+
 
 	case op2 == 0x05:
 		// SYSCALL — fast kernel entry. EFER.SCE must be set; we

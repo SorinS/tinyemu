@@ -51,8 +51,17 @@ func (p *PC) loadBZImage64(kernelData, initrdData []byte, cmdLine string) error 
 	}
 
 	// Load the protected-mode (and thus the embedded 64-bit) kernel
-	// to 0x100000.
-	const kernelAddr uint32 = 0x100000
+	// at the address the kernel prefers (pref_address, field at
+	// offset 0x258). Falls back to the legacy 0x100000 only if the
+	// kernel didn't request anything specific. Loading at the
+	// preferred address avoids the decompressor having to relocate
+	// the kernel image, which on a large-init_size kernel exhausts
+	// the small boot_pgt_buf when building the identity map covering
+	// both source and destination.
+	kernelAddr := uint32(h.PrefAddress)
+	if kernelAddr == 0 {
+		kernelAddr = 0x100000
+	}
 	for i := setupBytes; i < len(kernelData); i++ {
 		p.writePhys8(kernelAddr+uint32(i-setupBytes), kernelData[i])
 	}

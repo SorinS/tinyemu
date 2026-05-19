@@ -34,8 +34,8 @@ TEMU="$ROOT/bin/temu.${OS}-${ARCH}.bin"
 case $NAME in
     tinycore)
         KERNEL="$ROOT/bin/tinycore64/vmlinuz64"
-        INITRD="$ROOT/bin/tinycore64/corepure64.gz"
-        MEM=512
+        INITRD=""  # try kernel-only first
+        MEM=128
         # Match the isolinux.cfg default with output redirected to
         # COM1, no APIC/ACPI/SMP/KASLR. loglevel=8 maximises early
         # printk output so missing-opcode failures get a clear
@@ -49,14 +49,11 @@ case $NAME in
 esac
 
 [ -r "$KERNEL" ] || { echo "missing kernel: $KERNEL" >&2; exit 1; }
-[ -r "$INITRD" ] || { echo "missing initrd: $INITRD" >&2; exit 1; }
 
 echo "Starting $NAME (x86_64) at: $(date)"
 
-exec "$TEMU" \
-    -machine x86_64 \
-    -m "$MEM" \
-    -kernel "$KERNEL" \
-    -initrd "$INITRD" \
-    -net-user \
-    -append "$APPEND"
+if [ -n "$INITRD" ] && [ -r "$INITRD" ]; then
+    exec "$TEMU" -machine x86_64 -m "$MEM" -kernel "$KERNEL" -initrd "$INITRD" -net-user -append "$APPEND"
+else
+    exec "$TEMU" -machine x86_64 -m "$MEM" -kernel "$KERNEL" -net-user -append "$APPEND"
+fi

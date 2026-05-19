@@ -48,6 +48,27 @@ func (c *CPU) Step() (err error) {
 		}
 		fmt.Fprintf(os.Stderr, "[step] RIP=%#x bytes=% x\n", origRIP, bytes[:])
 	}
+	if stringWatchRIP != 0 && origRIP == stringWatchRIP {
+		rdi := c.GetReg64(RDI)
+		var buf [256]byte
+		n := 0
+		for n < len(buf) {
+			func() {
+				defer func() { _ = recover() }()
+				b := c.readMem8(rdi + uint64(n))
+				if b == 0 {
+					n = len(buf) // sentinel to break
+					return
+				}
+				buf[n] = b
+				n++
+			}()
+			if n >= len(buf) || buf[n-1] == 0 {
+				break
+			}
+		}
+		fmt.Fprintf(os.Stderr, "[strwatch] RDI=%#x str=%q\n", rdi, string(buf[:n]))
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			switch ex := r.(type) {
@@ -202,3 +223,33 @@ func (c *CPU) unimplementedAt(format string, args ...any) error {
 // instruction's RIP + opcode bytes to stderr. Extremely verbose for
 // a kernel boot — use to bisect "where did we jump wrong" failures.
 var stepTrace = os.Getenv("TINYEMU_X64_TRACE") == "1"
+
+// stringWatchRIP enables TINYEMU_X64_STRWATCH=<hex>: when RIP equals
+// that value, dump up to 256 bytes of memory pointed at by RDI as
+// an ASCII string. Useful for capturing panic messages without
+// dragging a full kernel symbol map into the emulator.
+var stringWatchRIP = func() uint64 {
+	s := os.Getenv("TINYEMU_X64_STRWATCH")
+	if s == "" {
+		return 0
+	}
+	var v uint64
+	if len(s) > 2 && (s[:2] == "0x" || s[:2] == "0X") {
+		s = s[2:]
+	}
+	for _, ch := range s {
+		var d uint64
+		switch {
+		case ch >= '0' && ch <= '9':
+			d = uint64(ch - '0')
+		case ch >= 'a' && ch <= 'f':
+			d = uint64(ch-'a') + 10
+		case ch >= 'A' && ch <= 'F':
+			d = uint64(ch-'A') + 10
+		default:
+			return v
+		}
+		v = v*16 + d
+	}
+	return v
+}()
