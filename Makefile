@@ -17,8 +17,8 @@ GOFLAGS       := -trimpath
 # Derived values
 # ------------------------------------------------------------------------------
 
-NATIVE_OS   := $(shell go env GOOS)
-NATIVE_ARCH := $(shell go env GOARCH)
+NATIVE_OS   := $(shell uname -s | tr A-Z a-z)
+NATIVE_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 GIT_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 GIT_DIRTY   := $(shell git diff --quiet 2>/dev/null && echo clean || echo dirty)
 BUILD_TIME  := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")

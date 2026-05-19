@@ -25,7 +25,9 @@ fi
 
 NAME=$1
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-TEMU="$ROOT/bin/temu.darwin-arm64.bin"
+OS=$(uname -s | tr A-Z a-z)
+ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+TEMU="$ROOT/bin/temu.${OS}-${ARCH}.bin"
 
 [ -x "$TEMU" ] || { echo "missing emulator binary $TEMU" >&2; exit 1; }
 
