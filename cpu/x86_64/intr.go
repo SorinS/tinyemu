@@ -124,10 +124,13 @@ func (c *CPU) opCPUID() error {
 	case 0x80000000:
 		a = 0x80000004
 	case 0x80000001:
-		// EDX: SYSCALL(11), NX(20), LM(29). The LM bit is the
-		// "long mode supported" advertisement Linux uses to decide
-		// whether to even attempt 64-bit boot.
-		d = 1<<11 | 1<<20 | 1<<29
+		// EDX: SYSCALL(11), NX(20), Page1GB(26), LM(29). The LM bit
+		// is the "long mode supported" advertisement Linux uses to
+		// decide whether to even attempt 64-bit boot. Page1GB lets
+		// the decompressor's identity-map setup use 1 GiB huge
+		// pages — without it, mapping >1 GiB needs many more PD
+		// entries, exhausting the small static boot_pgt_buf.
+		d = 1<<11 | 1<<20 | 1<<26 | 1<<29
 	case 0x80000002, 0x80000003, 0x80000004:
 		// Brand string: 48 bytes split across 3 leaves × 16 bytes
 		// (4 dwords each). "tinyemu-go x86_64 long-mode emulator     ".

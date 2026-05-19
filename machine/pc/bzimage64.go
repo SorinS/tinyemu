@@ -2,6 +2,7 @@ package pc
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/jtolio/tinyemu-go/cpu/x86_64"
 )
@@ -62,8 +63,43 @@ func (p *PC) loadBZImage64(kernelData, initrdData []byte, cmdLine string) error 
 	if kernelAddr == 0 {
 		kernelAddr = 0x100000
 	}
+	kernelFileLen := len(kernelData) - setupBytes
 	for i := setupBytes; i < len(kernelData); i++ {
 		p.writePhys8(kernelAddr+uint32(i-setupBytes), kernelData[i])
+	}
+
+	// Zero the BSS region. Linux's boot protocol requires the
+	// bootloader to ensure (init_size - file_size) bytes past the
+	// loaded image are zero-initialised — the kernel's BSS lives
+	// there and stores critical fields like pgt_buf_offset that the
+	// decompressor reads on its very first allocation. Skipping this
+	// step leaves garbage in pgt_buf_offset and the decompressor
+	// instantly panics with "out of pgt_buf".
+	if h.InitSize > 0 && int(h.InitSize) > kernelFileLen {
+		bssLen := int(h.InitSize) - kernelFileLen
+		fmt.Fprintf(os.Stderr, "[bzimage64] zeroing BSS: kernel@%#x file=%#x init_size=%#x bss_len=%#x\n",
+			kernelAddr, kernelFileLen, h.InitSize, bssLen)
+		// Write zeros directly via the physical-memory range rather
+		// than one writePhys8 call per byte — for a 30 MB BSS that's
+		// the difference between 30 million function calls and one
+		// memset.
+		rng := p.memMap.GetRange(uint64(kernelAddr) + uint64(kernelFileLen))
+		if rng != nil && rng.IsRAM {
+			start := uint64(kernelAddr) + uint64(kernelFileLen) - rng.Addr
+			end := start + uint64(bssLen)
+			if end <= uint64(len(rng.PhysMem)) {
+				for i := start; i < end; i++ {
+					rng.PhysMem[i] = 0
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "[bzimage64] BSS span overruns RAM region; falling back to byte-by-byte\n")
+				for i := 0; i < bssLen; i++ {
+					p.writePhys8(kernelAddr+uint32(kernelFileLen+i), 0)
+				}
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[bzimage64] BSS start not in RAM\n")
+		}
 	}
 
 	// Command line.
