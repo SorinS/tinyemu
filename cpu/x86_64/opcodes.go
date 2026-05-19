@@ -180,6 +180,30 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	case op == 0xFF:
 		return c.opGroup5(rex, operandSize)
 
+	// ===== Flag manipulation =====
+
+	case op == 0xF5: // CMC — complement CF
+		c.rflags ^= RFLAGS_CF
+		return nil
+	case op == 0xF8: // CLC — clear CF
+		c.rflags &^= RFLAGS_CF
+		return nil
+	case op == 0xF9: // STC — set CF
+		c.rflags |= RFLAGS_CF
+		return nil
+	case op == 0xFA: // CLI — clear IF
+		c.rflags &^= RFLAGS_IF
+		return nil
+	case op == 0xFB: // STI — set IF
+		c.rflags |= RFLAGS_IF
+		return nil
+	case op == 0xFC: // CLD — clear DF
+		c.rflags &^= RFLAGS_DF
+		return nil
+	case op == 0xFD: // STD — set DF
+		c.rflags |= RFLAGS_DF
+		return nil
+
 	// ===== Two-byte escape =====
 
 	case op == 0x0F:
@@ -189,13 +213,28 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	return unimplemented("opcode %#02x rex=%#x", op, rex)
 }
 
-// opTwoByte dispatches the 0x0F escape opcode family. Covers near-form
-// Jcc (0x80..0x8F rel32), CMOVcc (0x40..0x4F), SETcc (0x90..0x9F), and
-// MOVZX/MOVSX (0xB6/0xB7/0xBE/0xBF).
+// opTwoByte dispatches the 0x0F escape opcode family.
 func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 	_ = segOverride
 	op2 := c.fetch8()
 	switch {
+	case op2 == 0x20:
+		// MOV r64, CRn — reads control register into a GPR. The ModR/M
+		// is the unusual "register-register" form where mod is treated
+		// as 11 regardless of its actual value (the operand size is
+		// always 64 bits in long mode).
+		return c.opMovFromCR(rex)
+	case op2 == 0x22:
+		return c.opMovToCR(rex)
+	case op2 == 0x21:
+		return c.opMovFromDR(rex)
+	case op2 == 0x23:
+		return c.opMovToDR(rex)
+
+	case op2 == 0x30:
+		return c.opWRMSR()
+	case op2 == 0x32:
+		return c.opRDMSR()
 	case op2 >= 0x40 && op2 <= 0x4F:
 		// CMOVcc r, r/m — conditional move. Operand size follows the
 		// usual rules (REX.W → 64, 0x66 → 16, else 32). Destination
@@ -264,6 +303,166 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 		return c.opMOVSX(rex, operandSize, 2)
 	}
 	return unimplemented("0F %#02x rex=%#x", op2, rex)
+}
+
+// opMovFromCR / opMovToCR — 0x0F 0x20 / 0x22. The ModR/M byte: reg is
+// the CRn index (0..7, REX.R doesn't normally extend in long mode but
+// some implementations honor it for CR8 access on AMD). rm is the
+// GPR. mod is ignored (treated as 11).
+func (c *CPU) opMovFromCR(rex uint8) error {
+	mb := c.fetch8()
+	cr := (mb >> 3) & 7
+	rm := mb & 7
+	if rex&rexR != 0 {
+		cr |= 0x8
+	}
+	if rex&rexB != 0 {
+		rm |= 0x8
+	}
+	c.reg64[rm&0xF] = c.cr[cr&0x7]
+	return nil
+}
+
+func (c *CPU) opMovToCR(rex uint8) error {
+	mb := c.fetch8()
+	cr := (mb >> 3) & 7
+	rm := mb & 7
+	if rex&rexR != 0 {
+		cr |= 0x8
+	}
+	if rex&rexB != 0 {
+		rm |= 0x8
+	}
+	v := c.reg64[rm&0xF]
+	c.writeCR(int(cr&0x7), v)
+	return nil
+}
+
+// writeCR centralises the CR update + side-effects. Writes to CR0
+// (PE/PG bits) and CR4 (PAE) can flip the long-mode-active latch
+// (LMA), which gates the mode field. The recomputeMode call here
+// keeps c.mode coherent without the rest of the decoder needing to
+// know which CR was written.
+func (c *CPU) writeCR(n int, v uint64) {
+	if n == 0 {
+		oldPG := c.cr[0]&CR0_PG != 0
+		newPG := v&CR0_PG != 0
+		c.cr[0] = v
+		// LMA latches when paging is enabled with LME set; clears when
+		// paging turns off.
+		if !oldPG && newPG && c.efer&EFER_LME != 0 {
+			c.efer |= EFER_LMA
+		} else if oldPG && !newPG {
+			c.efer &^= EFER_LMA
+		}
+		c.recomputeMode()
+		return
+	}
+	c.cr[n] = v
+	if n == 4 {
+		c.recomputeMode()
+	}
+}
+
+func (c *CPU) opMovFromDR(rex uint8) error {
+	mb := c.fetch8()
+	dr := (mb >> 3) & 7
+	rm := mb & 7
+	if rex&rexB != 0 {
+		rm |= 0x8
+	}
+	c.reg64[rm&0xF] = c.dr[dr&0x7]
+	return nil
+}
+
+func (c *CPU) opMovToDR(rex uint8) error {
+	mb := c.fetch8()
+	dr := (mb >> 3) & 7
+	rm := mb & 7
+	if rex&rexB != 0 {
+		rm |= 0x8
+	}
+	c.dr[dr&0x7] = c.reg64[rm&0xF]
+	return nil
+}
+
+// MSR numbers we route. Unrecognized MSRs return zero on RDMSR and
+// silently drop writes on WRMSR — real hardware raises #GP, but the
+// boot path passes through several MSRs we don't model.
+const (
+	msrEFER          = 0xC0000080
+	msrSTAR          = 0xC0000081
+	msrLSTAR         = 0xC0000082
+	msrCSTAR         = 0xC0000083
+	msrSFMASK        = 0xC0000084
+	msrFSBaseMSR     = 0xC0000100
+	msrGSBaseMSR     = 0xC0000101
+	msrKernelGSBase  = 0xC0000102
+)
+
+func (c *CPU) opRDMSR() error {
+	v := c.readMSR(c.GetReg32(ECX))
+	c.SetReg32(EAX, uint32(v))
+	c.SetReg32(EDX, uint32(v>>32))
+	return nil
+}
+
+func (c *CPU) opWRMSR() error {
+	num := c.GetReg32(ECX)
+	v := uint64(c.GetReg32(EAX)) | (uint64(c.GetReg32(EDX)) << 32)
+	return c.writeMSR(num, v)
+}
+
+func (c *CPU) readMSR(num uint32) uint64 {
+	switch num {
+	case msrEFER:
+		return c.efer
+	case msrSTAR:
+		return c.msrStar
+	case msrLSTAR:
+		return c.msrLstar
+	case msrCSTAR:
+		return c.msrCstar
+	case msrSFMASK:
+		return c.msrSFMask
+	case msrFSBaseMSR:
+		return c.msrFSBase
+	case msrGSBaseMSR:
+		return c.msrGSBase
+	case msrKernelGSBase:
+		return c.msrKernelGSBase
+	}
+	return 0
+}
+
+func (c *CPU) writeMSR(num uint32, v uint64) error {
+	switch num {
+	case msrEFER:
+		// Setting LME may not flip LMA until paging is enabled — but
+		// if paging is already on, LMA latches now.
+		c.efer = v
+		if c.cr[0]&CR0_PG != 0 && c.efer&EFER_LME != 0 {
+			c.efer |= EFER_LMA
+		}
+		c.recomputeMode()
+	case msrSTAR:
+		c.msrStar = v
+	case msrLSTAR:
+		c.msrLstar = v
+	case msrCSTAR:
+		c.msrCstar = v
+	case msrSFMASK:
+		c.msrSFMask = v
+	case msrFSBaseMSR:
+		c.msrFSBase = v
+		c.segBase[FS] = v
+	case msrGSBaseMSR:
+		c.msrGSBase = v
+		c.segBase[GS] = v
+	case msrKernelGSBase:
+		c.msrKernelGSBase = v
+	}
+	return nil
 }
 
 // opMOVZX implements MOVZX r, r/m{8,16}. srcSize is 1 or 2; the
