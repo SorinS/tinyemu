@@ -36,10 +36,16 @@ type Config struct {
 	Console *virtio.CharacterDevice
 }
 
+// Compile-time check: cpu/x86's CPU must satisfy the X86Core interface
+// that machine/pc programs against. Both cpu/x86 (i386) and the
+// upcoming cpu/x86_64 backends plug into this same chassis through the
+// interface, so any drift in signatures fails at build time here.
+var _ cpu.X86Core = (*x86.CPU)(nil)
+
 // PC represents a complete x86 PC machine.
 type PC struct {
 	memMap     *mem.PhysMemoryMap
-	cpu        *x86.CPU
+	cpu        cpu.X86Core
 	io         *IOPortDispatcher
 	pic        *PIC8259
 	pit        *PIT8254

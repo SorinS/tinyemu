@@ -1,6 +1,8 @@
 package pc
 
-import "github.com/jtolio/tinyemu-go/cpu/x86"
+import (
+	"github.com/jtolio/tinyemu-go/cpu"
+)
 
 // PIC8259 implements a single 8259 Programmable Interrupt Controller.
 // The standard PC AT has two of these chained: master at 0x20-0x21 with
@@ -8,7 +10,7 @@ import "github.com/jtolio/tinyemu-go/cpu/x86"
 // master's IRQ 2. The cascade is modelled by attaching a slave PIC to a
 // master via NewPIC8259Cascaded.
 type PIC8259 struct {
-	cpu        *x86.CPU
+	cpu        cpu.X86Core
 	basePort   uint16
 	icwState   int
 	icw1       uint8
@@ -32,7 +34,7 @@ type PIC8259 struct {
 // NewPIC8259 creates a single (master) PIC. IMR defaults to 0xFF (all
 // masked) so devices that fire before the kernel programs them don't
 // deliver early IRQs.
-func NewPIC8259(cpu *x86.CPU, basePort uint16) *PIC8259 {
+func NewPIC8259(cpu cpu.X86Core, basePort uint16) *PIC8259 {
 	return &PIC8259{
 		cpu:      cpu,
 		basePort: basePort,
@@ -45,7 +47,7 @@ func NewPIC8259(cpu *x86.CPU, basePort uint16) *PIC8259 {
 // on the master accepts 0..15: 0-7 are local, 8-15 are routed to the
 // slave. Use this in the PC board's setup if you want IDE/RTC/PS2-mouse
 // (IRQs 8-15) to work.
-func NewPIC8259Cascaded(cpu *x86.CPU, masterBase, slaveBase uint16) *PIC8259 {
+func NewPIC8259Cascaded(cpu cpu.X86Core, masterBase, slaveBase uint16) *PIC8259 {
 	master := NewPIC8259(cpu, masterBase)
 	slave := NewPIC8259(nil, slaveBase) // slave doesn't drive the CPU directly
 	master.slave = slave
