@@ -141,6 +141,27 @@ func (c *CPU) opSYSRET(rex uint8) error {
 	return nil
 }
 
+// opRETF implements RETF (0xCB) — far return. Pops a (RIP, CS) pair
+// at operand-size width. M5c-style: synthesises a 64-bit code-segment
+// descriptor cache for the new CS rather than walking the GDT. That
+// holds as long as the kernel uses RETF to land in 64-bit code; if a
+// compat-mode target ever appears we'll need the descriptor walk.
+func (c *CPU) opRETF(operandSize uint8) error {
+	if operandSize != 8 {
+		// 32- and 16-bit far returns aren't typical in long-mode
+		// kernel code; surface explicitly until needed.
+		return unimplemented("RETF with operand size %d (expected 8)", operandSize)
+	}
+	newRIP := c.pop64()
+	newCS := uint16(c.pop64())
+	c.rip = newRIP
+	c.seg[CS] = newCS
+	c.segBase[CS] = 0
+	c.segAccess[CS] = csLBit | 0x9A
+	c.recomputeMode()
+	return nil
+}
+
 // opIRETQ implements the 64-bit interrupt return. Pops five 8-byte
 // values from the current stack in the order RIP, CS, RFLAGS, RSP, SS.
 // In 64-bit mode IRET always pops all five regardless of whether a

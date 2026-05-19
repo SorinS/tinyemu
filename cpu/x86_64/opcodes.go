@@ -147,6 +147,15 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.rip = c.pop64()
 		return nil
 
+	case op == 0xCB:
+		// RETF / LRETQ — far return. Pops RIP and CS at operand-size
+		// width. In long mode REX.W=1 picks 8-byte slots, else 4. CS
+		// is loaded by reading its descriptor from the GDT, but we
+		// keep the M5c shortcut: synthesize a 64-bit code segment for
+		// the new CS. The kernel's startup_64 uses this to far-return
+		// into its newly-loaded GDT's kernel CS, where L=1.
+		return c.opRETF(operandSize)
+
 	case op == 0xCC:
 		// INT3 — software breakpoint, vector 3, no error code.
 		return c.deliverInterrupt(3, false, 0)

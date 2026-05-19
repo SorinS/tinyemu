@@ -235,6 +235,41 @@ func TestPF_Delivered(t *testing.T) {
 	}
 }
 
+// TestRETF: 0x48 0xCB pops RIP+CS at 64-bit width. Regression for
+// the TinyCorePure64 startup_64 path that does a far-return to land
+// in its newly-loaded GDT's kernel CS.
+func TestRETF(t *testing.T) {
+	c, mm := longModeCPU(t)
+	// RETF pops RIP first (at RSP) then CS (at RSP+8).
+	_ = mm.Write64(0x7FF0, 0x5A5A5A5A5A5A5A5A) // RIP (popped first)
+	_ = mm.Write64(0x7FF8, 0x0008)             // CS  (popped second)
+	c.reg64[RSP] = 0x7FF0
+
+	const codeAddr uint64 = 0x1000
+	_ = mm.Write8(codeAddr, 0x48)
+	_ = mm.Write8(codeAddr+1, 0xCB)
+	_ = mm.Write8(codeAddr+2, 0xF4)
+	c.SetRIP(codeAddr)
+
+	if err := c.Step(); err != nil {
+		t.Fatalf("step RETF: %v", err)
+	}
+	if c.GetRIP() != 0x5A5A5A5A5A5A5A5A {
+		t.Errorf("RIP after RETF = %#x, want 0x5A5A...", c.GetRIP())
+	}
+	if c.seg[CS] != 0x0008 {
+		t.Errorf("CS = %#x, want 0x0008", c.seg[CS])
+	}
+	// Stack consumed two 8-byte slots.
+	if c.GetReg64(RSP) != 0x8000 {
+		t.Errorf("RSP = %#x after far return, want %#x", c.GetReg64(RSP), uint64(0x8000))
+	}
+	// CS access cache synthesised as long-mode code.
+	if c.segAccess[CS]&csLBit == 0 {
+		t.Errorf("CS access L bit clear after RETF")
+	}
+}
+
 // TestUD2_Vectored: 0x0F 0x0B delivers vector 6 (#UD).
 func TestUD2_Vectored(t *testing.T) {
 	c, mm := longModeCPU(t)
