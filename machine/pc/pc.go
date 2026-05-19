@@ -284,15 +284,18 @@ func (p *PC) LoadBIOS(biosData []byte, kernelData []byte, initrdData []byte, cmd
 	// If kernel data is provided, try direct bzImage boot
 	if len(kernelData) > 0 {
 		if p.is64 {
-			// Long-mode direct bzImage boot. Skips the real-mode setup
-			// stub (we don't model real mode); jumps the CPU straight
-			// into the 64-bit kernel entry at protected_mode_start+0x200
-			// per the AMD64 boot protocol.
-			if err := p.loadBZImage64(kernelData, initrdData, cmdLine); err == nil {
+			// Long-mode boot. Try direct ELF (vmlinux) first — that
+			// bypasses the bzImage decompressor entirely, which is the
+			// part that exhausts its small static pgt_buf when set up
+			// in identity-map mode. Fall back to the bzImage path so
+			// either format is accepted.
+			if err := p.loadVMLinux64(kernelData, initrdData, cmdLine); err == nil {
 				return nil
-			} else {
+			}
+			if err := p.loadBZImage64(kernelData, initrdData, cmdLine); err != nil {
 				return fmt.Errorf("64-bit kernel load failed: %w", err)
 			}
+			return nil
 		}
 		_, err := p.loadBZImage(kernelData, initrdData, cmdLine)
 		if err == nil {

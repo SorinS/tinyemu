@@ -33,7 +33,13 @@ TEMU="$ROOT/bin/temu.${OS}-${ARCH}.bin"
 
 case $NAME in
     tinycore)
-        KERNEL="$ROOT/bin/tinycore64/vmlinuz64"
+        # Prefer the pre-decompressed ELF (vmlinux64) so we skip the
+        # bzImage decompressor — see machine/pc/vmlinux64.go.
+        if [ -r "$ROOT/bin/tinycore64/vmlinux64" ]; then
+            KERNEL="$ROOT/bin/tinycore64/vmlinux64"
+        else
+            KERNEL="$ROOT/bin/tinycore64/vmlinuz64"
+        fi
         INITRD=""  # try kernel-only first
         MEM=128
         # Match the isolinux.cfg default with output redirected to

@@ -375,6 +375,26 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.SetReg64(RBP, c.pop64())
 		return nil
 
+	case op == 0x98: // CBW / CWDE / CDQE — sign-extend AL/AX/EAX in place.
+		switch operandSize {
+		case 2: // CBW: AX = sign-extend(AL)
+			c.SetReg16(AX, uint16(int8(c.GetReg8(AL))))
+		case 4: // CWDE: EAX = sign-extend(AX)
+			c.SetReg32(EAX, uint32(int16(c.GetReg16(AX))))
+		case 8: // CDQE: RAX = sign-extend(EAX)
+			c.SetReg64(RAX, uint64(int32(c.GetReg32(EAX))))
+		}
+		return nil
+
+	case op == 0x99: // CWD / CDQ / CQO — sign-extend RAX into RDX.
+		a := c.readReg(RAX, operandSize)
+		var hi uint64
+		if a&signBit(operandSize) != 0 {
+			hi = mask(operandSize)
+		}
+		c.writeReg(RDX, hi, operandSize)
+		return nil
+
 	case op == 0x9C: // PUSHFQ — push RFLAGS as 8 bytes (long-mode default)
 		c.push64(c.rflags)
 		return nil
@@ -600,6 +620,39 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 	case op2 == 0xAF:
 		// IMUL r, r/m — two-operand signed multiply, destination is reg.
 		return c.opIMUL2Op(rex, operandSize)
+
+	case op2 == 0xAE:
+		// Group 15 — FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/XSAVE/LFENCE/
+		// MFENCE/SFENCE etc. mod=11 forms are the memory fences,
+		// which are no-ops in our single-CPU model.
+		mb := c.fetch8()
+		mod := (mb >> 6) & 3
+		reg := (mb >> 3) & 7
+		if mod == 3 {
+			switch reg {
+			case 5, 6, 7: // LFENCE / MFENCE / SFENCE — fence no-ops
+				return nil
+			}
+		}
+		return c.unimplementedAt("Group 15 /%d mod=%d", reg, mod)
+
+	case op2 == 0xBA:
+		// Group 8 — BT/BTS/BTR/BTC r/m, imm8. Sub-op (reg field):
+		// 4=BT, 5=BTS, 6=BTR, 7=BTC.
+		return c.opGroup8(rex, operandSize)
+
+	case op2 == 0xA3:
+		// BT r/m, r — read bit-index from reg into CF.
+		return c.opBT(rex, operandSize, false, false)
+	case op2 == 0xAB:
+		// BTS r/m, r — set the bit, copy old to CF.
+		return c.opBT(rex, operandSize, true, false)
+	case op2 == 0xB3:
+		// BTR r/m, r — reset the bit, copy old to CF.
+		return c.opBT(rex, operandSize, false, true)
+	case op2 == 0xBB:
+		// BTC r/m, r — complement the bit, copy old to CF.
+		return c.opBTC(rex, operandSize)
 
 	case op2 >= 0xC8 && op2 <= 0xCF:
 		// BSWAP r{32,64}: byte-swap the destination register. Only
@@ -861,6 +914,82 @@ func (c *CPU) writeMSR(num uint32, v uint64) error {
 	case msrKernelGSBase:
 		c.msrKernelGSBase = v
 	}
+	return nil
+}
+
+// opGroup8 — 0x0F 0xBA — BT/BTS/BTR/BTC r/m, imm8. The reg field
+// of ModR/M selects the operation (4..7); the imm8 is the bit
+// index masked to operandSize*8 - 1.
+func (c *CPU) opGroup8(rex, operandSize uint8) error {
+	m := c.parseModRM64(rex)
+	imm := uint64(c.fetch8())
+	bitWidth := uint64(operandSize) * 8
+	bitNum := imm & (bitWidth - 1)
+	dst := c.readOperand(m, operandSize)
+	bitVal := (dst >> bitNum) & 1
+	if bitVal != 0 {
+		c.rflags |= RFLAGS_CF
+	} else {
+		c.rflags &^= RFLAGS_CF
+	}
+	switch m.reg {
+	case 4: // BT — no writeback
+		return nil
+	case 5: // BTS
+		dst |= 1 << bitNum
+	case 6: // BTR
+		dst &^= 1 << bitNum
+	case 7: // BTC
+		dst ^= 1 << bitNum
+	default:
+		return unimplemented("Group 8 /%d", m.reg)
+	}
+	c.writeOperand(m, dst, operandSize)
+	return nil
+}
+
+// opBT implements the register-bit-index forms — 0x0F A3 BT,
+// 0x0F AB BTS, 0x0F B3 BTR. The bit index in the source register
+// is taken modulo operandSize*8 (no masking for memory operands in
+// real hardware — the offset can range over 4 GiB / 8 — but our
+// implementation always works against the register-form value).
+func (c *CPU) opBT(rex, operandSize uint8, set, reset bool) error {
+	m := c.parseModRM64(rex)
+	idx := c.readReg(m.reg, operandSize)
+	bitWidth := uint64(operandSize) * 8
+	bitNum := idx & (bitWidth - 1)
+	dst := c.readOperand(m, operandSize)
+	bitVal := (dst >> bitNum) & 1
+	if bitVal != 0 {
+		c.rflags |= RFLAGS_CF
+	} else {
+		c.rflags &^= RFLAGS_CF
+	}
+	if set {
+		dst |= 1 << bitNum
+		c.writeOperand(m, dst, operandSize)
+	} else if reset {
+		dst &^= 1 << bitNum
+		c.writeOperand(m, dst, operandSize)
+	}
+	return nil
+}
+
+// opBTC implements BTC r/m, r — toggle bit, copy old to CF.
+func (c *CPU) opBTC(rex, operandSize uint8) error {
+	m := c.parseModRM64(rex)
+	idx := c.readReg(m.reg, operandSize)
+	bitWidth := uint64(operandSize) * 8
+	bitNum := idx & (bitWidth - 1)
+	dst := c.readOperand(m, operandSize)
+	bitVal := (dst >> bitNum) & 1
+	if bitVal != 0 {
+		c.rflags |= RFLAGS_CF
+	} else {
+		c.rflags &^= RFLAGS_CF
+	}
+	dst ^= 1 << bitNum
+	c.writeOperand(m, dst, operandSize)
 	return nil
 }
 

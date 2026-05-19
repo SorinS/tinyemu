@@ -90,6 +90,43 @@ func (c *CPU) Step() (err error) {
 						return
 					}
 				}
+				if pfDebug {
+					fmt.Fprintf(os.Stderr, "[pf] addr=%#x ec=%#x RIP=%#x CR3=%#x\n",
+						ex.Err.Addr, ex.Err.ErrorCode, c.rip, c.cr[3])
+					// Walk the page tables manually and report what's
+					// present at each level.
+					cr3 := c.cr[3] & 0xFFFFFFFFF000
+					addr := ex.Err.Addr
+					pml4i := (addr >> 39) & 0x1FF
+					pdpti := (addr >> 30) & 0x1FF
+					pdi := (addr >> 21) & 0x1FF
+					pti := (addr >> 12) & 0x1FF
+					// Print a few neighbouring PML4 entries for context.
+					for _, idx := range []uint64{0, pml4i, 0x100, 0x111, 0x1FF} {
+						v, _ := c.memMap.Read64(cr3 + idx*8)
+						fmt.Fprintf(os.Stderr, "[pf]   PML4[%#x] @ %#x = %#x\n",
+							idx, cr3+idx*8, v)
+					}
+					pml4e, _ := c.memMap.Read64(cr3 + pml4i*8)
+					if pml4e&1 != 0 {
+						pdpt := pml4e & 0xFFFFFFFFF000
+						pdpte, _ := c.memMap.Read64(pdpt + pdpti*8)
+						fmt.Fprintf(os.Stderr, "[pf]   PDPT[%#x] @ %#x = %#x\n",
+							pdpti, pdpt+pdpti*8, pdpte)
+						if pdpte&1 != 0 && pdpte&0x80 == 0 {
+							pd := pdpte & 0xFFFFFFFFF000
+							pde, _ := c.memMap.Read64(pd + pdi*8)
+							fmt.Fprintf(os.Stderr, "[pf]   PD[%#x]   @ %#x = %#x\n",
+								pdi, pd+pdi*8, pde)
+							if pde&1 != 0 && pde&0x80 == 0 {
+								pt := pde & 0xFFFFFFFFF000
+								pte, _ := c.memMap.Read64(pt + pti*8)
+								fmt.Fprintf(os.Stderr, "[pf]   PT[%#x]  @ %#x = %#x\n",
+									pti, pt+pti*8, pte)
+							}
+						}
+					}
+				}
 				err = ex.Err
 			default:
 				panic(r)
@@ -229,6 +266,10 @@ func (c *CPU) unimplementedAt(format string, args ...any) error {
 // instruction's RIP + opcode bytes to stderr. Extremely verbose for
 // a kernel boot — use to bisect "where did we jump wrong" failures.
 var stepTrace = os.Getenv("TINYEMU_X64_TRACE") == "1"
+
+// pfDebug logs each page fault that surfaces to the host (i.e. not
+// delivered via IDT). Set TINYEMU_X64_PF=1.
+var pfDebug = os.Getenv("TINYEMU_X64_PF") == "1"
 
 // stringWatchRIP enables TINYEMU_X64_STRWATCH=<hex>: when RIP equals
 // that value, dump up to 256 bytes of memory pointed at by RDI as
