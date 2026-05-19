@@ -86,6 +86,61 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 	return nil
 }
 
+// opSYSCALL — 0x0F 0x05 — fast kernel entry. Saves RIP to RCX and
+// RFLAGS to R11 (no stack push), loads RIP from LSTAR, builds CS and
+// SS selectors out of STAR[47:32], drops to CPL 0, and masks RFLAGS
+// with ~SFMASK. The kernel does its own stack switch (SWAPGS + load
+// RSP from the per-CPU area) since SYSCALL is a "let it go fast"
+// instruction.
+func (c *CPU) opSYSCALL() error {
+	// EFER.SCE governs whether SYSCALL is enabled. Real hardware
+	// raises #UD if SCE=0; M6 ignores that bit for simplicity.
+	c.SetReg64(RCX, c.rip)
+	c.SetReg64(R11, c.rflags)
+
+	c.rip = c.msrLstar
+
+	starCSMask := uint16((c.msrStar >> 32) & 0xFFFF)
+	c.seg[CS] = starCSMask & 0xFFFC
+	c.segBase[CS] = 0
+	c.segAccess[CS] = csLBit | 0x9A // P=1, S=1, code, executable, readable
+	c.seg[SS] = (starCSMask + 8) & 0xFFFC
+	c.segBase[SS] = 0
+	c.segAccess[SS] = 0x92 // P=1, S=1, data, writable
+
+	// RFLAGS &= ~SFMASK, then re-OR reserved bit 1.
+	c.rflags = (c.rflags &^ c.msrSFMask) | 2
+	c.cpl = 0
+	c.recomputeMode()
+	return nil
+}
+
+// opSYSRET — 0x0F 0x07 — fast kernel exit. Loads RIP from RCX, RFLAGS
+// from R11, and reconstructs user-mode CS/SS from STAR[63:48]. The
+// SDM specifies a +16 offset for CS (the user CS) and +8 for SS (the
+// user SS), with the result OR'd with RPL=3.
+func (c *CPU) opSYSRET(rex uint8) error {
+	starUserBase := uint16((c.msrStar >> 48) & 0xFFFF)
+	// Per SDM: SYSRET sets CS to STAR[63:48]+16, SS to STAR[63:48]+8,
+	// both with RPL=3. The +16 is because the SYSRET CS slot in the
+	// GDT is two descriptors above the user-data SS slot.
+	c.seg[CS] = (starUserBase + 16) | 3
+	c.segBase[CS] = 0
+	if rex&rexW != 0 {
+		c.segAccess[CS] = csLBit | 0xFA // user code, 64-bit
+	} else {
+		c.segAccess[CS] = csDBit | 0xFA // user code, 32-bit compat
+	}
+	c.seg[SS] = (starUserBase + 8) | 3
+	c.segBase[SS] = 0
+	c.segAccess[SS] = 0xF2 // user data
+	c.rip = c.GetReg64(RCX)
+	c.rflags = (c.GetReg64(R11) & ValidFlagMask) | 2
+	c.cpl = 3
+	c.recomputeMode()
+	return nil
+}
+
 // opIRETQ implements the 64-bit interrupt return. Pops five 8-byte
 // values from the current stack in the order RIP, CS, RFLAGS, RSP, SS.
 // In 64-bit mode IRET always pops all five regardless of whether a

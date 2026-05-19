@@ -248,6 +248,15 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 		// vector 6 (#UD).
 		return c.deliverInterrupt(6, false, 0)
 
+	case op2 == 0x05:
+		// SYSCALL — fast kernel entry. EFER.SCE must be set; we
+		// honor that lazily by always allowing the entry.
+		return c.opSYSCALL()
+	case op2 == 0x07:
+		// SYSRET — fast kernel exit. REX.W picks 64-bit-return (SYSRETQ);
+		// REX.W=0 is the 32-bit compat-mode form (SYSRETL).
+		return c.opSYSRET(rex)
+
 	case op2 == 0x20:
 		// MOV r64, CRn — reads control register into a GPR. The ModR/M
 		// is the unusual "register-register" form where mod is treated
