@@ -218,6 +218,21 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 	_ = segOverride
 	op2 := c.fetch8()
 	switch {
+	case op2 == 0x00:
+		// Group 6 — SLDT/STR/LLDT/LTR/VERR/VERW. Only LTR and LLDT
+		// are wired for now (and just stash the selector).
+		return c.opGroup6(rex)
+
+	case op2 == 0x01:
+		// Group 7 — SGDT/SIDT/LGDT/LIDT/SMSW/LMSW/INVLPG.
+		return c.opGroup7(rex)
+
+	case op2 == 0x0B:
+		// UD2 — guaranteed-invalid-opcode instruction. Used by the
+		// kernel as a fault-on-purpose marker (BUG_ON, WARN_ON).
+		// Phase 5c delivers as #UD through the IDT.
+		return unimplemented("UD2 (#UD delivery pending)")
+
 	case op2 == 0x20:
 		// MOV r64, CRn — reads control register into a GPR. The ModR/M
 		// is the unusual "register-register" form where mod is treated
@@ -303,6 +318,81 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 		return c.opMOVSX(rex, operandSize, 2)
 	}
 	return unimplemented("0F %#02x rex=%#x", op2, rex)
+}
+
+// opGroup6 dispatches 0x0F 0x00 — SLDT/STR/LLDT/LTR/VERR/VERW. M5b
+// only needs LLDT and LTR; the others are deferred. LLDT/LTR just
+// stash the selector in seg[LDTR]/seg[TR]; the full descriptor walk
+// happens lazily when the segment is consulted.
+func (c *CPU) opGroup6(rex uint8) error {
+	m := c.parseModRM64(rex)
+	switch m.reg {
+	case 0: // SLDT — store LDTR selector
+		c.writeOperand(m, uint64(c.seg[LDTR]), 2)
+		return nil
+	case 1: // STR — store TR selector
+		c.writeOperand(m, uint64(c.seg[TR]), 2)
+		return nil
+	case 2: // LLDT
+		sel := uint16(c.readOperand(m, 2))
+		c.seg[LDTR] = sel
+		return nil
+	case 3: // LTR
+		sel := uint16(c.readOperand(m, 2))
+		c.seg[TR] = sel
+		return nil
+	}
+	return unimplemented("Group 6 /%d", m.reg)
+}
+
+// opGroup7 dispatches 0x0F 0x01. Sub-ops 0..3 use a memory operand
+// holding a pseudo-descriptor; 4/6 use a 16-bit operand; 7 is per-
+// page TLB invalidation. mod=11 forms (XGETBV, MONITOR, etc.) are
+// not yet wired.
+func (c *CPU) opGroup7(rex uint8) error {
+	m := c.parseModRM64(rex)
+	if m.isReg {
+		// Many mod=11 forms exist (XGETBV at reg=2,rm=0; SWAPGS at
+		// reg=7,rm=0 — that one is M6); not yet routed.
+		switch {
+		case m.reg == 7 && m.rm == 0:
+			// SWAPGS — atomic swap of GS.base and KernelGSBase. Lives
+			// at 0x0F 0x01 0xF8.
+			c.msrGSBase, c.msrKernelGSBase = c.msrKernelGSBase, c.msrGSBase
+			c.segBase[GS] = c.msrGSBase
+			return nil
+		}
+		return unimplemented("Group 7 mod=11 reg=%d rm=%d", m.reg, m.rm)
+	}
+	switch m.reg {
+	case 0: // SGDT
+		c.writeMem16(m.ea, uint16(c.segLimit[GDTR]))
+		c.writeMem64(m.ea+2, c.segBase[GDTR])
+		return nil
+	case 1: // SIDT
+		c.writeMem16(m.ea, uint16(c.segLimit[IDTR]))
+		c.writeMem64(m.ea+2, c.segBase[IDTR])
+		return nil
+	case 2: // LGDT — load GDT base+limit from memory
+		c.segLimit[GDTR] = uint32(c.readMem16(m.ea))
+		c.segBase[GDTR] = c.readMem64(m.ea + 2)
+		return nil
+	case 3: // LIDT
+		c.segLimit[IDTR] = uint32(c.readMem16(m.ea))
+		c.segBase[IDTR] = c.readMem64(m.ea + 2)
+		return nil
+	case 4: // SMSW — store low 16 of CR0
+		c.writeOperand(m, c.cr[0]&0xFFFF, 2)
+		return nil
+	case 6: // LMSW — set low 4 bits of CR0 (PE/MP/EM/TS). Cannot clear PE.
+		v := uint16(c.readOperand(m, 2))
+		c.cr[0] = (c.cr[0] &^ 0xF) | uint64(v&0xF)
+		c.recomputeMode()
+		return nil
+	case 7: // INVLPG — invalidate single TLB entry. No TLB yet, so no-op.
+		return nil
+	}
+	return unimplemented("Group 7 /%d", m.reg)
 }
 
 // opMovFromCR / opMovToCR — 0x0F 0x20 / 0x22. The ModR/M byte: reg is
