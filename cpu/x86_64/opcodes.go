@@ -467,6 +467,11 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// (Encoded as the two-byte 0x0F 0xAE form, dispatched in opTwoByte
 	// below.)
 
+	// FWAIT / WAIT — synchronise with the FPU. We don't pipeline FPU
+	// ops so there's nothing to wait for; effectively a NOP.
+	case op == 0x9B:
+		return nil
+
 	// ===== x87 FPU escape opcodes (0xD8..0xDF) =====
 	//
 	// The Linux 6.6 boot reaches fpu__init_system which issues FNINIT
@@ -1099,6 +1104,23 @@ func (c *CPU) opGroup6(rex uint8) error {
 	case 3: // LTR
 		sel := uint16(c.readOperand(m, 2))
 		c.seg[TR] = sel
+		return nil
+	case 4: // VERR — verify segment can be read at current CPL
+		// Stub: set ZF=1 (verification passes). Real impl walks
+		// the descriptor and checks DPL/RPL; Linux only uses VERR/
+		// VERW for the MDS-mitigation side-effect (microarchitectural
+		// buffer clear), not for actual selector validation.
+		_ = c.readOperand(m, 2) // consume the selector argument
+		c.rflags |= RFLAGS_ZF
+		return nil
+	case 5: // VERW — verify segment can be written at current CPL
+		// Same stub treatment as VERR. The MDS mitigation in Linux
+		// 6.6 calls VERW with a known data-segment selector before
+		// returning to user mode to flush the CPU's internal store
+		// buffers — we have no such buffers, so the side-effect is
+		// trivially satisfied.
+		_ = c.readOperand(m, 2)
+		c.rflags |= RFLAGS_ZF
 		return nil
 	}
 	return unimplemented("Group 6 /%d", m.reg)
