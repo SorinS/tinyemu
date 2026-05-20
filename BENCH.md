@@ -57,3 +57,16 @@ Notable phases observed:
 | 2026-05-18 | a25b892 | Step 3 refine | 386s         | ~25.3M     | 32-byte buffer; bulk-copy RAM in fillFetchBuffer; eipBPActive bool gate (skip per-Step map lookup). +23% over Step 3; total **28.8% vs baseline**. Modloop verify 210s → 110s (~48% faster than baseline). |
 | 2026-05-19 | 7dc7704 | async stdin   | 386s         | ~28.1M     | Stdin polling moved to a poll(2)-blocking goroutine; main loop drains a channel. The 28% syscall slice in profiles was averaged over HLT-idle phases (post-boot waits) — boot critical path is CPU-bound (modloop / apk) and saw no measurable improvement. Real-world gain is **post-boot idle responsiveness + ~28% less CPU during guest HLT**. cycles/sec metric rose because the rate samples include less syscall blocking time. Use a workload that includes idle waiting to see the win. |
 | 2026-05-19 | d9e53bc | (lazy flags reverted) | 390s   | ~27.7M     | Attempted lazy flag computation (defer OF/SF/ZF/AF/PF; keep CF eager). Tests passed but boot got stuck in an infinite loop (cycles/sec spiked to 75B = tight no-progress loop, indicating a stale flag read somewhere I didn't audit — likely handleInterrupt's eflags push or another direct `c.eflags & EFLAGS_XX` read). Reverted. Recovering would need a full audit of every eflags-bit read in `cpu/x86/*.go` + a debug switch — deferred. **Optimization round stops here at 28.8% vs original baseline.** |
+
+## Fast-iteration variants
+
+Practical wall times for the non-default `./run_iso.sh alpine <variant>` modes — these aren't part of the optimization benchmark (they hide CPU work), but they're useful for quick "did my change still boot" checks during development.
+
+| Variant     | Wall time | What's skipped |
+|-------------|-----------|---------------|
+| (none)      | 386s      | nothing — official benchmark |
+| `nohw`      | 330s      | hwdrivers (sysinit) — coldplug modprobe storm |
+| `nomodloop` | ~280s     | modloop (sysinit) — openssl RSA-SHA verify of modloop.squashfs |
+| `fast`      | ~220s     | nohw + nomodloop |
+| `superfast` | **180s**  | fast + syslog + bootmisc + firstboot |
+| `bare`      | **145s**  | OpenRC entirely (`init=/bin/sh`); only Alpine /init's apk-install remains |

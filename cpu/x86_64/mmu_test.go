@@ -328,22 +328,25 @@ func TestTranslate_NXReserved_NXDisabled(t *testing.T) {
 	}
 }
 
-// TestTranslate_ReservedBitsSet: bits 52..62 of any entry are reserved
-// in long mode (M1 doesn't model protection keys yet).
-func TestTranslate_ReservedBitsSet(t *testing.T) {
+// TestTranslate_SoftwareBitsIgnored: per Intel SDM Vol 3 §4.5, bits
+// 52..58 of any page-table entry are "ignored" — software-available
+// for OS bookkeeping. Linux uses them for swap entries, page-tracking
+// flags, etc. Marking those bits as "reserved" was a real bug that
+// broke the early #PF handler on the x86_64 Linux boot — Linux sets
+// bit 55 in its 2 MiB PDEs and our overstrict mask faulted on it.
+// We've reverted to no upper-bit reservations (matching MAXPHYADDR=52);
+// only PS-leaf bits and NX-when-NXE-off can be reserved-bit violations.
+func TestTranslate_SoftwareBitsIgnored(t *testing.T) {
 	c, b := pagedCPU(t, 0x20_0000)
 	const lin = 0x40_0000
 	leafAddr := b.map4K(lin, lin, pteRW)
-	// Pollute the leaf's bit 52.
+	// Set bits 52..58 in the leaf — these are "available" to software.
 	e := b.read(leafAddr)
-	b.write(leafAddr, e|(uint64(1)<<52))
-	_, perr := c.Translate(lin, false, false, false)
-	if perr == nil {
-		t.Fatalf("expected fault from reserved-bit violation")
-	}
-	want := PFErrP | PFErrRsvd
-	if perr.ErrorCode != want {
-		t.Errorf("ErrorCode = %#x, want %#x", perr.ErrorCode, want)
+	for bit := uint64(52); bit <= 58; bit++ {
+		b.write(leafAddr, e|(1<<bit))
+		if _, perr := c.Translate(lin, false, false, false); perr != nil {
+			t.Errorf("bit %d should be ignored, got fault ec=%#x", bit, perr.ErrorCode)
+		}
 	}
 }
 

@@ -38,7 +38,7 @@ const (
 // ErrNotImplemented or a plain error.
 func (c *CPU) Step() (err error) {
 	origRIP := c.rip
-	if stepTrace {
+	if stepTrace || (ripTraceLo < ripTraceHi && origRIP >= ripTraceLo && origRIP < ripTraceHi) {
 		var bytes [8]byte
 		for i := uint64(0); i < 8; i++ {
 			func() {
@@ -46,7 +46,8 @@ func (c *CPU) Step() (err error) {
 				bytes[i] = c.readMem8(origRIP + i)
 			}()
 		}
-		fmt.Fprintf(os.Stderr, "[step] RIP=%#x bytes=% x\n", origRIP, bytes[:])
+		fmt.Fprintf(os.Stderr, "[step] RIP=%#x bytes=% x R15=%#x RDX=%#x RCX=%#x\n",
+			origRIP, bytes[:], c.reg64[R15], c.reg64[RDX], c.reg64[RCX])
 	}
 	if stringWatchRIP != 0 && origRIP == stringWatchRIP {
 		rdi := c.GetReg64(RDI)
@@ -85,14 +86,19 @@ func (c *CPU) Step() (err error) {
 				// (limit 0) or the gate is bogus, surface the original
 				// fault to the host so the caller can decide what to do.
 				if c.segLimit[IDTR] > 0 {
+					if intrTrace && ex.Err.ErrorCode != 0 {
+						// On a "page present" fault, dump the walk so we
+						// can see WHICH entry triggered the rsvd check.
+						c.dumpWalk(ex.Err.Addr)
+					}
 					if derr := c.deliverInterrupt(14, true, ex.Err.ErrorCode); derr == nil {
 						err = nil
 						return
 					}
 				}
 				if pfDebug {
-					fmt.Fprintf(os.Stderr, "[pf] addr=%#x ec=%#x RIP=%#x CR3=%#x\n",
-						ex.Err.Addr, ex.Err.ErrorCode, c.rip, c.cr[3])
+					fmt.Fprintf(os.Stderr, "[pf] addr=%#x ec=%#x RIP=%#x CR3=%#x IDTR.base=%#x IDTR.limit=%#x\n",
+						ex.Err.Addr, ex.Err.ErrorCode, c.rip, c.cr[3], c.segBase[IDTR], c.segLimit[IDTR])
 					// Walk the page tables manually and report what's
 					// present at each level.
 					cr3 := c.cr[3] & 0xFFFFFFFFF000
@@ -225,6 +231,9 @@ func (c *CPU) Run(maxCycles int) error {
 			}
 			c.powerDown = false
 		}
+		if ripSampleEvery > 0 && c.cycles%ripSampleEvery == 0 {
+			fmt.Fprintf(os.Stderr, "[sample] cycle=%d RIP=%#x\n", c.cycles, c.rip)
+		}
 		if err := c.Step(); err != nil {
 			return err
 		}
@@ -266,6 +275,69 @@ func (c *CPU) unimplementedAt(format string, args ...any) error {
 // instruction's RIP + opcode bytes to stderr. Extremely verbose for
 // a kernel boot — use to bisect "where did we jump wrong" failures.
 var stepTrace = os.Getenv("TINYEMU_X64_TRACE") == "1"
+
+// ripSampleEvery is set by TINYEMU_X64_RIPSAMPLE=N. If non-zero, every
+// N-th cycle prints RIP — useful for finding where a hung kernel is
+// spinning without the noise of full step tracing.
+var ripSampleEvery uint64 = func() uint64 {
+	s := os.Getenv("TINYEMU_X64_RIPSAMPLE")
+	if s == "" {
+		return 0
+	}
+	var v uint64
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			break
+		}
+		v = v*10 + uint64(ch-'0')
+	}
+	return v
+}()
+
+// ripTrace{Lo,Hi} bracket an RIP range to step-trace. Set
+// TINYEMU_X64_RIPTRACE=<lo>-<hi> (hex). Useful for narrow windows
+// where TINYEMU_X64_TRACE=1 would be too verbose.
+var ripTraceLo, ripTraceHi uint64
+
+func init() {
+	s := os.Getenv("TINYEMU_X64_RIPTRACE")
+	if s == "" {
+		return
+	}
+	dash := -1
+	for i, ch := range s {
+		if ch == '-' {
+			dash = i
+			break
+		}
+	}
+	if dash < 0 {
+		return
+	}
+	parseHex := func(s string) uint64 {
+		if len(s) >= 2 && (s[0:2] == "0x" || s[0:2] == "0X") {
+			s = s[2:]
+		}
+		var v uint64
+		for _, ch := range s {
+			var d uint64
+			switch {
+			case ch >= '0' && ch <= '9':
+				d = uint64(ch - '0')
+			case ch >= 'a' && ch <= 'f':
+				d = uint64(ch-'a') + 10
+			case ch >= 'A' && ch <= 'F':
+				d = uint64(ch-'A') + 10
+			default:
+				return v
+			}
+			v = v*16 + d
+		}
+		return v
+	}
+	ripTraceLo = parseHex(s[:dash])
+	ripTraceHi = parseHex(s[dash+1:])
+}
 
 // pfDebug logs each page fault that surfaces to the host (i.e. not
 // delivered via IDT). Set TINYEMU_X64_PF=1.

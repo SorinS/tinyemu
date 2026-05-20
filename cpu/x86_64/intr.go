@@ -1,6 +1,9 @@
 package x86_64
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 // deliverInterrupt vectors `vec` through the long-mode IDT. The frame
 // pushed onto the kernel stack is the standard 64-bit-mode five-word
@@ -19,17 +22,49 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 	idtBase := c.segBase[IDTR]
 	idtLimit := c.segLimit[IDTR]
 	gateAddr := idtBase + uint64(vec)*16
+	if intrTrace {
+		fmt.Fprintf(os.Stderr, "[intr] deliver vec=%d hasErr=%v ec=%#x RIP=%#x CR2=%#x IDTR.base=%#x IDTR.limit=%#x\n",
+			vec, hasErr, errorCode, c.rip, c.cr[2], idtBase, idtLimit)
+	}
 	if uint64(vec)*16+16 > uint64(idtLimit)+1 {
+		if intrTrace {
+			fmt.Fprintf(os.Stderr, "[intr]   FAIL: vector %d beyond IDT limit %#x\n", vec, idtLimit)
+		}
 		return fmt.Errorf("vector %d beyond IDT limit (%#x)", vec, idtLimit)
 	}
 
-	lo, err := c.memMap.Read64(gateAddr)
+	// IDTR.base is a linear address; in long mode it must be translated
+	// through the current page tables to reach the gate bytes.
+	gateLoPhys, pferr := c.translateForData(gateAddr, false)
+	if pferr != nil {
+		if intrTrace {
+			fmt.Fprintf(os.Stderr, "[intr]   FAIL: translate gate@%#x: %v\n", gateAddr, pferr)
+		}
+		return fmt.Errorf("translate IDT gate: %w", pferr)
+	}
+	gateHiPhys, pferr := c.translateForData(gateAddr+8, false)
+	if pferr != nil {
+		if intrTrace {
+			fmt.Fprintf(os.Stderr, "[intr]   FAIL: translate gate+8@%#x: %v\n", gateAddr+8, pferr)
+		}
+		return fmt.Errorf("translate IDT gate+8: %w", pferr)
+	}
+	lo, err := c.memMap.Read64(gateLoPhys)
 	if err != nil {
+		if intrTrace {
+			fmt.Fprintf(os.Stderr, "[intr]   FAIL: read gate@%#x (phys %#x) low: %v\n", gateAddr, gateLoPhys, err)
+		}
 		return fmt.Errorf("read IDT gate low: %w", err)
 	}
-	hi, err := c.memMap.Read64(gateAddr + 8)
+	hi, err := c.memMap.Read64(gateHiPhys)
 	if err != nil {
+		if intrTrace {
+			fmt.Fprintf(os.Stderr, "[intr]   FAIL: read gate+8@%#x (phys %#x) high: %v\n", gateAddr+8, gateHiPhys, err)
+		}
 		return fmt.Errorf("read IDT gate high: %w", err)
+	}
+	if intrTrace {
+		fmt.Fprintf(os.Stderr, "[intr]   gate@%#x (phys %#x) lo=%#x hi=%#x\n", gateAddr, gateLoPhys, lo, hi)
 	}
 
 	// Long-mode IDT gate layout (16 bytes):
@@ -47,9 +82,15 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 	typeAttr := uint8((lo >> 40) & 0xFF)
 	gateType := typeAttr & 0xF
 	if typeAttr&0x80 == 0 {
+		if intrTrace {
+			fmt.Fprintf(os.Stderr, "[intr]   FAIL: gate not present (typeAttr=%#x)\n", typeAttr)
+		}
 		// Not-present gate ⇒ #NP (#GP for some vectors). M5c returns
 		// the host-level error rather than cascading.
 		return fmt.Errorf("vector %d: gate not present", vec)
+	}
+	if intrTrace {
+		fmt.Fprintf(os.Stderr, "[intr]   handler CS=%#x RIP=%#x type=%#x\n", selector, offset, gateType)
 	}
 
 	oldRIP := c.rip
@@ -58,15 +99,22 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 	oldRSP := c.reg64[RSP]
 	oldSS := c.seg[SS]
 
+	if intrTrace {
+		fmt.Fprintf(os.Stderr, "[intr]   pushing frame: SS=%#x RSP=%#x RFLAGS=%#x CS=%#x RIP=%#x\n",
+			oldSS, oldRSP, oldRFLAGS, oldCS, oldRIP)
+	}
+
 	// Push the saved context. Real hardware atomically switches stacks
-	// first; we serialize the writes on the current RSP.
-	c.push64(uint64(oldSS))
-	c.push64(oldRSP)
-	c.push64(oldRFLAGS)
-	c.push64(uint64(oldCS))
-	c.push64(oldRIP)
-	if hasErr {
-		c.push64(uint64(errorCode))
+	// first; we serialize the writes on the current RSP. Wrap in a
+	// recover so a fault during the push is reported as a returned
+	// error rather than propagating out of the deferred recover in
+	// Step (where it could not be re-handled cleanly).
+	if pushErr := c.pushFrameRecover(uint64(oldSS), oldRSP, oldRFLAGS, uint64(oldCS), oldRIP, hasErr, errorCode); pushErr != nil {
+		if intrTrace {
+			fmt.Fprintf(os.Stderr, "[intr]   FAIL: push frame: %v\n", pushErr)
+		}
+		c.reg64[RSP] = oldRSP
+		return pushErr
 	}
 
 	// Install the handler's CS:RIP. The descriptor cache is faked as a
@@ -83,6 +131,65 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 	// Always clear TF/NT/RF/VM per Intel SDM.
 	c.rflags &^= RFLAGS_TF | RFLAGS_NT | RFLAGS_RF | RFLAGS_VM
 	c.recomputeMode()
+	return nil
+}
+
+// dumpWalk traces the 4-level page-table walk for `linAddr` to stderr,
+// printing each entry value so a "present + reserved bit" fault can
+// be triaged to a specific level. Used from Step's deferred recover
+// when ex.Err.ErrorCode != 0 and intrTrace is on.
+func (c *CPU) dumpWalk(linAddr uint64) {
+	cr3 := c.cr[3] & 0xFFFFFFFFF000
+	pml4Idx := (linAddr >> 39) & 0x1FF
+	pdptIdx := (linAddr >> 30) & 0x1FF
+	pdIdx := (linAddr >> 21) & 0x1FF
+	ptIdx := (linAddr >> 12) & 0x1FF
+	pml4e, _ := c.memMap.Read64(cr3 + pml4Idx*8)
+	fmt.Fprintf(os.Stderr, "[walk] linAddr=%#x CR3=%#x\n", linAddr, cr3)
+	fmt.Fprintf(os.Stderr, "[walk]   PML4[%d] @ %#x = %#x\n", pml4Idx, cr3+pml4Idx*8, pml4e)
+	if pml4e&1 == 0 {
+		return
+	}
+	pdpt := pml4e & 0xFFFFFFFFF000
+	pdpte, _ := c.memMap.Read64(pdpt + pdptIdx*8)
+	fmt.Fprintf(os.Stderr, "[walk]   PDPT[%d] @ %#x = %#x\n", pdptIdx, pdpt+pdptIdx*8, pdpte)
+	if pdpte&1 == 0 || pdpte&0x80 != 0 {
+		return
+	}
+	pd := pdpte & 0xFFFFFFFFF000
+	pde, _ := c.memMap.Read64(pd + pdIdx*8)
+	fmt.Fprintf(os.Stderr, "[walk]   PD[%d]   @ %#x = %#x\n", pdIdx, pd+pdIdx*8, pde)
+	if pde&1 == 0 || pde&0x80 != 0 {
+		return
+	}
+	pt := pde & 0xFFFFFFFFF000
+	pte, _ := c.memMap.Read64(pt + ptIdx*8)
+	fmt.Fprintf(os.Stderr, "[walk]   PT[%d]   @ %#x = %#x\n", ptIdx, pt+ptIdx*8, pte)
+}
+
+// pushFrameRecover wraps the five (or six with errorCode) pushes that
+// build the interrupt frame and converts any guest-#PF panic during a
+// push into a returned error. Without this, a fault during the IDT
+// stack-push would propagate out of Step's deferred recover and
+// terminate the goroutine with an unrecovered Go panic.
+func (c *CPU) pushFrameRecover(ss, rsp, rflags, cs, rip uint64, hasErr bool, errorCode uint32) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if pfp, ok := r.(pageFaultPanic); ok {
+				err = pfp.Err
+				return
+			}
+			panic(r)
+		}
+	}()
+	c.push64(ss)
+	c.push64(rsp)
+	c.push64(rflags)
+	c.push64(cs)
+	c.push64(rip)
+	if hasErr {
+		c.push64(uint64(errorCode))
+	}
 	return nil
 }
 

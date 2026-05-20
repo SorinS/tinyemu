@@ -200,6 +200,15 @@ type CPU struct {
 	// decode paths can switch on a single field instead of re-evaluating
 	// half a dozen bits per instruction.
 	mode Mode
+
+	// tlb caches resolved 4-level page-table walks. Matches the
+	// behaviour of cpu/x86's TLB byte-for-byte where the semantics are
+	// the same; the only difference is uint64 vs uint32 linear/physical
+	// addresses. Software relies on TLB caching across CR3 reloads for
+	// global entries — for instance Linux's `free_initmem` clears PTEs
+	// and continues executing briefly from those pages before issuing
+	// flush_tlb_all. See tlb.go for the architectural contract.
+	tlb tlb64
 }
 
 // NewCPU constructs a fresh long-mode-capable CPU at the reset state
@@ -249,6 +258,7 @@ func (c *CPU) Reset() {
 	c.ackInterruptFunc = nil
 
 	c.efer = 0
+	c.tlb.flushAll()
 	c.msrFSBase = 0
 	c.msrGSBase = 0
 	c.msrKernelGSBase = 0
@@ -389,11 +399,17 @@ func (c *CPU) GetEFER() uint64 { return c.efer }
 // SetEFER stores the new EFER value and re-evaluates the LMA latch:
 // if paging is currently enabled and the new EFER has LME set, LMA
 // must reflect that. recomputeMode runs so the cached Mode field
-// stays coherent.
+// stays coherent. A change in EFER.NXE flips the meaning of bit 63
+// of every PTE — the TLB caches the result of nxEnabled-aware perm
+// resolution so the cache must be flushed.
 func (c *CPU) SetEFER(v uint64) {
+	old := c.efer
 	c.efer = v
 	if c.cr[0]&CR0_PG != 0 && c.efer&EFER_LME != 0 {
 		c.efer |= EFER_LMA
+	}
+	if (old^c.efer)&(EFER_NXE|EFER_LMA|EFER_LME) != 0 {
+		c.tlb.flushAll()
 	}
 	c.recomputeMode()
 }

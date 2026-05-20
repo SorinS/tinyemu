@@ -1,6 +1,21 @@
 package x86_64
 
-import "math/bits"
+import (
+	"fmt"
+	"math/bits"
+	"os"
+)
+
+// cr3Trace is enabled by TINYEMU_X64_CR3=1 and logs every write to CR3
+// with the resulting PML4[0]/[273]/[511] (identity/direct-map/kernel-text).
+// Diagnostic for "missing PML4[273] at PF" investigations.
+var cr3Trace = os.Getenv("TINYEMU_X64_CR3") == "1"
+
+// intrTrace is enabled by TINYEMU_X64_INTR=1 and logs LIDT loads and
+// every deliverInterrupt() call (vector, IDTR state, gate bytes, new
+// CS:RIP, error). Diagnostic for "early page-fault handler never ran"
+// boot bugs.
+var intrTrace = os.Getenv("TINYEMU_X64_INTR") == "1"
 
 // executeOpcode dispatches a decoded primary opcode after the prefix
 // loop in Step has consumed the leading prefix bytes. operandSize is
@@ -394,14 +409,23 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// ===== Group 2 (shifts and rotates) =====
 
 	case op == 0xD1:
-		// SHL/SHR/SAR r/m, 1 — count is implicit.
+		// SHL/SHR/SAR/ROL/ROR/RCL/RCR r/m, 1 — count is implicit.
 		return c.opGroup2(rex, operandSize, 1)
 	case op == 0xD3:
-		// SHL/SHR/SAR r/m, CL — count comes from CL register.
+		// Group 2 r/m, CL — count comes from CL register.
 		return c.opGroup2(rex, operandSize, uint64(c.GetReg8(CL)))
 	case op == 0xC1:
-		// SHL/SHR/SAR r/m, imm8 — count is an 8-bit immediate.
+		// Group 2 r/m, imm8 — count is an 8-bit immediate.
 		return c.opGroup2(rex, operandSize, 0) // count read inside opGroup2
+	case op == 0xD0:
+		// Group 2 r/m8, 1 — byte form, count is implicit.
+		return c.opGroup2(rex, 1, 1)
+	case op == 0xD2:
+		// Group 2 r/m8, CL — byte form, count comes from CL.
+		return c.opGroup2(rex, 1, uint64(c.GetReg8(CL)))
+	case op == 0xC0:
+		// Group 2 r/m8, imm8 — byte form, count is 8-bit immediate.
+		return c.opGroup2(rex, 1, 0)
 
 	// ===== Sign-extending integer move (MOVSXD r64, r/m32) =====
 
@@ -805,6 +829,10 @@ func (c *CPU) opGroup7(rex uint8) error {
 	case 3: // LIDT
 		c.segLimit[IDTR] = uint32(c.readMem16(m.ea))
 		c.segBase[IDTR] = c.readMem64(m.ea + 2)
+		if intrTrace {
+			fmt.Fprintf(os.Stderr, "[lidt] RIP=%#x base=%#x limit=%#x\n",
+				c.rip, c.segBase[IDTR], c.segLimit[IDTR])
+		}
 		return nil
 	case 4: // SMSW — store low 16 of CR0
 		c.writeOperand(m, c.cr[0]&0xFFFF, 2)
@@ -814,7 +842,8 @@ func (c *CPU) opGroup7(rex uint8) error {
 		c.cr[0] = (c.cr[0] &^ 0xF) | uint64(v&0xF)
 		c.recomputeMode()
 		return nil
-	case 7: // INVLPG — invalidate single TLB entry. No TLB yet, so no-op.
+	case 7: // INVLPG — invalidate the TLB entry covering m.ea.
+		c.tlb.invalidatePage(m.ea)
 		return nil
 	}
 	return unimplemented("Group 7 /%d", m.reg)
@@ -858,10 +887,27 @@ func (c *CPU) opMovToCR(rex uint8) error {
 // (LMA), which gates the mode field. The recomputeMode call here
 // keeps c.mode coherent without the rest of the decoder needing to
 // know which CR was written.
+//
+// TLB invalidations follow Intel SDM Vol 3 §4.10.4:
+//   - CR3 reload (PCID-less): drop all non-global entries.
+//   - CR0.PG / CR0.WP transitions: full flush.
+//   - CR4.PGE / CR4.PAE / CR4.PSE / CR4.SMEP / CR4.SMAP / CR4.PCIDE
+//     transitions: full flush.
+// We match the x86 backend's behaviour where the semantics are equivalent.
 func (c *CPU) writeCR(n int, v uint64) {
+	if cr3Trace && n == 3 {
+		pml4 := v & 0xFFFFFFFFF000
+		e0, _ := c.memMap.Read64(pml4)
+		e273, _ := c.memMap.Read64(pml4 + 273*8)
+		e511, _ := c.memMap.Read64(pml4 + 511*8)
+		fmt.Fprintf(os.Stderr, "[cr3] RIP=%#x CR3 %#x -> %#x  [0]=%#x [273]=%#x [511]=%#x\n",
+			c.rip, c.cr[3], v, e0, e273, e511)
+	}
 	if n == 0 {
 		oldPG := c.cr[0]&CR0_PG != 0
 		newPG := v&CR0_PG != 0
+		oldWP := c.cr[0]&CR0_WP != 0
+		newWP := v&CR0_WP != 0
 		c.cr[0] = v
 		// LMA latches when paging is enabled with LME set; clears when
 		// paging turns off.
@@ -870,8 +916,28 @@ func (c *CPU) writeCR(n int, v uint64) {
 		} else if oldPG && !newPG {
 			c.efer &^= EFER_LMA
 		}
+		if oldPG != newPG || oldWP != newWP {
+			c.tlb.flushAll()
+		}
 		c.recomputeMode()
 		return
+	}
+	if n == 3 {
+		// Non-PCID CR3 reload: drop all non-global entries. The new CR3
+		// install itself happens after the flush so the next translation
+		// walks under the new root.
+		c.tlb.flushNonGlobal()
+		c.cr[3] = v
+		return
+	}
+	if n == 4 {
+		// Architecturally-relevant bits (PGE/PAE/PSE/SMEP/SMAP/PCIDE)
+		// require a full flush; lesser bits do not. Flushing on any
+		// change is conservative and matches the x86 backend.
+		const flushMask = CR4_PGE | CR4_PAE | CR4_PSE | CR4_SMEP | CR4_SMAP | CR4_PCIDE
+		if (c.cr[4]^v)&flushMask != 0 {
+			c.tlb.flushAll()
+		}
 	}
 	c.cr[n] = v
 	if n == 4 {
@@ -953,13 +1019,11 @@ func (c *CPU) readMSR(num uint32) uint64 {
 func (c *CPU) writeMSR(num uint32, v uint64) error {
 	switch num {
 	case msrEFER:
-		// Setting LME may not flip LMA until paging is enabled — but
-		// if paging is already on, LMA latches now.
-		c.efer = v
-		if c.cr[0]&CR0_PG != 0 && c.efer&EFER_LME != 0 {
-			c.efer |= EFER_LMA
-		}
-		c.recomputeMode()
+		// Route through SetEFER so the LMA-latch logic AND the TLB
+		// flush on EFER.NXE / LMA / LME transitions happen in one
+		// place. Direct c.efer assignment used to live here and was
+		// a real source of subtle drift across paths.
+		c.SetEFER(v)
 	case msrSTAR:
 		c.msrStar = v
 	case msrLSTAR:
@@ -1699,12 +1763,19 @@ func bswap(v uint64, operandSize uint8) uint64 {
 	return v
 }
 
-// opGroup2 dispatches the shift/rotate family — 0xD1 (count=1),
-// 0xD3 (count=CL), 0xC1 (count=imm8). Sub-op /4=SHL, /5=SHR, /7=SAR.
-// /0..3 (ROL/ROR/RCL/RCR) are deferred until needed.
+// opGroup2 dispatches the shift/rotate family — 0xD0/D1/D2/D3 (count=1
+// or CL, byte or wider) and 0xC0/C1 (count=imm8). Sub-op /0=ROL, /1=ROR,
+// /2=RCL, /3=RCR, /4=SHL, /5=SHR, /6=SAL (= /4), /7=SAR.
 //
-// If implicitCount is 0 (the 0xC1 case), the immediate count is read
+// If implicitCount is 0 (the 0xC0/C1 case), the immediate count is read
 // from the instruction stream; otherwise the caller passes 1 or CL.
+//
+// Per Intel SDM Vol 2: the count is masked to 5 bits for 8/16/32-bit
+// operands (so SHL r32, 33 becomes SHL r32, 1) and 6 bits for 64-bit.
+// For ROL/ROR/RCL/RCR, the count is further reduced modulo operand-
+// width (for ROL/ROR) or operand-width-plus-1 (for RCL/RCR, since
+// they rotate THROUGH the carry bit, treating CF as an extra bit).
+// Zero-count operations leave all flags unchanged.
 func (c *CPU) opGroup2(rex, operandSize uint8, implicitCount uint64) error {
 	m := c.parseModRM64(rex)
 	var count uint64
@@ -1722,10 +1793,90 @@ func (c *CPU) opGroup2(rex, operandSize uint8, implicitCount uint64) error {
 	if count == 0 {
 		return nil // flags unchanged
 	}
-	dst := c.readOperand(m, operandSize)
+	dst := c.readOperand(m, operandSize) & mask(operandSize)
 	var res uint64
 	var fl flagBits
+	width := uint64(operandSize) * 8
+	// Rotates (ROL/ROR/RCL/RCR) preserve AF/PF/ZF/SF; only CF (and OF
+	// for count==1) get touched. We mutate c.rflags directly for those
+	// rather than going through setArithFlags (which clears all six).
 	switch m.reg {
+	case 0: // ROL — rotate left, no CF involvement in the rotation
+		eff := count % width
+		if eff == 0 {
+			res = dst
+		} else {
+			res = ((dst << eff) | (dst >> (width - eff))) & mask(operandSize)
+		}
+		newCF := res&1 != 0
+		c.setCF(newCF)
+		if count == 1 {
+			hi := res & signBit(operandSize)
+			c.setOF((hi != 0) != newCF)
+		}
+		c.writeOperand(m, res, operandSize)
+		return nil
+	case 1: // ROR — rotate right
+		eff := count % width
+		if eff == 0 {
+			res = dst
+		} else {
+			res = ((dst >> eff) | (dst << (width - eff))) & mask(operandSize)
+		}
+		newCF := res&signBit(operandSize) != 0
+		c.setCF(newCF)
+		if count == 1 {
+			hi1 := res & signBit(operandSize)
+			hi2 := res & (signBit(operandSize) >> 1)
+			c.setOF((hi1 != 0) != (hi2 != 0))
+		}
+		c.writeOperand(m, res, operandSize)
+		return nil
+	case 2: // RCL — rotate-through-carry left (width+1 bits)
+		eff := count % (width + 1)
+		cfIn := uint64(0)
+		if c.rflags&RFLAGS_CF != 0 {
+			cfIn = 1
+		}
+		newCF := cfIn != 0
+		if eff == 0 {
+			res = dst
+		} else {
+			combined := dst | (cfIn << width)
+			combined = (combined << eff) | (combined >> ((width + 1) - eff))
+			res = combined & mask(operandSize)
+			newCF = (combined>>width)&1 != 0
+		}
+		c.setCF(newCF)
+		if count == 1 {
+			hi := res & signBit(operandSize)
+			c.setOF((hi != 0) != newCF)
+		}
+		c.writeOperand(m, res, operandSize)
+		return nil
+	case 3: // RCR — rotate-through-carry right (width+1 bits)
+		eff := count % (width + 1)
+		cfIn := uint64(0)
+		if c.rflags&RFLAGS_CF != 0 {
+			cfIn = 1
+		}
+		if count == 1 {
+			// OF for count==1 = MSB(dst) XOR CF (PRE-rotation).
+			hi := dst & signBit(operandSize)
+			c.setOF((hi != 0) != (cfIn != 0))
+		}
+		newCF := cfIn != 0
+		if eff != 0 {
+			combined := dst | (cfIn << width)
+			combined = (combined >> eff) | (combined << ((width + 1) - eff))
+			res = combined & mask(operandSize)
+			newCF = (combined>>width)&1 != 0
+		} else {
+			res = dst
+		}
+		c.setCF(newCF)
+		c.writeOperand(m, res, operandSize)
+		return nil
 	case 4, 6: // SHL / SAL (alias)
 		// CF = bit shifted out of the high end on the last shift.
 		// Pre-pad dst to 64 bits, shift, then mask. The shifted-out
@@ -1740,15 +1891,15 @@ func (c *CPU) opGroup2(rex, operandSize uint8, implicitCount uint64) error {
 			fl.of = origSign != newSign
 		}
 	case 5: // SHR
-		res = (dst & mask(operandSize)) >> count
-		fl.cf = ((dst & mask(operandSize)) >> (count - 1) & 1) != 0
+		res = dst >> count
+		fl.cf = (dst>>(count-1))&1 != 0
 		if count == 1 {
 			// OF for SHR-1 = high bit of original.
 			fl.of = dst&signBit(operandSize) != 0
 		}
 	case 7: // SAR
 		// Arithmetic right shift: sign-extend.
-		signed := int64(dst & mask(operandSize))
+		signed := int64(dst)
 		// Re-sign-extend from operandSize to 64 first.
 		switch operandSize {
 		case 4:
@@ -2380,6 +2531,25 @@ func logicalFlags(r uint64, size uint8) flagBits {
 
 func parity8(v uint8) bool {
 	return bits.OnesCount8(v)%2 == 0
+}
+
+// setCF / setOF write a single flag bit in c.rflags without disturbing
+// the others. Used by the rotate ops (ROL/ROR/RCL/RCR) which per Intel
+// SDM only touch CF (and OF when count==1) — AF/PF/ZF/SF must survive.
+func (c *CPU) setCF(v bool) {
+	if v {
+		c.rflags |= RFLAGS_CF
+	} else {
+		c.rflags &^= RFLAGS_CF
+	}
+}
+
+func (c *CPU) setOF(v bool) {
+	if v {
+		c.rflags |= RFLAGS_OF
+	} else {
+		c.rflags &^= RFLAGS_OF
+	}
 }
 
 func (c *CPU) setArithFlags(fl flagBits) {

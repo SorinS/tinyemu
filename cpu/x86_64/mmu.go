@@ -11,6 +11,7 @@ const (
 	pteA  uint64 = 1 << 5  // Accessed (set by CPU on first ref)
 	pteD  uint64 = 1 << 6  // Dirty (set by CPU on first write to a leaf)
 	ptePS uint64 = 1 << 7  // Page Size — set on a non-leaf turns it into a leaf
+	pteG  uint64 = 1 << 8  // Global — leaf-only, gated by CR4.PGE
 	pteNX uint64 = 1 << 63 // No-Execute (only honored when EFER.NXE=1)
 )
 
@@ -30,10 +31,18 @@ const (
 	pte2MMask uint64 = 0x000F_FFFF_FFE0_0000
 	pte1GMask uint64 = 0x000F_FFFF_C000_0000
 
-	// Reserved-bit window in long mode. Bits 52..62 must read zero on
-	// every entry the walk consumes. Bit 63 (NX) is checked separately
-	// because its semantics depend on EFER.NXE.
-	pteReservedMask uint64 = 0x7FF0_0000_0000_0000
+	// Reserved-bit window in long mode. Per Intel SDM Vol 3 §4.5 (Tables
+	// 4-14 .. 4-19): on a CPU with MAXPHYADDR == 52 (the spec maximum),
+	// bits 52..58 are "ignored" (software-available — Linux uses them for
+	// bookkeeping such as _PAGE_BIT_KERNEL / split-lock markers / etc.),
+	// bits 59..62 are protection keys when CR4.PKE=1 and ignored when
+	// off, and bit 63 is XD/NX (checked separately because its semantics
+	// depend on EFER.NXE). We don't currently model a sub-52 MAXPHYADDR
+	// or PKE, so leave this empty. Marking 52..62 as reserved here was a
+	// real bug that broke Linux's early #PF handler — the kernel's PMD
+	// entries set bit 55 for software accounting and would faulted on
+	// our overstrict mask.
+	pteReservedMask uint64 = 0
 )
 
 // Page-fault error-code bits. Same layout as the value the CPU pushes
@@ -74,6 +83,12 @@ func IsCanonicalAddr(addr uint64) bool {
 // This is the canonical long-mode walker. It is called only when
 // CR0.PG=1 and EFER.LMA=1; for any other mode the caller (the
 // instruction-side memory accessor) is expected to short-circuit.
+//
+// The TLB is consulted first; on a hit (translation cached AND all
+// requested perms satisfied) we skip the walk entirely. On a miss
+// (including perm-shortfall) we walk and, if the walk succeeds, cache
+// the effective permissions for next time. Matches real-silicon
+// semantics — the cpu/x86 backend uses the same two-step pattern.
 func (c *CPU) Translate(linAddr uint64, isWrite, isUser, isFetch bool) (uint64, *PageFaultError) {
 	if !IsCanonicalAddr(linAddr) {
 		// Non-canonical addresses raise #GP, not #PF, in real hardware
@@ -83,6 +98,16 @@ func (c *CPU) Translate(linAddr uint64, isWrite, isUser, isFetch bool) (uint64, 
 		// through PageFaultError with errorCode=0 so tests can detect
 		// "translate refused" cleanly.
 		return 0, &PageFaultError{Addr: linAddr}
+	}
+
+	// TLB fast path. A hit means the cached translation is valid and
+	// the requested permissions are satisfied — skip the 4-level walk.
+	// Hit semantics match real silicon: even if the underlying PTE has
+	// since been cleared, a cached entry remains usable until the
+	// software issues INVLPG or a CR3 reload (non-global) or a control-
+	// register change that triggers a full flush.
+	if phys, hit := c.tlb.lookup(linAddr, isWrite, isUser, isFetch); hit {
+		return phys, nil
 	}
 
 	nxEnabled := c.efer&EFER_NXE != 0
@@ -95,6 +120,11 @@ func (c *CPU) Translate(linAddr uint64, isWrite, isUser, isFetch bool) (uint64, 
 		return 0, perr
 	}
 	c.maybeMarkAccessed(pml4Addr, e)
+	// Track combined permissions through the walk. AND for W/U (every
+	// level must allow); OR for NX (any level with NX denies fetch).
+	combinedW := e&pteRW != 0
+	combinedU := e&pteUS != 0
+	combinedNX := nxEnabled && e&pteNX != 0
 
 	// PDPT
 	pdptAddr := (e & pte4KMask) + ((linAddr>>30)&0x1FF)*8
@@ -102,6 +132,9 @@ func (c *CPU) Translate(linAddr uint64, isWrite, isUser, isFetch bool) (uint64, 
 	if perr != nil {
 		return 0, perr
 	}
+	combinedW = combinedW && (e&pteRW != 0)
+	combinedU = combinedU && (e&pteUS != 0)
+	combinedNX = combinedNX || (nxEnabled && e&pteNX != 0)
 	if e&ptePS != 0 {
 		// 1 GiB huge page. Leaf at PDPT.
 		// Verify bits 21..29 (which would otherwise index into PD/PT)
@@ -110,7 +143,9 @@ func (c *CPU) Translate(linAddr uint64, isWrite, isUser, isFetch bool) (uint64, 
 			return 0, &PageFaultError{Addr: linAddr, ErrorCode: faultCode(true, isWrite, isUser, isFetch, true)}
 		}
 		c.maybeMarkLeaf(pdptAddr, e, isWrite)
-		return (e & pte1GMask) | (linAddr & 0x3FFF_FFFF), nil
+		phys := (e & pte1GMask) | (linAddr & 0x3FFF_FFFF)
+		c.tlbInsert(linAddr, phys, combinedW, combinedU, combinedNX, e&pteG != 0)
+		return phys, nil
 	}
 	c.maybeMarkAccessed(pdptAddr, e)
 
@@ -120,6 +155,9 @@ func (c *CPU) Translate(linAddr uint64, isWrite, isUser, isFetch bool) (uint64, 
 	if perr != nil {
 		return 0, perr
 	}
+	combinedW = combinedW && (e&pteRW != 0)
+	combinedU = combinedU && (e&pteUS != 0)
+	combinedNX = combinedNX || (nxEnabled && e&pteNX != 0)
 	if e&ptePS != 0 {
 		// 2 MiB huge page. Leaf at PD.
 		// Bits 12..20 must be zero.
@@ -127,7 +165,9 @@ func (c *CPU) Translate(linAddr uint64, isWrite, isUser, isFetch bool) (uint64, 
 			return 0, &PageFaultError{Addr: linAddr, ErrorCode: faultCode(true, isWrite, isUser, isFetch, true)}
 		}
 		c.maybeMarkLeaf(pdAddr, e, isWrite)
-		return (e & pte2MMask) | (linAddr & 0x1F_FFFF), nil
+		phys := (e & pte2MMask) | (linAddr & 0x1F_FFFF)
+		c.tlbInsert(linAddr, phys, combinedW, combinedU, combinedNX, e&pteG != 0)
+		return phys, nil
 	}
 	c.maybeMarkAccessed(pdAddr, e)
 
@@ -137,8 +177,21 @@ func (c *CPU) Translate(linAddr uint64, isWrite, isUser, isFetch bool) (uint64, 
 	if perr != nil {
 		return 0, perr
 	}
+	combinedW = combinedW && (e&pteRW != 0)
+	combinedU = combinedU && (e&pteUS != 0)
+	combinedNX = combinedNX || (nxEnabled && e&pteNX != 0)
 	c.maybeMarkLeaf(ptAddr, e, isWrite)
-	return (e & pte4KMask) | (linAddr & 0xFFF), nil
+	phys := (e & pte4KMask) | (linAddr & 0xFFF)
+	c.tlbInsert(linAddr, phys, combinedW, combinedU, combinedNX, e&pteG != 0)
+	return phys, nil
+}
+
+// tlbInsert caches a freshly resolved translation. Centralised so the
+// CR4.PGE gating on the "global" flag lives in one place (matches the
+// architectural rule that PTE.G has no effect when PGE is off).
+func (c *CPU) tlbInsert(lin, phys uint64, writable, user, noExec, leafGlobal bool) {
+	global := leafGlobal && c.cr[4]&CR4_PGE != 0
+	c.tlb.insert(lin, phys, writable, user, noExec, global)
 }
 
 // readWalkEntry loads a page-table entry and runs the common checks

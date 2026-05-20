@@ -1,9 +1,67 @@
 package x86_64
 
+import (
+	"fmt"
+	"os"
+)
+
 // pageFaultPanic is what the memory accessors and fetch helpers panic
 // with on a translation failure. Step's deferred recover converts it
 // into a returned error (and, in Phase 5, into actual #PF delivery).
 type pageFaultPanic struct{ Err *PageFaultError }
+
+// physWatch{Lo,Hi} bracket a physical address range whose writes get
+// logged with RIP context. Diagnostic for "where does this PML4 entry
+// get written?" investigations. Set TINYEMU_X64_PHYSWATCH=<lo>-<hi>.
+var (
+	physWatchEnabled bool
+	physWatchLo      uint64
+	physWatchHi      uint64
+)
+
+func init() {
+	s := os.Getenv("TINYEMU_X64_PHYSWATCH")
+	if s == "" {
+		return
+	}
+	dash := -1
+	for i, ch := range s {
+		if ch == '-' {
+			dash = i
+			break
+		}
+	}
+	if dash < 0 {
+		return
+	}
+	parseHex := func(s string) uint64 {
+		if len(s) >= 2 && (s[0:2] == "0x" || s[0:2] == "0X") {
+			s = s[2:]
+		}
+		var v uint64
+		for _, ch := range s {
+			var d uint64
+			switch {
+			case ch >= '0' && ch <= '9':
+				d = uint64(ch - '0')
+			case ch >= 'a' && ch <= 'f':
+				d = uint64(ch-'a') + 10
+			case ch >= 'A' && ch <= 'F':
+				d = uint64(ch-'A') + 10
+			default:
+				return v
+			}
+			v = v*16 + d
+		}
+		return v
+	}
+	physWatchLo = parseHex(s[:dash])
+	physWatchHi = parseHex(s[dash+1:])
+	physWatchEnabled = physWatchLo < physWatchHi
+	if physWatchEnabled {
+		fmt.Fprintf(os.Stderr, "[physw] watching writes in [%#x, %#x)\n", physWatchLo, physWatchHi)
+	}
+}
 
 // readMem8 reads one byte from a guest-linear address. It honors the
 // current paging state: in long mode the address is walked through the
@@ -46,6 +104,22 @@ func (c *CPU) writeMem8(addr uint64, v uint8) {
 	phys, perr := c.translateForData(addr, true)
 	if perr != nil {
 		panic(pageFaultPanic{Err: perr})
+	}
+	if physWatchEnabled {
+		// One-shot watch on a physical-address range. Logs the write with
+		// RIP so we can correlate kernel page-table edits with the code
+		// that performed them. Only emit on 8-byte-aligned boundaries to
+		// cut noise from multi-byte stores.
+		if phys >= physWatchLo && phys < physWatchHi && phys&7 == 7 {
+			// Trigger on the LAST byte of an 8-byte-aligned qword so that
+			// the full new value is visible when we read it back.
+			defer func() {
+				base := phys & ^uint64(7)
+				if v8, rerr := c.memMap.Read64(base); rerr == nil {
+					fmt.Fprintf(os.Stderr, "[physw] phys=%#x idx=%d RIP=%#x val=%#x\n", base, (base-physWatchLo)/8, c.rip, v8)
+				}
+			}()
+		}
 	}
 	if err := c.memMap.Write8(phys, v); err != nil {
 		panic(pageFaultPanic{Err: &PageFaultError{Addr: addr}})

@@ -248,3 +248,120 @@ bits 64
 		t.Errorf("DL (setg result) = %d, want 0", got)
 	}
 }
+
+// TestAsm_ShlByte — byte-form shift (0xD0/D2/C0). The Linux 6.18 boot
+// hit this on `rcl bl, 1` in early init; we cover the SHL byte form too
+// since the same opcode family handles them all.
+func TestAsm_ShlByte(t *testing.T) {
+	src := `
+bits 64
+	mov al, 0x01
+	shl al, 1            ; D0 /4 → AL = 0x02
+	shl al, 1            ; D0 /4 → AL = 0x04
+	shl al, 3            ; C0 /4 → AL = 0x20
+	mov cl, 2
+	shl al, cl           ; D2 /4 → AL = 0x80
+	hlt
+`
+	r := newAsmRunner(t)
+	r.load(t, codeBase, assemble(t, src))
+	if err := r.run(t, 100); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := r.cpu.GetReg8(x86_64.AL); got != 0x80 {
+		t.Errorf("AL = %#x, want 0x80", got)
+	}
+}
+
+// TestAsm_RclBl1 — RCL byte by 1, the exact instruction from the Linux
+// 6.18 early-init code that surfaced the missing 0xD0 opcode.
+//
+//	stc                  ; CF=1
+//	mov bl, 0x80         ; high bit set
+//	rcl bl, 1            ; BL high bit (1) -> CF; old CF (1) -> bit 0
+//	                     ; ⇒ BL = 0x01, CF = 1
+func TestAsm_RclBl1(t *testing.T) {
+	src := `
+bits 64
+	stc
+	mov bl, 0x80
+	rcl bl, 1
+	hlt
+`
+	r := newAsmRunner(t)
+	r.load(t, codeBase, assemble(t, src))
+	if err := r.run(t, 100); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := r.cpu.GetReg8(x86_64.BL); got != 0x01 {
+		t.Errorf("BL = %#x, want 0x01", got)
+	}
+	if r.cpu.GetRFLAGS()&x86_64.RFLAGS_CF == 0 {
+		t.Errorf("CF cleared after rcl that rotated 1 out the top")
+	}
+}
+
+// TestAsm_RcrBl1 — RCR mirror.
+func TestAsm_RcrBl1(t *testing.T) {
+	src := `
+bits 64
+	stc
+	mov bl, 0x01
+	rcr bl, 1            ; bit 0 (1) -> CF; old CF (1) -> bit 7
+	                     ; ⇒ BL = 0x80, CF = 1
+	hlt
+`
+	r := newAsmRunner(t)
+	r.load(t, codeBase, assemble(t, src))
+	if err := r.run(t, 100); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := r.cpu.GetReg8(x86_64.BL); got != 0x80 {
+		t.Errorf("BL = %#x, want 0x80", got)
+	}
+	if r.cpu.GetRFLAGS()&x86_64.RFLAGS_CF == 0 {
+		t.Errorf("CF cleared after rcr that rotated 1 out the bottom")
+	}
+}
+
+// TestAsm_RolRor — plain rotates without carry. 8-bit ROL by 4 swaps
+// the nibbles; ROR by the same amount swaps them back.
+func TestAsm_RolRor(t *testing.T) {
+	src := `
+bits 64
+	mov al, 0xA5         ; 1010_0101
+	rol al, 4            ; ⇒ 0101_1010 = 0x5A
+	mov bl, al
+	ror bl, 4            ; ⇒ back to 0xA5
+	hlt
+`
+	r := newAsmRunner(t)
+	r.load(t, codeBase, assemble(t, src))
+	if err := r.run(t, 100); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := r.cpu.GetReg8(x86_64.AL); got != 0x5A {
+		t.Errorf("AL = %#x, want 0x5A", got)
+	}
+	if got := r.cpu.GetReg8(x86_64.BL); got != 0xA5 {
+		t.Errorf("BL = %#x, want 0xA5", got)
+	}
+}
+
+// TestAsm_RolRorWord — same for 16-bit (covers the count-mask path).
+func TestAsm_RolRorWord(t *testing.T) {
+	src := `
+bits 64
+	mov ax, 0x1234
+	rol ax, 8            ; ⇒ 0x3412
+	hlt
+`
+	r := newAsmRunner(t)
+	r.load(t, codeBase, assemble(t, src))
+	if err := r.run(t, 100); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := r.cpu.GetReg64(x86_64.RAX) & 0xFFFF; got != 0x3412 {
+		t.Errorf("AX = %#x, want 0x3412", got)
+	}
+}
