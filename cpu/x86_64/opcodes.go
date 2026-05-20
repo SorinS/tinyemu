@@ -41,6 +41,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return nil
 
 	case op == 0xF4:
+		if intrTrace {
+			fmt.Fprintf(os.Stderr, "[hlt] RIP=%#x RFLAGS=%#x IF=%v intrLine=%d\n",
+				c.rip, c.rflags, c.rflags&RFLAGS_IF != 0, c.intrLineState)
+		}
 		c.powerDown = true
 		return nil
 

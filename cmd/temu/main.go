@@ -616,9 +616,13 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 
 	cpu := m.GetCPU()
 
-	// TINYEMU_X86_PROFILE=1 — write a runtime/pprof CPU profile to
-	// /tmp/temu.prof. Inspect with `go tool pprof -top /tmp/temu.prof`.
-	if os.Getenv("TINYEMU_X86_PROFILE") == "1" {
+	// TINYEMU_PROFILE=1 (alias: TINYEMU_X86_PROFILE / TINYEMU_X64_PROFILE)
+	// — write a runtime/pprof CPU profile to /tmp/temu.prof. Inspect
+	// with `go tool pprof -top /tmp/temu.prof`. Same flag works for
+	// both i386 and long-mode backends.
+	if os.Getenv("TINYEMU_X86_PROFILE") == "1" ||
+		os.Getenv("TINYEMU_X64_PROFILE") == "1" ||
+		os.Getenv("TINYEMU_PROFILE") == "1" {
 		f, err := os.Create("/tmp/temu.prof")
 		if err == nil {
 			if err := pprof.StartCPUProfile(f); err == nil {
@@ -637,10 +641,13 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 		}
 	}
 
-	// TINYEMU_X86_PERF=1 — print cycles-per-second every 5 wall seconds.
-	// Cheap and always-available baseline for the optimization work in
-	// docs/Optimization.md.
-	perfEnabled := os.Getenv("TINYEMU_X86_PERF") == "1"
+	// TINYEMU_PERF=1 (alias: TINYEMU_X86_PERF / TINYEMU_X64_PERF) — print
+	// cycles-per-second every 5 wall seconds. Cheap and always-available
+	// baseline for the optimization work in docs/Optimization.md. Same
+	// flag works for both i386 and long-mode backends.
+	perfEnabled := os.Getenv("TINYEMU_X86_PERF") == "1" ||
+		os.Getenv("TINYEMU_X64_PERF") == "1" ||
+		os.Getenv("TINYEMU_PERF") == "1"
 	var (
 		perfStart      time.Time
 		perfLast       time.Time

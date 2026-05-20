@@ -147,6 +147,10 @@ func (c *CPU) Step() (err error) {
 		// interrupt-line state without delivery.
 		if c.ackInterruptFunc != nil {
 			if vec, ok := c.ackInterruptFunc(); ok {
+				if intrTrace {
+					fmt.Fprintf(os.Stderr, "[intr] external vec=%d ack RIP=%#x RFLAGS=%#x\n",
+						vec, c.rip, c.rflags)
+				}
 				if derr := c.deliverInterrupt(vec, false, 0); derr != nil {
 					return derr
 				}

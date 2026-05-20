@@ -353,6 +353,10 @@ func (c *CPU) opIRETQ() error {
 	newRSP := c.pop64()
 	newSS := uint16(c.pop64())
 
+	if intrTrace {
+		fmt.Fprintf(os.Stderr, "[iretq] -> RIP=%#x CS=%#x RFLAGS=%#x RSP=%#x SS=%#x\n",
+			newRIP, newCS, newFlags, newRSP, newSS)
+	}
 	c.rip = newRIP
 	c.seg[CS] = newCS
 	c.segBase[CS] = 0
