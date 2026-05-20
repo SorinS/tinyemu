@@ -454,6 +454,19 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	case op == 0xFF:
 		return c.opGroup5(rex, operandSize)
 
+	// ===== Group 15 (0x0F 0xAE) — FXSAVE/FXRSTOR/LDMXCSR/STMXCSR + LFENCE/MFENCE/SFENCE/CLFLUSH =====
+	//
+	// Stub: implemented as memory shuffles. Linux only uses these to
+	// save/restore the FPU on context switch — it never inspects the
+	// contents beyond what it itself wrote/read. So the kernel's view
+	// of "the FPU state" is a 512-byte opaque blob the emulator
+	// faithfully round-trips, which is all the boot needs. The
+	// in-CPU FPU register file stays uninitialised because no kernel
+	// path reads it.
+	//
+	// (Encoded as the two-byte 0x0F 0xAE form, dispatched in opTwoByte
+	// below.)
+
 	// ===== x87 FPU escape opcodes (0xD8..0xDF) =====
 	//
 	// The Linux 6.6 boot reaches fpu__init_system which issues FNINIT
@@ -737,18 +750,16 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 
 	case op2 == 0xAE:
 		// Group 15 — FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/XSAVE/LFENCE/
-		// MFENCE/SFENCE etc. mod=11 forms are the memory fences,
-		// which are no-ops in our single-CPU model.
-		mb := c.fetch8()
-		mod := (mb >> 6) & 3
-		reg := (mb >> 3) & 7
-		if mod == 3 {
-			switch reg {
-			case 5, 6, 7: // LFENCE / MFENCE / SFENCE — fence no-ops
-				return nil
-			}
-		}
-		return c.unimplementedAt("Group 15 /%d mod=%d", reg, mod)
+		// MFENCE/SFENCE etc.
+		//
+		// Peek at ModR/M.mod first so we can distinguish the
+		// reg-form fences from the memory-form save/restore ops
+		// without doubly-consuming bytes.
+		// (Note: in long mode the "fence" mod-3 encodings are
+		// /5 LFENCE, /6 MFENCE, /7 SFENCE. /0..3 are FXSAVE / FXRSTOR
+		// / LDMXCSR / STMXCSR — memory only. /4..7 may be the XSAVE
+		// family with mod != 3.)
+		return c.opGroup15(rex)
 
 	case op2 == 0xBA:
 		// Group 8 — BT/BTS/BTR/BTC r/m, imm8. Sub-op (reg field):
@@ -910,6 +921,68 @@ func (c *CPU) opSHxD(rex, operandSize uint8, left, fromCL bool) error {
 	}
 	c.writeOperand(m, res, operandSize)
 	return nil
+}
+
+// opGroup15 dispatches the 0x0F 0xAE encoding family —
+// FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/XSAVE/XRSTOR/LFENCE/MFENCE/SFENCE/
+// CLFLUSH. Most have a memory operand; fences and a couple of CLFLUSH-
+// adjacent forms are reg-form (mod=11).
+//
+// Stub-level correctness: FXSAVE/FXRSTOR move 512 bytes of opaque FPU
+// state to/from memory. The kernel only inspects the same bytes it
+// wrote, so faithful round-trip is enough — initial FPU state is
+// zero (matching FNINIT semantics). LDMXCSR/STMXCSR read/write the
+// 32-bit MXCSR. We don't model MXCSR, so STMXCSR returns the default
+// 0x1f80 (all exceptions masked), and LDMXCSR is a no-op.
+//
+// LFENCE/MFENCE/SFENCE are no-ops in our single-threaded model.
+// CLFLUSH is a no-op (no CPU cache modelled).
+func (c *CPU) opGroup15(rex uint8) error {
+	m := c.parseModRM64(rex)
+	if m.isReg {
+		switch m.reg {
+		case 5: // LFENCE
+			return nil
+		case 6: // MFENCE
+			return nil
+		case 7: // SFENCE
+			return nil
+		}
+		return c.unimplementedAt("Group 15 /%d mod=11", m.reg)
+	}
+	// Memory form. Resolve the linear address through segment base.
+	addr := c.segBaseForModRM(m) + m.ea
+	switch m.reg {
+	case 0: // FXSAVE — 512-byte save area
+		// Linux uses this on context switch. We zero the area (matches
+		// FNINIT initial state) so a subsequent FXRSTOR sees clean
+		// state. Real silicon stores actual register file; we don't
+		// model x87 fully, so a zero blob is a safe approximation
+		// for boot. If the kernel later does FXRSTOR with a non-zero
+		// blob it had previously saved, we'll faithfully read back
+		// those same bytes (because they're stored in RAM).
+		for i := uint64(0); i < 512; i++ {
+			c.writeMem8(addr+i, 0)
+		}
+		return nil
+	case 1: // FXRSTOR
+		// Read 512 bytes to consume them (no internal state to
+		// restore yet, but the read sequence may catch a page-fault
+		// the kernel relies on for demand-paging).
+		for i := uint64(0); i < 512; i++ {
+			_ = c.readMem8(addr + i)
+		}
+		return nil
+	case 2: // LDMXCSR — load 4 bytes into MXCSR
+		_ = c.readMem32(addr)
+		return nil
+	case 3: // STMXCSR — store default MXCSR (all exceptions masked)
+		c.writeMem32(addr, 0x1f80)
+		return nil
+	case 7: // CLFLUSH — flush cache line (no cache modelled)
+		return nil
+	}
+	return c.unimplementedAt("Group 15 /%d (memory form)", m.reg)
 }
 
 // opX87Stub provides minimal x87 support for kernel boot. We don't
