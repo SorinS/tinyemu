@@ -106,17 +106,18 @@ func (c *CPU) writeMem8(addr uint64, v uint8) {
 		panic(pageFaultPanic{Err: perr})
 	}
 	if physWatchEnabled {
-		// One-shot watch on a physical-address range. Logs the write with
-		// RIP so we can correlate kernel page-table edits with the code
-		// that performed them. Only emit on 8-byte-aligned boundaries to
-		// cut noise from multi-byte stores.
-		if phys >= physWatchLo && phys < physWatchHi && phys&7 == 7 {
-			// Trigger on the LAST byte of an 8-byte-aligned qword so that
-			// the full new value is visible when we read it back.
+		// One-shot watch on a physical-address range. Logs every write,
+		// then reads back the surrounding qword so the caller can see
+		// what the guest actually committed. A multi-byte store fires
+		// the trace on every byte — useful when the store width is
+		// unknown, painful when it's known and large, so use a narrow
+		// watch range when chasing a specific address.
+		if phys >= physWatchLo && phys < physWatchHi {
 			defer func() {
-				base := phys & ^uint64(7)
+				base := phys &^ uint64(7)
 				if v8, rerr := c.memMap.Read64(base); rerr == nil {
-					fmt.Fprintf(os.Stderr, "[physw] phys=%#x idx=%d RIP=%#x val=%#x\n", base, (base-physWatchLo)/8, c.rip, v8)
+					fmt.Fprintf(os.Stderr, "[physw] phys=%#x RIP=%#x byte=%#x qword@%#x=%#x\n",
+						phys, c.rip, v, base, v8)
 				}
 			}()
 		}

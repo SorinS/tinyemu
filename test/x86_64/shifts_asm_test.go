@@ -348,6 +348,103 @@ bits 64
 	}
 }
 
+// TestAsm_ShlByCL_Zero — regression for an instruction-length bug.
+// Our previous opGroup2 dispatch passed the CL register value as
+// "implicitCount" and treated implicitCount==0 as "fetch imm8 from
+// the instruction stream". The two collided when CL was actually 0
+// (perfectly valid for "shift by 0, a no-op"), causing the next
+// instruction byte to be consumed as the shift count. That offset
+// the decoder by one byte and we'd land inside a CALL rel32's
+// displacement several instructions later, reporting a bogus
+// "Group 5 /7". Caught while booting Linux 6.18 x86_64.
+//
+// The fix split opGroup2 into opGroup2Reg (count supplied by the
+// caller, no imm) and opGroup2Imm (imm8 fetched from the stream).
+func TestAsm_ShlByCL_Zero(t *testing.T) {
+	// Byte stream after the CL-set: SHL EAX, CL (D3 E0), then HLT (F4).
+	// If our decoder over-consumed an imm8, the HLT byte 0xF4 would
+	// be eaten as the shift count and we'd execute past it.
+	src := `
+bits 64
+	mov eax, 0xCAFE
+	xor ecx, ecx        ; CL = 0
+	shl eax, cl         ; D3 /4 — must be a no-op, NOT consume next byte
+	hlt
+`
+	r := newAsmRunner(t)
+	r.load(t, codeBase, assemble(t, src))
+	if err := r.run(t, 100); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !r.cpu.IsPowerDown() {
+		t.Errorf("HLT didn't fire — opGroup2 must have consumed the F4 byte as a shift count")
+	}
+	if got := r.cpu.GetReg64(x86_64.RAX) & 0xFFFFFFFF; got != 0xCAFE {
+		t.Errorf("EAX = %#x, want 0xCAFE (no shift since CL=0)", got)
+	}
+}
+
+// TestAsm_BSF_BSR — 0F BC and 0F BD. The Linux 6.18 boot surfaced
+// these (with an F3 prefix that we silently drop, matching CPUs
+// without BMI1/ABM where the F3 prefix on BSF/BSR is undefined).
+func TestAsm_BSF_BSR(t *testing.T) {
+	src := `
+bits 64
+	mov rax, 0x80         ; bit 7 set
+	bsf rbx, rax          ; rbx = 7
+	bsr rcx, rax          ; rcx = 7
+	mov rax, 0x80000000   ; bit 31 set
+	bsr rdx, rax          ; rdx = 31
+	xor rax, rax
+	bsf r8, rax           ; src=0 → ZF=1, r8 unchanged
+	mov r9, 0xdeadbeef
+	mov r8, r9            ; seed r8 with sentinel
+	bsf r10, rax          ; src=0 → ZF=1
+	hlt
+`
+	r := newAsmRunner(t)
+	r.load(t, codeBase, assemble(t, src))
+	if err := r.run(t, 200); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := r.cpu.GetReg64(x86_64.RBX); got != 7 {
+		t.Errorf("RBX (bsf of 0x80) = %d, want 7", got)
+	}
+	if got := r.cpu.GetReg64(x86_64.RCX); got != 7 {
+		t.Errorf("RCX (bsr of 0x80) = %d, want 7", got)
+	}
+	if got := r.cpu.GetReg64(x86_64.RDX); got != 31 {
+		t.Errorf("RDX (bsr of 0x80000000) = %d, want 31", got)
+	}
+	if r.cpu.GetRFLAGS()&x86_64.RFLAGS_ZF == 0 {
+		t.Errorf("ZF clear after bsf of zero — should be set")
+	}
+}
+
+// TestAsm_IncDecByte — Group 4 (0xFE) /0 and /1. The Linux 6.18 boot
+// surfaced these via `dec byte [r12]` in early init.
+func TestAsm_IncDecByte(t *testing.T) {
+	src := `
+bits 64
+	mov al, 0x40
+	inc al                  ; FE /0 → 0x41
+	mov bl, 0x80
+	dec bl                  ; FE /1 → 0x7f
+	hlt
+`
+	r := newAsmRunner(t)
+	r.load(t, codeBase, assemble(t, src))
+	if err := r.run(t, 100); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := r.cpu.GetReg8(x86_64.AL); got != 0x41 {
+		t.Errorf("AL = %#x, want 0x41", got)
+	}
+	if got := r.cpu.GetReg8(x86_64.BL); got != 0x7f {
+		t.Errorf("BL = %#x, want 0x7f", got)
+	}
+}
+
 // TestAsm_RolRorWord — same for 16-bit (covers the count-mask path).
 func TestAsm_RolRorWord(t *testing.T) {
 	src := `

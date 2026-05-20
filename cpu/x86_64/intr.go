@@ -25,6 +25,35 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 	if intrTrace {
 		fmt.Fprintf(os.Stderr, "[intr] deliver vec=%d hasErr=%v ec=%#x RIP=%#x CR2=%#x IDTR.base=%#x IDTR.limit=%#x\n",
 			vec, hasErr, errorCode, c.rip, c.cr[2], idtBase, idtLimit)
+		// Dump all 16 GPRs on every delivery so we can correlate "what
+		// was the kernel computing right before the fault?" without
+		// needing a pre-fault step-trace breadcrumb.
+		fmt.Fprintf(os.Stderr, "[intr]   RAX=%#x RBX=%#x RCX=%#x RDX=%#x RSI=%#x RDI=%#x RBP=%#x RSP=%#x\n",
+			c.reg64[RAX], c.reg64[RBX], c.reg64[RCX], c.reg64[RDX],
+			c.reg64[RSI], c.reg64[RDI], c.reg64[RBP], c.reg64[RSP])
+		fmt.Fprintf(os.Stderr, "[intr]   R8=%#x R9=%#x R10=%#x R11=%#x R12=%#x R13=%#x R14=%#x R15=%#x\n",
+			c.reg64[R8], c.reg64[R9], c.reg64[R10], c.reg64[R11],
+			c.reg64[R12], c.reg64[R13], c.reg64[R14], c.reg64[R15])
+		// For #PF only: also walk what the kernel sees at [RDI+0x20]
+		// and [R12+0x20] — the common "struct field" offsets in the
+		// boot-time helpers that surface garbage pointers. Read via
+		// translateForData so we see what the guest sees.
+		if vec == 14 {
+			for _, label := range []struct {
+				name string
+				base uint64
+			}{
+				{"[RDI+0x20]", c.reg64[RDI] + 0x20},
+				{"[R12+0x20]", c.reg64[R12] + 0x20},
+			} {
+				if phys, perr := c.translateForData(label.base, false); perr == nil {
+					if v, err := c.memMap.Read64(phys); err == nil {
+						fmt.Fprintf(os.Stderr, "[intr]   %s @ %#x (phys %#x) = %#x\n",
+							label.name, label.base, phys, v)
+					}
+				}
+			}
+		}
 	}
 	if uint64(vec)*16+16 > uint64(idtLimit)+1 {
 		if intrTrace {

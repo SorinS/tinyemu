@@ -414,22 +414,22 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 
 	case op == 0xD1:
 		// SHL/SHR/SAR/ROL/ROR/RCL/RCR r/m, 1 — count is implicit.
-		return c.opGroup2(rex, operandSize, 1)
+		return c.opGroup2Reg(rex, operandSize, 1)
 	case op == 0xD3:
 		// Group 2 r/m, CL — count comes from CL register.
-		return c.opGroup2(rex, operandSize, uint64(c.GetReg8(CL)))
+		return c.opGroup2Reg(rex, operandSize, uint64(c.GetReg8(CL)))
 	case op == 0xC1:
 		// Group 2 r/m, imm8 — count is an 8-bit immediate.
-		return c.opGroup2(rex, operandSize, 0) // count read inside opGroup2
+		return c.opGroup2Imm(rex, operandSize)
 	case op == 0xD0:
 		// Group 2 r/m8, 1 — byte form, count is implicit.
-		return c.opGroup2(rex, 1, 1)
+		return c.opGroup2Reg(rex, 1, 1)
 	case op == 0xD2:
 		// Group 2 r/m8, CL — byte form, count comes from CL.
-		return c.opGroup2(rex, 1, uint64(c.GetReg8(CL)))
+		return c.opGroup2Reg(rex, 1, uint64(c.GetReg8(CL)))
 	case op == 0xC0:
 		// Group 2 r/m8, imm8 — byte form, count is 8-bit immediate.
-		return c.opGroup2(rex, 1, 0)
+		return c.opGroup2Imm(rex, 1)
 
 	// ===== Sign-extending integer move (MOVSXD r64, r/m32) =====
 
@@ -439,8 +439,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		// 32-bit r/m that gets sign-extended.
 		return c.opMOVSXD(rex)
 
-	// ===== Group 5 (Inc/Dec/Call/Jmp/Push) =====
+	// ===== Group 4/5 (Inc/Dec [byte / full] + Call/Jmp/Push) =====
 
+	case op == 0xFE:
+		return c.opGroup4(rex)
 	case op == 0xFF:
 		return c.opGroup5(rex, operandSize)
 
@@ -769,8 +771,58 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 	case op2 == 0xBF:
 		// MOVSX r, r/m16.
 		return c.opMOVSX(rex, operandSize, 2)
+
+	case op2 == 0xBC:
+		// BSF r, r/m — bit scan forward (find lowest set bit). With an
+		// F3 prefix on CPUs that report BMI1, the encoding becomes
+		// TZCNT, which differs only in the source==0 case (TZCNT sets
+		// CF=1 and writes operand-size; BSF sets ZF=1 and leaves the
+		// destination undefined). We don't advertise BMI1, so the F3
+		// prefix is silently ignored (matches CPUs without BMI1) and
+		// the kernel's fallback path through BSF works as written.
+		return c.opBSF(rex, operandSize)
+	case op2 == 0xBD:
+		// BSR r, r/m — bit scan reverse (find highest set bit). Same
+		// LZCNT-vs-BSR consideration as TZCNT/BSF above.
+		return c.opBSR(rex, operandSize)
 	}
 	return c.unimplementedAt("0F %#02x rex=%#x", op2, rex)
+}
+
+// opBSF / opBSR — bit scan forward / reverse. Per Intel SDM:
+//   - if src == 0: ZF = 1, destination is *undefined* (we leave it
+//     unchanged, matching observable real-hardware behaviour on
+//     several microarchitectures);
+//   - else: ZF = 0, destination = bit position of the lowest (BSF)
+//     or highest (BSR) set bit.
+// CF/OF/SF/AF/PF are undefined on Intel; AMD documents them as
+// preserved. We follow AMD's "leave them alone" rule for portability.
+func (c *CPU) opBSF(rex, operandSize uint8) error {
+	m := c.parseModRM64(rex)
+	src := c.readOperand(m, operandSize) & mask(operandSize)
+	if src == 0 {
+		c.rflags |= RFLAGS_ZF
+		return nil
+	}
+	c.rflags &^= RFLAGS_ZF
+	// bits.TrailingZeros64 returns the index of the lowest set bit.
+	pos := uint64(bits.TrailingZeros64(src))
+	c.writeReg(m.reg, pos, operandSize)
+	return nil
+}
+
+func (c *CPU) opBSR(rex, operandSize uint8) error {
+	m := c.parseModRM64(rex)
+	src := c.readOperand(m, operandSize) & mask(operandSize)
+	if src == 0 {
+		c.rflags |= RFLAGS_ZF
+		return nil
+	}
+	c.rflags &^= RFLAGS_ZF
+	// bits.Len64(x) - 1 = index of the highest set bit (for x != 0).
+	pos := uint64(bits.Len64(src) - 1)
+	c.writeReg(m.reg, pos, operandSize)
+	return nil
 }
 
 // opGroup6 dispatches 0x0F 0x00 — SLDT/STR/LLDT/LTR/VERR/VERW. M5b
@@ -1785,33 +1837,33 @@ func bswap(v uint64, operandSize uint8) uint64 {
 	return v
 }
 
-// opGroup2 dispatches the shift/rotate family — 0xD0/D1/D2/D3 (count=1
-// or CL, byte or wider) and 0xC0/C1 (count=imm8). Sub-op /0=ROL, /1=ROR,
-// /2=RCL, /3=RCR, /4=SHL, /5=SHR, /6=SAL (= /4), /7=SAR.
+// opGroup2Reg handles the shift/rotate family forms with no
+// immediate: 0xD0/D1 (count = 1) and 0xD2/D3 (count = CL). The caller
+// supplies the count, which means a CL value of zero is correctly
+// interpreted as "shift by 0" rather than "fetch an imm8 from the
+// instruction stream" — a real boot-time bug we hit when the kernel
+// did `shl eax, cl` with CL=0 and our previous single-entry dispatch
+// over-consumed one byte of the next instruction.
 //
-// If implicitCount is 0 (the 0xC0/C1 case), the immediate count is read
-// from the instruction stream; otherwise the caller passes 1 or CL.
-//
-// Per Intel SDM Vol 2: the count is masked to 5 bits for 8/16/32-bit
-// operands (so SHL r32, 33 becomes SHL r32, 1) and 6 bits for 64-bit.
-// For ROL/ROR/RCL/RCR, the count is further reduced modulo operand-
-// width (for ROL/ROR) or operand-width-plus-1 (for RCL/RCR, since
-// they rotate THROUGH the carry bit, treating CF as an extra bit).
-// Zero-count operations leave all flags unchanged.
-func (c *CPU) opGroup2(rex, operandSize uint8, implicitCount uint64) error {
-	// 0xC0/0xC1 take an imm8 (count); 0xD0/D1/D2/D3 take none.
-	// implicitCount==0 ⇒ imm8-encoded count follows the ModRM.
-	var immBytes uint8
-	if implicitCount == 0 {
-		immBytes = 1
-	}
-	m := c.parseModRM64WithImm(rex, immBytes)
-	var count uint64
-	if implicitCount == 0 {
-		count = uint64(c.fetch8())
-	} else {
-		count = implicitCount
-	}
+// Per Intel SDM Vol 2: count is masked to 5 bits for 8/16/32-bit
+// operands and 6 bits for 64-bit. ROL/ROR further reduce count
+// modulo operand width; RCL/RCR modulo (width+1). Zero-count
+// operations leave all flags unchanged.
+func (c *CPU) opGroup2Reg(rex, operandSize uint8, count uint64) error {
+	m := c.parseModRM64(rex) // no trailing immediate
+	return c.opGroup2Body(m, operandSize, count)
+}
+
+// opGroup2Imm handles the imm8-bearing forms of Group 2 (0xC0/0xC1).
+// The trailing imm8 is communicated to parseModRM64WithImm so RIP-
+// relative effective addresses point at the right qword.
+func (c *CPU) opGroup2Imm(rex, operandSize uint8) error {
+	m := c.parseModRM64WithImm(rex, 1)
+	count := uint64(c.fetch8())
+	return c.opGroup2Body(m, operandSize, count)
+}
+
+func (c *CPU) opGroup2Body(m modRMResult, operandSize uint8, count uint64) error {
 	// Mask count per Intel SDM: 5 bits for 8/16/32 ops, 6 bits for 64.
 	if operandSize == 8 {
 		count &= 0x3F
@@ -2040,6 +2092,32 @@ func (c *CPU) opGroup1(rex, operandSize uint8, imm8 bool) error {
 // opGroup5 dispatches 0xFF. Sub-ops: 0=INC, 1=DEC, 2=CALL, 3=CALLF,
 // 4=JMP, 5=JMPF, 6=PUSH, 7=reserved. M2 wires the data ops; CALL/JMP
 // indirect arrive when control flow gets more interesting.
+// opGroup4 implements 0xFE — the byte-form INC/DEC family (/0 and /1
+// only; /2..7 are illegal). Mirrors Group 5's INC/DEC handling but
+// with operandSize fixed at 1, which matters for read8FromModRM /
+// write8FromModRM's AH/CH/DH/BH-vs-SPL/BPL/SIL/DIL split.
+func (c *CPU) opGroup4(rex uint8) error {
+	m := c.parseModRM64(rex)
+	dst := uint64(c.readOperand(m, 1))
+	switch m.reg {
+	case 0: // INC r/m8
+		res, fl := add(dst, 1, 1)
+		c.writeOperand(m, res, 1)
+		oldCF := c.rflags & RFLAGS_CF
+		c.setArithFlags(fl)
+		c.rflags = (c.rflags &^ RFLAGS_CF) | oldCF
+		return nil
+	case 1: // DEC r/m8
+		res, fl := sub(dst, 1, 1)
+		c.writeOperand(m, res, 1)
+		oldCF := c.rflags & RFLAGS_CF
+		c.setArithFlags(fl)
+		c.rflags = (c.rflags &^ RFLAGS_CF) | oldCF
+		return nil
+	}
+	return c.unimplementedAt("Group 4 /%d", m.reg)
+}
+
 func (c *CPU) opGroup5(rex, operandSize uint8) error {
 	m := c.parseModRM64(rex)
 	dst := c.readOperand(m, operandSize)
