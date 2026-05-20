@@ -95,6 +95,13 @@ func (c *CPU) Step() (err error) {
 					if derr := c.deliverInterrupt(14, true, ex.Err.ErrorCode); derr == nil {
 						err = nil
 						return
+					} else {
+						// Log the delivery failure once, regardless of
+						// intrTrace, because otherwise the caller only
+						// sees the original PF and has no clue why the
+						// kernel handler didn't run.
+						fmt.Fprintf(os.Stderr, "[pf-deliver] FAILED for vec=14 addr=%#x ec=%#x cpl=%d TR.base=%#x CR3=%#x: %v\n",
+							ex.Err.Addr, ex.Err.ErrorCode, c.cpl, c.segBase[TR], c.cr[3], derr)
 					}
 				}
 				if pfDebug {
@@ -227,7 +234,7 @@ func (c *CPU) Step() (err error) {
 			// so a stale override from the previous instruction
 			// can't leak into the next.
 			c.currentSegOverride = segOverride
-			err := c.executeOpcode(b, rex, operandSize, addressSize, segOverride, repPrefix)
+			err := c.executeOpcode(b, rex, operandSize, addressSize, segOverride, repPrefix, operandOverride)
 			c.currentSegOverride = -1
 			return err
 		}

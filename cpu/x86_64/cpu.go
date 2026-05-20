@@ -219,6 +219,33 @@ type CPU struct {
 	// and continues executing briefly from those pages before issuing
 	// flush_tlb_all. See tlb.go for the architectural contract.
 	tlb tlb64
+
+	// ===== SIMD / FPU register state =====
+	//
+	// MMX: 8 × 64-bit registers (MM0..MM7). REX.R / REX.B do NOT
+	// extend MMX register encodings per Intel SDM Vol 2A §2.1.7 —
+	// always index `mm[i & 7]`.
+	//
+	// XMM: 16 × 128-bit registers (XMM0..XMM15). Long mode adds
+	// XMM8..XMM15 via REX.R / REX.B; mr.reg / mr.rm already have the
+	// REX bit folded in so `xmm[mr.reg]` directly covers 0..15.
+	//
+	// x87 FPU: 8 × float64 register file (not the architectural 80-bit
+	// extended precision — mirrors cpu/x86's approximation). fpuTop is
+	// the rotating physical index of architectural ST(0); ST(i) lives
+	// at fpu[(fpuTop+i) & 7]. fpuTag uses 2 bits per physical register
+	// (00=valid, 01=zero, 10=special, 11=empty). fpuControlWord /
+	// fpuStatusWord match the architectural CW/SW registers.
+	mm    [8]uint64
+	xmm   [16][2]uint64
+	mxcsr uint32
+
+	fpu            [8]float64
+	fpuTop         uint8
+	fpuTag         uint16
+	fpuStatusWord  uint16
+	fpuControlWord uint16
+	fpuInitialized bool
 }
 
 // NewCPU constructs a fresh long-mode-capable CPU at the reset state
@@ -279,6 +306,25 @@ func (c *CPU) Reset() {
 	c.msrSFMask = 0
 
 	c.mode = ModeReal16
+
+	// SIMD / FPU register state. Initial values mirror cpu/x86's
+	// fpuReset post-FNINIT — control word 0x037F (round-to-nearest,
+	// all exceptions masked), tag word all-empty.
+	for i := range c.mm {
+		c.mm[i] = 0
+	}
+	for i := range c.xmm {
+		c.xmm[i] = [2]uint64{}
+	}
+	c.mxcsr = 0x1F80
+	for i := range c.fpu {
+		c.fpu[i] = 0
+	}
+	c.fpuTop = 0
+	c.fpuTag = 0xFFFF
+	c.fpuStatusWord = 0
+	c.fpuControlWord = 0x037F
+	c.fpuInitialized = false
 }
 
 // ===== 64-bit register accessors =====

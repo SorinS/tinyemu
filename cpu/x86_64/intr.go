@@ -22,6 +22,22 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 	idtBase := c.segBase[IDTR]
 	idtLimit := c.segLimit[IDTR]
 	gateAddr := idtBase + uint64(vec)*16
+
+	// Capture CPL before we flip it. The transition to a kernel handler
+	// is architecturally supervisor-mode by the time the CPU touches
+	// the IDT and (for user→kernel) the TSS. Real silicon performs the
+	// gate read and TSS.RSP0 fetch as microcode operations that are
+	// NOT gated on the current CPL's U/S check — they're treated as
+	// supervisor accesses regardless of where the fault originated.
+	// Flip c.cpl to 0 NOW so the subsequent translateForData calls in
+	// this function go through the walker with isUser=false. Without
+	// this, a user-mode #PF whose IDT gate sits on a kernel-only page
+	// (U/S=0) gets a recursive "user can't read kernel page" PF when
+	// we try to deliver, and the original fault escapes as an
+	// emulator error. We still use oldCPL for the "do we need to load
+	// TSS.RSP0?" decision below.
+	oldCPL := c.cpl
+	c.cpl = 0
 	if intrTrace {
 		fmt.Fprintf(os.Stderr, "[intr] deliver vec=%d hasErr=%v ec=%#x RIP=%#x CR2=%#x IDTR.base=%#x IDTR.limit=%#x\n",
 			vec, hasErr, errorCode, c.rip, c.cr[2], idtBase, idtLimit)
@@ -213,13 +229,46 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 	oldRSP := c.reg64[RSP]
 	oldSS := c.seg[SS]
 
+	// On a user→kernel privilege escalation (oldCPL=3 entering a gate
+	// that drops to CPL=0), real silicon loads RSP from TSS.RSP0
+	// BEFORE pushing the frame. Without this swap, the pushes land on
+	// the USER stack — which (a) might be unmapped and fault the
+	// push, or (b) leaks kernel state into user-readable memory. LTR
+	// previously stashed the TSS base in c.segBase[TR]; TSS.RSP0
+	// lives 4 bytes into the TSS structure. We already flipped c.cpl
+	// to 0 at the top of this function for the IDT gate read, so we
+	// test oldCPL here, not c.cpl.
+	if oldCPL == 3 {
+		tssBase := c.segBase[TR]
+		if tssBase == 0 {
+			return fmt.Errorf("user-mode interrupt vec=%d but TR not loaded (TSS base unknown)", vec)
+		}
+		rsp0VA := tssBase + 4
+		rsp0Phys, perr := c.translateForData(rsp0VA, false)
+		if perr != nil {
+			if intrTrace {
+				fmt.Fprintf(os.Stderr, "[intr]   FAIL: translate TSS.RSP0@%#x: %v\n", rsp0VA, perr)
+			}
+			return fmt.Errorf("translate TSS.RSP0: %w", perr)
+		}
+		rsp0, err := c.memMap.Read64(rsp0Phys)
+		if err != nil {
+			return fmt.Errorf("read TSS.RSP0: %w", err)
+		}
+		if intrTrace {
+			fmt.Fprintf(os.Stderr, "[intr]   user→kernel: switching to TSS.RSP0=%#x (was user RSP=%#x)\n", rsp0, oldRSP)
+		}
+		c.reg64[RSP] = rsp0
+	}
+
 	if intrTrace {
-		fmt.Fprintf(os.Stderr, "[intr]   pushing frame: SS=%#x RSP=%#x RFLAGS=%#x CS=%#x RIP=%#x\n",
-			oldSS, oldRSP, oldRFLAGS, oldCS, oldRIP)
+		fmt.Fprintf(os.Stderr, "[intr]   pushing frame: SS=%#x RSP=%#x RFLAGS=%#x CS=%#x RIP=%#x (current RSP=%#x)\n",
+			oldSS, oldRSP, oldRFLAGS, oldCS, oldRIP, c.reg64[RSP])
 	}
 
 	// Push the saved context. Real hardware atomically switches stacks
-	// first; we serialize the writes on the current RSP. Wrap in a
+	// first (which we just did via TSS.RSP0 above for CPL changes);
+	// we serialize the writes on the (now kernel) RSP. Wrap in a
 	// recover so a fault during the push is reported as a returned
 	// error rather than propagating out of the deferred recover in
 	// Step (where it could not be re-handled cleanly).
@@ -237,6 +286,10 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 	c.segBase[CS] = 0
 	c.segAccess[CS] = csLBit | 0x9A // P=1, S=1, code, executable, readable
 	c.rip = offset
+
+	// CPL was already flipped to 0 at the top of this function so the
+	// gate-read and TSS.RSP0-read translations would go as supervisor.
+	// Nothing more to do here.
 
 	// Type 0xE = interrupt gate (clears IF); 0xF = trap gate (keeps IF).
 	if gateType == 0xE {
@@ -463,7 +516,15 @@ func (c *CPU) opRETF(operandSize uint8) error {
 	c.rip = newRIP
 	c.seg[CS] = newCS
 	c.segBase[CS] = 0
-	c.segAccess[CS] = csLBit | 0x9A
+	// Mirror IRETQ: derive CPL/DPL from CS RPL so a RETF to user mode
+	// (e.g. from a far-jump trampoline) does not leave c.cpl stale.
+	newCPL := int(newCS & 3)
+	c.cpl = newCPL
+	if newCPL == 3 {
+		c.segAccess[CS] = csLBit | 0xFA
+	} else {
+		c.segAccess[CS] = csLBit | 0x9A
+	}
 	c.recomputeMode()
 	return nil
 }
@@ -486,10 +547,30 @@ func (c *CPU) opIRETQ() error {
 	c.rip = newRIP
 	c.seg[CS] = newCS
 	c.segBase[CS] = 0
-	c.segAccess[CS] = csLBit | 0x9A
+	// Derive new CPL from CS RPL (Intel SDM Vol.3 §6.14.3 — IRETQ
+	// reads CPL from CS[1:0]). The synthesised descriptor cache must
+	// match: a return to RPL=3 sets DPL=3 (0xFA access byte), a return
+	// to RPL=0 keeps DPL=0 (0x9A). Without the c.cpl update the
+	// emulator stays "kernel" while CS says "user", and the next
+	// page-fault generates an error_code with X86_PF_USER cleared,
+	// driving Linux's do_user_addr_fault straight into no_context →
+	// "BUG: unable to handle page fault" → init killed.
+	newCPL := int(newCS & 3)
+	c.cpl = newCPL
+	if newCPL == 3 {
+		c.segAccess[CS] = csLBit | 0xFA
+	} else {
+		c.segAccess[CS] = csLBit | 0x9A
+	}
 	c.rflags = (newFlags & ValidFlagMask) | 2
 	c.reg64[RSP] = newRSP
 	c.seg[SS] = newSS
+	c.segBase[SS] = 0
+	if newCPL == 3 {
+		c.segAccess[SS] = 0xF2 // user data, P=1, S=1, W=1, DPL=3
+	} else {
+		c.segAccess[SS] = 0x92 // kernel data, P=1, S=1, W=1, DPL=0
+	}
 	c.recomputeMode()
 	return nil
 }

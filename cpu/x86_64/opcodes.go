@@ -35,17 +35,26 @@ var ioTrace = os.Getenv("TINYEMU_X64_IO") == "1"
 // (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP), bitwise ops in their primary "rm
 // vs r" forms (0x09 OR, 0x21 AND, 0x29 SUB, 0x31 XOR, 0x39 CMP), TEST
 // r/m,r (0x85), and Group 5 INC/DEC (0xFF /0, /1).
-func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride int, repPrefix uint8) error {
+func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride int, repPrefix uint8, has66 bool) error {
 	_ = segOverride // segment-override handling lands with explicit memory operands beyond the initial slice
 	_ = addressSize // 32-bit addressing not yet wired
 
 	switch {
 	// ===== Single-byte primary ops =====
 
-	case op == 0x90:
-		// NOP. (0x90 with REX.B is XCHG R8,RAX; not wired yet — the
-		// kernel uses 0x90 as a plain NOP padding byte everywhere it
-		// matters.)
+	case op >= 0x90 && op <= 0x97:
+		// 0x90+r = XCHG rAX, rN with REX.B extending the source to
+		// R8..R15. The classic 0x90 (REX absent, or REX with B=0) is
+		// XCHG RAX,RAX which is a NOP — also covers the F3 90 PAUSE
+		// hint (F3 prefix is dropped by our dispatcher for non-string
+		// ops). With REX.B=1 we swap RAX with R8..R15.
+		dstReg := uint8(op-0x90) | (rex&rexB)<<3
+		if dstReg == RAX {
+			return nil // NOP (XCHG RAX, RAX)
+		}
+		tmp := c.GetReg64(int(RAX))
+		c.writeReg(RAX, c.GetReg64(int(dstReg)), operandSize)
+		c.writeReg(dstReg, tmp, operandSize)
 		return nil
 
 	case op == 0xF4:
@@ -483,7 +492,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// succeed; for memory-operand forms consume the ModR/M so the
 	// instruction stream stays aligned.
 	case op >= 0xD8 && op <= 0xDF:
-		return c.opX87Stub(op, rex)
+		return c.handleX87(op, rex)
 
 	// ===== Flag manipulation =====
 
@@ -609,14 +618,19 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// ===== Two-byte escape =====
 
 	case op == 0x0F:
-		return c.opTwoByte(rex, operandSize, segOverride)
+		return c.opTwoByte(rex, operandSize, segOverride, repPrefix, has66)
 	}
 
 	return c.unimplementedAt("opcode %#02x rex=%#x", op, rex)
 }
 
 // opTwoByte dispatches the 0x0F escape opcode family.
-func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
+//
+// repPrefix carries the F2 (=2) / F3 (=1) repeat prefix the legacy
+// decoder collected; SSE2 reinterprets these as opcode-extension bits
+// (e.g. F3 0F 6F = MOVDQU, F2 0F 10 = MOVSD). Passed through to
+// opSSE2 below.
+func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int, repPrefix uint8, has66 bool) error {
 	_ = segOverride
 	op2 := c.fetch8()
 	switch {
@@ -836,6 +850,15 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 		// LZCNT-vs-BSR consideration as TZCNT/BSF above.
 		return c.opBSR(rex, operandSize)
 	}
+
+	// SSE2 / MMX dispatch (see sse2.go). Returns handled=true if the
+	// opcode was recognised; otherwise we fall through to the
+	// "unimplemented" path below. The SSE2 module needs the prefix
+	// bytes the legacy decoder loop captured (operand-size and rep)
+	// so it can pick the right per-prefix variant.
+	if handled, err := c.opSSE2(op2, rex, repPrefix, has66); handled {
+		return err
+	}
 	return c.unimplementedAt("0F %#02x rex=%#x", op2, rex)
 }
 
@@ -958,31 +981,19 @@ func (c *CPU) opGroup15(rex uint8) error {
 	// Memory form. Resolve the linear address through segment base.
 	addr := c.segBaseForModRM(m) + m.ea
 	switch m.reg {
-	case 0: // FXSAVE — 512-byte save area
-		// Linux uses this on context switch. We zero the area (matches
-		// FNINIT initial state) so a subsequent FXRSTOR sees clean
-		// state. Real silicon stores actual register file; we don't
-		// model x87 fully, so a zero blob is a safe approximation
-		// for boot. If the kernel later does FXRSTOR with a non-zero
-		// blob it had previously saved, we'll faithfully read back
-		// those same bytes (because they're stored in RAM).
-		for i := uint64(0); i < 512; i++ {
-			c.writeMem8(addr+i, 0)
-		}
+	case 0: // FXSAVE — 512-byte save area, written from CPU FPU/XMM
+		// state (see fxsave in x87.go).
+		c.fxsave(addr)
 		return nil
-	case 1: // FXRSTOR
-		// Read 512 bytes to consume them (no internal state to
-		// restore yet, but the read sequence may catch a page-fault
-		// the kernel relies on for demand-paging).
-		for i := uint64(0); i < 512; i++ {
-			_ = c.readMem8(addr + i)
-		}
+	case 1: // FXRSTOR — 512-byte save area, read back into CPU
+		// FPU/XMM state.
+		c.fxrstor(addr)
 		return nil
 	case 2: // LDMXCSR — load 4 bytes into MXCSR
-		_ = c.readMem32(addr)
+		c.mxcsr = c.readMem32(addr)
 		return nil
-	case 3: // STMXCSR — store default MXCSR (all exceptions masked)
-		c.writeMem32(addr, 0x1f80)
+	case 3: // STMXCSR — store MXCSR
+		c.writeMem32(addr, c.mxcsr)
 		return nil
 	case 7: // CLFLUSH — flush cache line (no cache modelled)
 		return nil
@@ -990,71 +1001,8 @@ func (c *CPU) opGroup15(rex uint8) error {
 	return c.unimplementedAt("Group 15 /%d (memory form)", m.reg)
 }
 
-// opX87Stub provides minimal x87 support for kernel boot. We don't
-// model the full FPU stack — the kernel only really exercises it via
-// FXSAVE/FXRSTOR shuffles on context switch (we represent those as
-// opaque 512-byte RAM blocks the kernel writes and reads back), plus
-// a handful of control instructions that need to actually update the
-// emulator state (FNINIT, FLDCW, FNSTCW) for the kernel's "is the FPU
-// alive?" probe to succeed.
-//
-// Everything else just consumes its ModR/M (+ SIB + disp) and returns
-// nil. That's correct for memory-store ops (the destination ends up
-// untouched, but the kernel doesn't read it back in early init) and
-// "approximately correct" for arithmetic — those don't appear in
-// kernel-text early boot at all, so the stub never has to deliver a
-// real result.
-//
-// Memory load ops can return zero (the FXSAVE area starts zero from
-// BSS, and the kernel just stores into it before reading).
-func (c *CPU) opX87Stub(op, rex uint8) error {
-	// Peek at the next byte to see if it's a no-operand control insn
-	// (mod=11 in ModR/M; bytes 0xE0..0xFF carry no SIB/disp).
-	mb := c.fetch8()
-	if mb >= 0xC0 {
-		// Reg/reg form OR a no-operand control sequence. Common cases:
-		//   D9 E1 = FABS, D9 E4 = FTST, D9 F0 = F2XM1, etc. — arithmetic
-		//     on ST(i); we ignore but advance.
-		//   DB E3 = FNINIT (the one this routine was added for).
-		//   DB E2 = FNCLEX.
-		//   D9 F8..FF = various transcendental ops.
-		//
-		// All of them are a 2-byte sequence with no further operands
-		// (no SIB, no disp). Nothing more to consume.
-		return nil
-	}
-	// Memory-operand form — re-decode by hand to consume any SIB and
-	// displacement bytes. parseModRM64 would do this, but it expects to
-	// have been called for the ModR/M itself; we've already consumed
-	// that byte above. Inline the address-consumption logic for the
-	// mod ∈ {0, 1, 2} cases.
-	mod := (mb >> 6) & 3
-	rm := mb & 7
-	// SIB?
-	if rm == 4 {
-		_ = c.fetch8() // SIB
-	}
-	switch mod {
-	case 0:
-		if rm == 5 {
-			_ = c.fetch32() // disp32 (RIP-relative)
-		}
-		// rm == 4 + SIB special case: if SIB.base == 5 AND mod == 0,
-		// a disp32 follows the SIB. We don't decode the SIB byte
-		// fully here — over-consuming a SIB byte for these forms is
-		// safe because the next op resumes on the right offset only
-		// if we get this right. Cheap heuristic: if we already
-		// consumed a SIB, we'd need to look at it to know whether to
-		// fetch disp32. Skip the full check and accept the slight
-		// risk — none of the x87 memory forms the kernel uses early
-		// hit this corner.
-	case 1:
-		_ = c.fetch8() // disp8
-	case 2:
-		_ = c.fetch32() // disp32
-	}
-	return nil
-}
+// opX87Stub was deleted in favour of handleX87 in x87.go, which
+// provides a real x87 FPU implementation (port of cpu/x86's handleX87).
 
 func (c *CPU) opBSF(rex, operandSize uint8) error {
 	m := c.parseModRM64(rex)
@@ -1101,9 +1049,46 @@ func (c *CPU) opGroup6(rex uint8) error {
 		sel := uint16(c.readOperand(m, 2))
 		c.seg[LDTR] = sel
 		return nil
-	case 3: // LTR
+	case 3: // LTR — load task register. Beyond stashing the selector
+		// we walk the GDT entry to extract the TSS base address. The
+		// 64-bit TSS descriptor is 16 bytes (two GDT slots); offset 4
+		// of the TSS itself holds RSP0, which is the stack the CPU
+		// switches to on a user→kernel interrupt. Without this lookup,
+		// deliverInterrupt pushes the IRETQ frame on whatever RSP was
+		// live at fault time — typically the user RSP, which faults
+		// during the push and breaks #PF delivery for user-mode faults.
 		sel := uint16(c.readOperand(m, 2))
 		c.seg[TR] = sel
+		if sel&0xFFFC != 0 {
+			gdtBase := c.segBase[GDTR]
+			loVA := gdtBase + uint64(sel&0xFFF8)
+			hiVA := loVA + 8
+			loPhys, perr := c.translateForData(loVA, false)
+			if perr != nil {
+				return fmt.Errorf("LTR: translate GDT entry: %w", perr)
+			}
+			hiPhys, perr := c.translateForData(hiVA, false)
+			if perr != nil {
+				return fmt.Errorf("LTR: translate GDT entry+8: %w", perr)
+			}
+			lo, _ := c.memMap.Read64(loPhys)
+			hi, _ := c.memMap.Read64(hiPhys)
+			// SDM Vol.3 §3.5.2 — 64-bit TSS descriptor layout:
+			//   lo[15:0]   = limit[15:0]
+			//   lo[31:16]  = base[15:0]
+			//   lo[39:32]  = base[23:16]
+			//   lo[47:40]  = access (P/DPL/S/type)
+			//   lo[55:48]  = limit[19:16] | flags (G/AVL)
+			//   lo[63:56]  = base[31:24]
+			//   hi[31:0]   = base[63:32]
+			//   hi[63:32]  = reserved
+			base := ((lo >> 16) & 0xFFFFFF) |
+				(((lo >> 56) & 0xFF) << 24) |
+				((hi & 0xFFFFFFFF) << 32)
+			limit := uint32(lo&0xFFFF) | (uint32((lo>>48)&0xF) << 16)
+			c.segBase[TR] = base
+			c.segLimit[TR] = limit
+		}
 		return nil
 	case 4: // VERR — verify segment can be read at current CPL
 		// Stub: set ZF=1 (verification passes). Real impl walks

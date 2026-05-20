@@ -144,6 +144,22 @@ func (c *CPU) writeMem64(addr uint64, v uint64) {
 	c.writeMem32(addr+4, uint32(v>>32))
 }
 
+// readMem128 / writeMem128 — 128-bit SIMD loads/stores. Returned and
+// passed as [lo, hi] uint64s where the low qword sits at addr+0 and the
+// high qword at addr+8. Cross-page accesses are handled implicitly:
+// the underlying readMem64/writeMem64 helpers do byte-at-a-time through
+// per-byte translation, so a 16-byte read straddling a page boundary
+// faults on the correct page (relevant for the 2026-05-15 unaligned
+// cross-page fix).
+func (c *CPU) readMem128(addr uint64) [2]uint64 {
+	return [2]uint64{c.readMem64(addr), c.readMem64(addr + 8)}
+}
+
+func (c *CPU) writeMem128(addr uint64, val [2]uint64) {
+	c.writeMem64(addr, val[0])
+	c.writeMem64(addr+8, val[1])
+}
+
 // translateForData runs the 4-level walker for a data load/store. When
 // paging is disabled (CR0.PG=0, which in long mode is illegal but we
 // model the bare case for tests) the linear address is returned as the

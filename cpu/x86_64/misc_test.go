@@ -122,3 +122,36 @@ func TestMOVImm8_Mem(t *testing.T) {
 		t.Errorf("mem[0x2000] = %#x, want 0x42", v)
 	}
 }
+
+// TestXCHG_RAX_RBX regression for the 0x48 0x93 (XCHG RAX, RBX)
+// opcode that musl libc emits in its dynamic linker startup. The
+// old dispatcher only handled 0x90 (NOP/XCHG RAX, RAX); the rest
+// of the 0x90+r family fell through to "decoder feature not
+// implemented yet".
+func TestXCHG_RAX_RBX(t *testing.T) {
+	mm := mem.NewPhysMemoryMap()
+	t.Cleanup(mm.Close)
+	if _, err := mm.RegisterRAM(0, 1<<20, 0); err != nil {
+		t.Fatalf("RegisterRAM: %v", err)
+	}
+	c := NewCPU(mm)
+	c.SetCR64(0, CR0_PE)
+	c.SetEFER(EFER_LME | EFER_LMA)
+	c.SetSegAccess(CS, csLBit)
+	c.SetSegBase(CS, 0)
+	c.SetReg64(RAX, 0x1111)
+	c.SetReg64(RBX, 0x2222)
+	const codeAddr uint64 = 0x1000
+	_ = mm.Write8(codeAddr, 0x48)
+	_ = mm.Write8(codeAddr+1, 0x93)
+	c.SetRIP(codeAddr)
+	if err := c.Step(); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if c.GetReg64(RAX) != 0x2222 {
+		t.Errorf("RAX = %#x, want 0x2222", c.GetReg64(RAX))
+	}
+	if c.GetReg64(RBX) != 0x1111 {
+		t.Errorf("RBX = %#x, want 0x1111", c.GetReg64(RBX))
+	}
+}
