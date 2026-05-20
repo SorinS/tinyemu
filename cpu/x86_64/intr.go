@@ -53,6 +53,35 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 					}
 				}
 			}
+			// Walk the stack a few frames to reconstruct an approximate
+			// call chain. We only know RSP at fault; the SDM doesn't
+			// require a frame pointer. Print the next 24 quadwords
+			// above RSP, marking those that look like kernel-text
+			// return addresses with [RET] so the caller can be picked
+			// out of the noise.
+			rsp := c.reg64[RSP]
+			fmt.Fprintf(os.Stderr, "[intr]   stack-near-RSP (24 qwords above):\n")
+			for i := uint64(0); i < 24; i++ {
+				addr := rsp + i*8
+				phys, perr := c.translateForData(addr, false)
+				if perr != nil {
+					continue
+				}
+				v, err := c.memMap.Read64(phys)
+				if err != nil {
+					continue
+				}
+				marker := ""
+				// Kernel-text range from vmlinux PT_LOAD (this image).
+				if v >= 0xffffffff81000000 && v < 0xffffffff820a7e10 {
+					marker = " [RET-text]"
+				} else if v >= 0xffffffff82200000 && v < 0xffffffff83000000 {
+					marker = " [data]"
+				}
+				if v != 0 {
+					fmt.Fprintf(os.Stderr, "[intr]     [RSP+%#x] = %#x%s\n", i*8, v, marker)
+				}
+			}
 		}
 	}
 	if uint64(vec)*16+16 > uint64(idtLimit)+1 {

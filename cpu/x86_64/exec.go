@@ -46,8 +46,9 @@ func (c *CPU) Step() (err error) {
 				bytes[i] = c.readMem8(origRIP + i)
 			}()
 		}
-		fmt.Fprintf(os.Stderr, "[step] RIP=%#x bytes=% x R15=%#x RDX=%#x RCX=%#x\n",
-			origRIP, bytes[:], c.reg64[R15], c.reg64[RDX], c.reg64[RCX])
+		fmt.Fprintf(os.Stderr, "[step] RIP=%#x bytes=% x RAX=%#x RBX=%#x RCX=%#x RDX=%#x RSI=%#x RDI=%#x R12=%#x R13=%#x R14=%#x R15=%#x\n",
+			origRIP, bytes[:], c.reg64[RAX], c.reg64[RBX], c.reg64[RCX], c.reg64[RDX],
+			c.reg64[RSI], c.reg64[RDI], c.reg64[R12], c.reg64[R13], c.reg64[R14], c.reg64[R15])
 	}
 	if stringWatchRIP != 0 && origRIP == stringWatchRIP {
 		rdi := c.GetReg64(RDI)

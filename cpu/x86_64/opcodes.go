@@ -17,6 +17,14 @@ var cr3Trace = os.Getenv("TINYEMU_X64_CR3") == "1"
 // boot bugs.
 var intrTrace = os.Getenv("TINYEMU_X64_INTR") == "1"
 
+// msrTrace logs every RDMSR / WRMSR with RIP. Diagnostic for "kernel
+// silently skipped a feature because our MSR returned 0" issues.
+var msrTrace = os.Getenv("TINYEMU_X64_MSR") == "1"
+
+// ioTrace logs every IO port write (OUT). Diagnostic for "where is
+// the kernel's first printk going?" and similar IO investigations.
+var ioTrace = os.Getenv("TINYEMU_X64_IO") == "1"
+
 // executeOpcode dispatches a decoded primary opcode after the prefix
 // loop in Step has consumed the leading prefix bytes. operandSize is
 // 2, 4, or 8 (bytes); addressSize is 4 or 8 in long mode.
@@ -1038,7 +1046,11 @@ const (
 )
 
 func (c *CPU) opRDMSR() error {
-	v := c.readMSR(c.GetReg32(ECX))
+	num := c.GetReg32(ECX)
+	v := c.readMSR(num)
+	if msrTrace {
+		fmt.Fprintf(os.Stderr, "[msr] rdmsr ecx=%#x → %#x RIP=%#x\n", num, v, c.rip)
+	}
 	c.SetReg32(EAX, uint32(v))
 	c.SetReg32(EDX, uint32(v>>32))
 	return nil
@@ -1047,6 +1059,9 @@ func (c *CPU) opRDMSR() error {
 func (c *CPU) opWRMSR() error {
 	num := c.GetReg32(ECX)
 	v := uint64(c.GetReg32(EAX)) | (uint64(c.GetReg32(EDX)) << 32)
+	if msrTrace {
+		fmt.Fprintf(os.Stderr, "[msr] wrmsr ecx=%#x v=%#x RIP=%#x\n", num, v, c.rip)
+	}
 	return c.writeMSR(num, v)
 }
 
@@ -2368,34 +2383,52 @@ func (c *CPU) opOUTEAX(port uint16, operandSize uint8) error {
 }
 
 func (c *CPU) ioRead8(port uint16) uint8 {
+	if ioTrace {
+		fmt.Fprintf(os.Stderr, "[io] in8  port=%#x RIP=%#x\n", port, c.rip)
+	}
 	if c.ioRead8Func == nil {
 		return 0xFF
 	}
 	return c.ioRead8Func(port)
 }
 func (c *CPU) ioRead16(port uint16) uint16 {
+	if ioTrace {
+		fmt.Fprintf(os.Stderr, "[io] in16 port=%#x RIP=%#x\n", port, c.rip)
+	}
 	if c.ioRead16Func == nil {
 		return 0xFFFF
 	}
 	return c.ioRead16Func(port)
 }
 func (c *CPU) ioRead32(port uint16) uint32 {
+	if ioTrace {
+		fmt.Fprintf(os.Stderr, "[io] in32 port=%#x RIP=%#x\n", port, c.rip)
+	}
 	if c.ioRead32Func == nil {
 		return 0xFFFFFFFF
 	}
 	return c.ioRead32Func(port)
 }
 func (c *CPU) ioWrite8(port uint16, v uint8) {
+	if ioTrace {
+		fmt.Fprintf(os.Stderr, "[io] out8 port=%#x val=%#x RIP=%#x\n", port, v, c.rip)
+	}
 	if c.ioWrite8Func != nil {
 		c.ioWrite8Func(port, v)
 	}
 }
 func (c *CPU) ioWrite16(port uint16, v uint16) {
+	if ioTrace {
+		fmt.Fprintf(os.Stderr, "[io] out16 port=%#x val=%#x RIP=%#x\n", port, v, c.rip)
+	}
 	if c.ioWrite16Func != nil {
 		c.ioWrite16Func(port, v)
 	}
 }
 func (c *CPU) ioWrite32(port uint16, v uint32) {
+	if ioTrace {
+		fmt.Fprintf(os.Stderr, "[io] out32 port=%#x val=%#x RIP=%#x\n", port, v, c.rip)
+	}
 	if c.ioWrite32Func != nil {
 		c.ioWrite32Func(port, v)
 	}
