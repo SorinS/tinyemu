@@ -221,8 +221,15 @@ func (c *CPU) Step() (err error) {
 			} else if operandOverride {
 				operandSize = 2
 			}
-			_ = segOverride // wired in Phase 2/3 when memory operands appear
-			return c.executeOpcode(b, rex, operandSize, addressSize, segOverride, repPrefix)
+			// Stash the override so memory accessors can apply the
+			// right segment base without each opcode handler having
+			// to thread it through manually. Reset after dispatch
+			// so a stale override from the previous instruction
+			// can't leak into the next.
+			c.currentSegOverride = segOverride
+			err := c.executeOpcode(b, rex, operandSize, addressSize, segOverride, repPrefix)
+			c.currentSegOverride = -1
+			return err
 		}
 	}
 }

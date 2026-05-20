@@ -178,6 +178,16 @@ type CPU struct {
 
 	powerDown bool
 
+	// currentSegOverride is the segment-override prefix in effect for
+	// the instruction currently being decoded (CS/SS/DS/ES/FS/GS), or
+	// -1 if no override was present. Set by Step's prefix loop before
+	// dispatch and reset at the next instruction. Long-mode pretty
+	// much only cares about FS/GS (CS/DS/ES/SS have implicit base 0)
+	// — but the kernel's per-CPU accesses go through this every
+	// instruction, so it has to be correct. Mirrors cpu/x86's
+	// currentSegOverride.
+	currentSegOverride int
+
 	intrLineState     int
 	interruptsBlocked bool
 	exitReason        int
@@ -251,6 +261,7 @@ func (c *CPU) Reset() {
 
 	c.cpl = 0
 	c.powerDown = false
+	c.currentSegOverride = -1
 	c.intrLineState = 0
 	c.interruptsBlocked = false
 	c.exitReason = 0

@@ -19,7 +19,7 @@
 set -e
 
 if [ $# -ne 1 ]; then
-    echo "Usage: $0 <tinycore>" >&2
+    echo "Usage: $0 <tinycore|alpine-debug>" >&2
     exit 1
 fi
 
@@ -47,6 +47,25 @@ case $NAME in
         # printk output so missing-opcode failures get a clear
         # context. console_msg_format=syslog/timestamp adds prefixes.
         APPEND="console=ttyS0,115200 loglevel=8 earlyprintk=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable cde"
+        ;;
+    alpine-debug)
+        # Alpine 3.19 'virt' x86_64 kernel — extracted from
+        # bin/iso/alpine-virt-3.19.1-x86-64.iso into bin/alpine64-debug/.
+        # Used specifically for boot debugging because it ships a
+        # full System.map-virt symbol table that the TinyCorePure64
+        # kernel was stripped of. Pair with ./scripts/sym.sh to
+        # resolve any RIP/CR2 from a fault trace to a Linux symbol.
+        #
+        # The pre-decompressed inner ELF (vmlinux-virt) is the path
+        # of choice — same shortcut as tinycore's vmlinux64.
+        if [ -r "$ROOT/bin/alpine64-debug/vmlinux-virt" ]; then
+            KERNEL="$ROOT/bin/alpine64-debug/vmlinux-virt"
+        else
+            KERNEL="$ROOT/bin/alpine64-debug/vmlinuz-virt"
+        fi
+        INITRD="$ROOT/bin/alpine64-debug/initramfs-virt"
+        MEM=512
+        APPEND="console=ttyS0,115200 loglevel=8 earlyprintk=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable"
         ;;
     *)
         echo "unknown OS '$NAME'" >&2

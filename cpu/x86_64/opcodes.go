@@ -700,7 +700,7 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int) error {
 		if m.isReg {
 			c.write8FromModRM(m, v)
 		} else {
-			c.writeMem8(m.ea, v)
+			c.writeMem8(c.segBaseForModRM(m) + m.ea, v)
 		}
 		return nil
 
@@ -879,20 +879,20 @@ func (c *CPU) opGroup7(rex uint8) error {
 	}
 	switch m.reg {
 	case 0: // SGDT
-		c.writeMem16(m.ea, uint16(c.segLimit[GDTR]))
-		c.writeMem64(m.ea+2, c.segBase[GDTR])
+		c.writeMem16(c.segBaseForModRM(m) + m.ea, uint16(c.segLimit[GDTR]))
+		c.writeMem64(c.segBaseForModRM(m) + m.ea+2, c.segBase[GDTR])
 		return nil
 	case 1: // SIDT
-		c.writeMem16(m.ea, uint16(c.segLimit[IDTR]))
-		c.writeMem64(m.ea+2, c.segBase[IDTR])
+		c.writeMem16(c.segBaseForModRM(m) + m.ea, uint16(c.segLimit[IDTR]))
+		c.writeMem64(c.segBaseForModRM(m) + m.ea+2, c.segBase[IDTR])
 		return nil
 	case 2: // LGDT — load GDT base+limit from memory
-		c.segLimit[GDTR] = uint32(c.readMem16(m.ea))
-		c.segBase[GDTR] = c.readMem64(m.ea + 2)
+		c.segLimit[GDTR] = uint32(c.readMem16(c.segBaseForModRM(m) + m.ea))
+		c.segBase[GDTR] = c.readMem64(c.segBaseForModRM(m) + m.ea + 2)
 		return nil
 	case 3: // LIDT
-		c.segLimit[IDTR] = uint32(c.readMem16(m.ea))
-		c.segBase[IDTR] = c.readMem64(m.ea + 2)
+		c.segLimit[IDTR] = uint32(c.readMem16(c.segBaseForModRM(m) + m.ea))
+		c.segBase[IDTR] = c.readMem64(c.segBaseForModRM(m) + m.ea + 2)
 		if intrTrace {
 			fmt.Fprintf(os.Stderr, "[lidt] RIP=%#x base=%#x limit=%#x\n",
 				c.rip, c.segBase[IDTR], c.segLimit[IDTR])
@@ -1202,7 +1202,7 @@ func (c *CPU) opXCHGRM(rex, operandSize uint8) error {
 		if m.isReg {
 			dst = uint64(c.read8FromModRM(m))
 		} else {
-			dst = uint64(c.readMem8(m.ea))
+			dst = uint64(c.readMem8(c.segBaseForModRM(m) + m.ea))
 		}
 	} else {
 		src = c.readReg(m.reg, operandSize)
@@ -1213,7 +1213,7 @@ func (c *CPU) opXCHGRM(rex, operandSize uint8) error {
 		if m.isReg {
 			c.write8FromModRM(m, uint8(src))
 		} else {
-			c.writeMem8(m.ea, uint8(src))
+			c.writeMem8(c.segBaseForModRM(m) + m.ea, uint8(src))
 		}
 	} else {
 		c.writeReg(m.reg, dst, operandSize)
@@ -1234,7 +1234,7 @@ func (c *CPU) opCMPXCHG(rex, operandSize uint8) error {
 		if m.isReg {
 			dst = uint64(c.read8FromModRM(m))
 		} else {
-			dst = uint64(c.readMem8(m.ea))
+			dst = uint64(c.readMem8(c.segBaseForModRM(m) + m.ea))
 		}
 		acc = uint64(c.GetReg8(AL))
 	} else {
@@ -1251,7 +1251,7 @@ func (c *CPU) opCMPXCHG(rex, operandSize uint8) error {
 			if m.isReg {
 				c.write8FromModRM(m, uint8(src))
 			} else {
-				c.writeMem8(m.ea, uint8(src))
+				c.writeMem8(c.segBaseForModRM(m) + m.ea, uint8(src))
 			}
 		} else {
 			c.writeOperand(m, src, operandSize)
@@ -1277,7 +1277,7 @@ func (c *CPU) opXADD(rex, operandSize uint8) error {
 		if m.isReg {
 			dst = uint64(c.read8FromModRM(m))
 		} else {
-			dst = uint64(c.readMem8(m.ea))
+			dst = uint64(c.readMem8(c.segBaseForModRM(m) + m.ea))
 		}
 	} else {
 		src = c.readReg(m.reg, operandSize)
@@ -1289,7 +1289,7 @@ func (c *CPU) opXADD(rex, operandSize uint8) error {
 		if m.isReg {
 			c.write8FromModRM(m, uint8(res))
 		} else {
-			c.writeMem8(m.ea, uint8(res))
+			c.writeMem8(c.segBaseForModRM(m) + m.ea, uint8(res))
 		}
 	} else {
 		c.writeReg(m.reg, dst, operandSize)
@@ -1311,9 +1311,9 @@ func (c *CPU) opMOVZX(rex, operandSize, srcSize uint8) error {
 	case m.isReg:
 		src = c.readReg(m.rm, srcSize)
 	case srcSize == 1:
-		src = uint64(c.readMem8(m.ea))
+		src = uint64(c.readMem8(c.segBaseForModRM(m) + m.ea))
 	default:
-		src = uint64(c.readMem16(m.ea))
+		src = uint64(c.readMem16(c.segBaseForModRM(m) + m.ea))
 	}
 	c.writeReg(m.reg, src, operandSize)
 	return nil
@@ -1329,9 +1329,9 @@ func (c *CPU) opMOVSX(rex, operandSize, srcSize uint8) error {
 	case m.isReg:
 		src = c.readReg(m.rm, srcSize)
 	case srcSize == 1:
-		src = uint64(c.readMem8(m.ea))
+		src = uint64(c.readMem8(c.segBaseForModRM(m) + m.ea))
 	default:
-		src = uint64(c.readMem16(m.ea))
+		src = uint64(c.readMem16(c.segBaseForModRM(m) + m.ea))
 	}
 	if srcSize == 1 {
 		src = uint64(int64(int8(src)))
@@ -1351,7 +1351,7 @@ func (c *CPU) opMOVSXD(rex uint8) error {
 	if m.isReg {
 		src = uint32(c.readReg(m.rm, 4))
 	} else {
-		src = c.readMem32(m.ea)
+		src = c.readMem32(c.segBaseForModRM(m) + m.ea)
 	}
 	c.writeReg(m.reg, uint64(int64(int32(src))), 8)
 	return nil
@@ -1481,7 +1481,7 @@ func (c *CPU) opALURM(rex, operandSize uint8, op aluOp) error {
 		if m.isReg {
 			dst = uint64(c.read8FromModRM(m))
 		} else {
-			dst = uint64(c.readMem8(m.ea))
+			dst = uint64(c.readMem8(c.segBaseForModRM(m) + m.ea))
 		}
 	} else {
 		src = c.readReg(m.reg, operandSize)
@@ -1493,7 +1493,7 @@ func (c *CPU) opALURM(rex, operandSize uint8, op aluOp) error {
 			if m.isReg {
 				c.write8FromModRM(m, uint8(res))
 			} else {
-				c.writeMem8(m.ea, uint8(res))
+				c.writeMem8(c.segBaseForModRM(m) + m.ea, uint8(res))
 			}
 		} else {
 			c.writeOperand(m, res, operandSize)
@@ -1511,7 +1511,7 @@ func (c *CPU) opALURfromM(rex, operandSize uint8, op aluOp) error {
 		if m.isReg {
 			src = uint64(c.read8FromModRM(m))
 		} else {
-			src = uint64(c.readMem8(m.ea))
+			src = uint64(c.readMem8(c.segBaseForModRM(m) + m.ea))
 		}
 		dst = uint64(c.read8RegField(m))
 	} else {
@@ -2064,7 +2064,7 @@ func (c *CPU) opGroup1(rex, operandSize uint8, imm8 bool) error {
 		if m.isReg {
 			dst = uint64(c.read8FromModRM(m))
 		} else {
-			dst = uint64(c.readMem8(m.ea))
+			dst = uint64(c.readMem8(c.segBaseForModRM(m) + m.ea))
 		}
 	} else {
 		dst = c.readOperand(m, operandSize)
@@ -2094,7 +2094,7 @@ func (c *CPU) opGroup1(rex, operandSize uint8, imm8 bool) error {
 			if m.isReg {
 				c.write8FromModRM(m, uint8(res))
 			} else {
-				c.writeMem8(m.ea, uint8(res))
+				c.writeMem8(c.segBaseForModRM(m) + m.ea, uint8(res))
 			}
 		} else {
 			c.writeOperand(m, res, operandSize)
@@ -2250,7 +2250,7 @@ func (c *CPU) opMOVRM8(rex uint8) error {
 	if m.isReg {
 		c.write8FromModRM(m, src)
 	} else {
-		c.writeMem8(m.ea, src)
+		c.writeMem8(c.segBaseForModRM(m) + m.ea, src)
 	}
 	return nil
 }
@@ -2262,7 +2262,7 @@ func (c *CPU) opMOVRfromM8(rex uint8) error {
 	if m.isReg {
 		src = c.read8FromModRM(m)
 	} else {
-		src = c.readMem8(m.ea)
+		src = c.readMem8(c.segBaseForModRM(m) + m.ea)
 	}
 	c.write8RegField(m, src)
 	return nil
@@ -2518,15 +2518,16 @@ func (c *CPU) readOperand(m modRMResult, size uint8) uint64 {
 		}
 		return c.readReg(m.rm, size)
 	}
+	ea := c.segBaseForModRM(m) + m.ea
 	switch size {
 	case 8:
-		return c.readMem64(m.ea)
+		return c.readMem64(ea)
 	case 4:
-		return uint64(c.readMem32(m.ea))
+		return uint64(c.readMem32(ea))
 	case 2:
-		return uint64(c.readMem16(m.ea))
+		return uint64(c.readMem16(ea))
 	}
-	return uint64(c.readMem8(m.ea))
+	return uint64(c.readMem8(ea))
 }
 
 func (c *CPU) writeOperand(m modRMResult, v uint64, size uint8) {
@@ -2538,16 +2539,46 @@ func (c *CPU) writeOperand(m modRMResult, v uint64, size uint8) {
 		c.writeReg(m.rm, v, size)
 		return
 	}
+	ea := c.segBaseForModRM(m) + m.ea
 	switch size {
 	case 8:
-		c.writeMem64(m.ea, v)
+		c.writeMem64(ea, v)
 	case 4:
-		c.writeMem32(m.ea, uint32(v))
+		c.writeMem32(ea, uint32(v))
 	case 2:
-		c.writeMem16(m.ea, uint16(v))
+		c.writeMem16(ea, uint16(v))
 	case 1:
-		c.writeMem8(m.ea, uint8(v))
+		c.writeMem8(ea, uint8(v))
 	}
+}
+
+// segBaseForModRM returns the segment base that should be added to a
+// memory operand's effective address. If a segment-override prefix is
+// active (CS/SS/DS/ES/FS/GS) it wins; otherwise the encoding's
+// default (DS for most, SS for RSP/RBP-based addressing) is used.
+//
+// In long mode CS/DS/ES/SS are forced to base 0 by the architecture,
+// so the only segments whose base actually matters here are FS and
+// GS — which the kernel uses extensively for per-CPU storage via
+// WRMSR(MSR_FS_BASE) / WRMSR(MSR_GS_BASE). Dropping the segment
+// override (the previous behaviour) silently misdirected every
+// `mov gs:[rip+disp32], reg` to (rip+disp32) instead of
+// (gs_base + rip + disp32) — every per-CPU access landed in random
+// kernel-image memory. That was the root cause of the Linux 6.6
+// boot fault at x86_64_start_kernel+0xC.
+func (c *CPU) segBaseForModRM(m modRMResult) uint64 {
+	seg := m.defaultSeg
+	if c.currentSegOverride >= 0 {
+		seg = c.currentSegOverride
+	}
+	// In long mode, only FS and GS have non-zero bases on real
+	// hardware. Skip the lookup for the others — both saves a few
+	// cycles per access and stays correct even if the guest leaves
+	// garbage in segBase[CS/DS/ES/SS] from an earlier mode.
+	if c.mode == ModeLong64 && seg != FS && seg != GS {
+		return 0
+	}
+	return c.segBase[seg]
 }
 
 func (c *CPU) push64(v uint64) {

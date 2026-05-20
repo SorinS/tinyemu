@@ -1,6 +1,9 @@
 package pc
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/jtolio/tinyemu-go/cpu"
 )
 
@@ -227,6 +230,12 @@ func (p *PIC8259) PeekInterrupt() int {
 // DeliverInterrupt delivers the highest priority pending interrupt to the
 // CPU. If the cascade IRQ is highest, the slave is asked for its vector
 // and both ISRs are updated. Returns the interrupt vector, or -1.
+func (p *PIC8259) deliverDebug(irq uint8, vec int) {
+	if os.Getenv("TINYEMU_X64_PIC") == "1" {
+		fmt.Fprintf(os.Stderr, "[pic] deliver IRQ=%d → vec=%d (icw2=%#x)\n", irq, vec, p.icw2)
+	}
+}
+
 func (p *PIC8259) DeliverInterrupt() int {
 	pending := p.irr &^ p.imr
 	if pending == 0 {
@@ -253,7 +262,9 @@ func (p *PIC8259) DeliverInterrupt() int {
 	p.irr &^= 1 << irq
 	p.isr |= 1 << irq
 	p.updateINTR()
-	return int(p.icw2 + irq)
+	vec := int(p.icw2 + irq)
+	p.deliverDebug(irq, vec)
+	return vec
 }
 
 // deliverLocal services a local IRQ (slave-side variant of

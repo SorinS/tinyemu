@@ -141,7 +141,27 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 	gateType := typeAttr & 0xF
 	if typeAttr&0x80 == 0 {
 		if intrTrace {
-			fmt.Fprintf(os.Stderr, "[intr]   FAIL: gate not present (typeAttr=%#x)\n", typeAttr)
+			fmt.Fprintf(os.Stderr, "[intr]   FAIL: gate not present (typeAttr=%#x), translated gate phys: lo=%#x hi=%#x\n",
+				typeAttr, gateLoPhys, gateHiPhys)
+			// Dump the whole IDT (256 vectors × 16 bytes = 4 KB) and
+			// list any populated entries. With this we can tell at a
+			// glance whether *no* IDT writes have happened (kernel
+			// init never wrote real gates) vs *some* (just vec 48
+			// missed) vs *all-but-this-one* (alias confusion).
+			idtBasePhys := gateLoPhys - uint64(vec)*16
+			populated := 0
+			var missing []int
+			for i := uint64(0); i < 256; i++ {
+				lo, _ := c.memMap.Read64(idtBasePhys + i*16)
+				hi, _ := c.memMap.Read64(idtBasePhys + i*16 + 8)
+				if lo != 0 || hi != 0 {
+					populated++
+				} else {
+					missing = append(missing, int(i))
+				}
+			}
+			fmt.Fprintf(os.Stderr, "[intr]   IDT populated: %d / 256.  Missing vectors: %v\n",
+				populated, missing)
 		}
 		// Not-present gate ⇒ #NP (#GP for some vectors). M5c returns
 		// the host-level error rather than cascading.
