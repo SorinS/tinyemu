@@ -126,3 +126,61 @@ func TestBTC_RegBitIndex(t *testing.T) {
 		t.Errorf("CF set after BTC of previously-clear bit")
 	}
 }
+
+// TestBTS_MemoryHighBitIndex regression-tests the SDM rule that with
+// a MEMORY destination the register-supplied bit index is NOT masked
+// to (operand_size - 1) — it extends the memory address. This was
+// the root cause of the Linux 6.6 boot stall at the first PIT IRQ:
+// `lock bts qword [system_vectors], rax` with rax = 253 was wrongly
+// setting bit (253 & 63) = 61 of system_vectors[0] instead of bit
+// 253 of the bitmap. The for_each_clear_bit_from loop then saw vec
+// 61 as "set" (along with 44, 48-50, 54-56, 58-60, 62, 63 from the
+// other APIC vectors that aliased the same way) and skipped
+// installing irq_entries_start stubs at idt_table[48..63] — the
+// timer IRQ delivered to an empty gate.
+func TestBTS_MemoryHighBitIndex(t *testing.T) {
+	c := runBytesAt(t,
+		func(c *CPU, mm *mem.PhysMemoryMap) {
+			c.SetReg64(RAX, 0x2000) // bitmap base
+			c.SetReg64(RBX, 253)    // bit index — high enough to need address adjustment
+			for i := 0; i < 64; i++ {
+				_ = mm.Write8(0x2000+uint64(i), 0)
+			}
+		},
+		[]byte{0x48, 0x0F, 0xAB, 0x18, 0xF4}, // bts qword [rax], rbx
+	)
+	// Bit 253 = byte 31 (253/8), bit position 5 (253 mod 8). Mask 0x20.
+	wantByteIdx := uint64(31)
+	wantMask := byte(1 << 5)
+	v, _ := c.memMap.Read8(0x2000 + wantByteIdx)
+	if v != wantMask {
+		t.Errorf("byte %d = %#x, want %#x (BTS misdirected — likely masked bit-index to 63)",
+			wantByteIdx, v, wantMask)
+	}
+	// Critically: bytes 0..30 of the bitmap must NOT be touched.
+	v0, _ := c.memMap.Read64(0x2000)
+	if v0 != 0 {
+		t.Errorf("bitmap[0..7] = %#x, want 0 — BTS wrapped the bit-index into the wrong qword", v0)
+	}
+}
+
+// Same test for the negative-bit-index path. The SDM defines the
+// behaviour for signed offsets too; not used by Linux but verifies
+// the wordIdx/bitInWord normalisation.
+func TestBTS_MemoryNegativeBitIndex(t *testing.T) {
+	c := runBytesAt(t,
+		func(c *CPU, mm *mem.PhysMemoryMap) {
+			c.SetReg64(RAX, 0x2040) // base "above" target
+			var negSeven int64 = -7
+			c.SetReg64(RBX, uint64(negSeven)) // bit -7 → byte -1 from base, bit 1
+			for i := 0; i < 128; i++ {
+				_ = mm.Write8(0x2000+uint64(i), 0)
+			}
+		},
+		[]byte{0x48, 0x0F, 0xAB, 0x18, 0xF4}, // bts qword [rax], rbx
+	)
+	v, _ := c.memMap.Read8(0x2040 - 1)
+	if v != (1 << 1) {
+		t.Errorf("byte at base-1 = %#x, want %#x", v, byte(1<<1))
+	}
+}

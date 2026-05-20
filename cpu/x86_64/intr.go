@@ -162,6 +162,42 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 			}
 			fmt.Fprintf(os.Stderr, "[intr]   IDT populated: %d / 256.  Missing vectors: %v\n",
 				populated, missing)
+			// Dump system_vectors[] — Linux's bitmap of vectors reserved
+			// for system use (skipped by idt_setup_apic_and_irq_gates'
+			// for_each_clear_bit_from loop). Any vec with a set bit
+			// here is EXPECTED to have its gate installed by a
+			// different code path (legacy_pic init, apic init, etc.).
+			// Symbol: ffffffff82bcb660 B system_vectors (Alpine 6.6).
+			const sysVecVA = 0xffffffff82bcb660
+			if phys, perr := c.translateForData(sysVecVA, false); perr == nil {
+				var bits [4]uint64
+				for i := 0; i < 4; i++ {
+					bits[i], _ = c.memMap.Read64(phys + uint64(i)*8)
+				}
+				fmt.Fprintf(os.Stderr, "[intr]   system_vectors[0..3] = %#x %#x %#x %#x\n",
+					bits[0], bits[1], bits[2], bits[3])
+				var sysSet []int
+				for v := 0; v < 256; v++ {
+					if bits[v/64]&(1<<(v%64)) != 0 {
+						sysSet = append(sysSet, v)
+					}
+				}
+				fmt.Fprintf(os.Stderr, "[intr]   system_vectors set: %v\n", sysSet)
+			}
+			// Decode the IRQ-stub entries (vectors 32..63) so we can see
+			// which stub each gate points at and detect off-by-8 errors
+			// where alternate stubs are installed.
+			for v := 32; v < 64; v++ {
+				lo, _ := c.memMap.Read64(idtBasePhys + uint64(v)*16)
+				hi, _ := c.memMap.Read64(idtBasePhys + uint64(v)*16 + 8)
+				if lo == 0 && hi == 0 {
+					continue
+				}
+				offset := uint64(lo&0xFFFF) |
+					(uint64(lo>>32) & 0xFFFF0000) |
+					(uint64(hi&0xFFFFFFFF) << 32)
+				fmt.Fprintf(os.Stderr, "[intr]   idt[%d] handler=%#x\n", v, offset)
+			}
 		}
 		// Not-present gate ⇒ #NP (#GP for some vectors). M5c returns
 		// the host-level error rather than cascading.
@@ -302,9 +338,21 @@ func (c *CPU) opCPUID() error {
 		// (bit 0) for the rare cases that expect it; nothing else.
 		cx = 1 << 0
 		// EDX features (bits): FPU(0), TSC(4), MSR(5), PAE(6), CX8(8),
-		// APIC(9), SEP(11), PGE(13), CMOV(15), PAT(16), PSE36(17),
+		// SEP(11), PGE(13), CMOV(15), PAT(16), PSE36(17),
 		// MMX(23), FXSR(24), SSE(25), SSE2(26).
-		d = 1<<0 | 1<<4 | 1<<5 | 1<<6 | 1<<8 | 1<<9 | 1<<11 |
+		//
+		// APIC (bit 9) is deliberately OFF. We have no APIC modelled
+		// in the chassis and Linux on x86_64 with this bit set marks
+		// vectors 0x30..0x3F (the legacy PIC range) in system_vectors
+		// expecting lapic_assign_system_vectors() to install them.
+		// With `nolapic noapic` on the kernel command line that path
+		// is a no-op, and idt_setup_apic_and_irq_gates' for_each_
+		// clear_bit_from loop SKIPS those vectors — so the IDT slots
+		// for the timer (vec 48 = IRQ 0) and friends stay zero and
+		// the first IRQ faults "gate not present". Clearing this bit
+		// is the correct advertisement for the configuration we
+		// actually emulate.
+		d = 1<<0 | 1<<4 | 1<<5 | 1<<6 | 1<<8 | 1<<11 |
 			1<<13 | 1<<15 | 1<<16 | 1<<17 | 1<<23 | 1<<24 | 1<<25 | 1<<26
 	case 0x80000000:
 		a = 0x80000004
