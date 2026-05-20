@@ -1052,7 +1052,7 @@ func (c *CPU) writeMSR(num uint32, v uint64) error {
 // of ModR/M selects the operation (4..7); the imm8 is the bit
 // index masked to operandSize*8 - 1.
 func (c *CPU) opGroup8(rex, operandSize uint8) error {
-	m := c.parseModRM64(rex)
+	m := c.parseModRM64WithImm(rex, 1) // BT/BTS/BTR/BTC r/m, imm8
 	imm := uint64(c.fetch8())
 	bitWidth := uint64(operandSize) * 8
 	bitNum := imm & (bitWidth - 1)
@@ -1501,16 +1501,24 @@ func (c *CPU) opALUImmAL(op aluOp) error {
 // Sub-ops: 0=TEST r/m,imm, 1=reserved, 2=NOT, 3=NEG, 4=MUL, 5=IMUL,
 // 6=DIV, 7=IDIV. The 0xF6 byte-operand variant is not yet wired.
 func (c *CPU) opGroup3(rex, operandSize uint8) error {
+	// Sub-op /0 and /1 (TEST) have a trailing immediate whose size
+	// matches the operand width (capped at 32 for 64-bit operands).
+	// Other sub-ops (NOT/NEG/MUL/IMUL/DIV/IDIV) have no immediate.
+	// We can only know which after parsing ModR/M, so call the plain
+	// parser and apply a RIP-relative fixup in the TEST branch.
 	m := c.parseModRM64(rex)
 	switch m.reg {
 	case 0, 1: // TEST r/m, imm. Immediate width = operand size.
 		var imm uint64
 		switch operandSize {
 		case 1:
+			m.shiftEAForImm(1)
 			imm = uint64(c.fetch8())
 		case 2:
+			m.shiftEAForImm(2)
 			imm = uint64(c.fetch16())
 		default:
+			m.shiftEAForImm(4)
 			imm = uint64(int64(int32(c.fetch32())))
 		}
 		dst := c.readOperand(m, operandSize)
@@ -1623,7 +1631,17 @@ func (c *CPU) opIMUL2Op(rex, operandSize uint8) error {
 // — three-operand IMUL: destination = r/m × imm. ModR/M.reg is the
 // destination; ModR/M.rm is the source.
 func (c *CPU) opIMULImm(rex, operandSize uint8, imm8 bool) error {
-	m := c.parseModRM64(rex)
+	// 0x6B = imm8 (sign-extended); 0x69 = imm matching operand size (16
+	// or 32 — never 64, since the imm32 sign-extends to 64).
+	var immBytes uint8
+	if imm8 {
+		immBytes = 1
+	} else if operandSize == 2 {
+		immBytes = 2
+	} else {
+		immBytes = 4
+	}
+	m := c.parseModRM64WithImm(rex, immBytes)
 	var imm int64
 	if imm8 {
 		imm = int64(int8(c.fetch8()))
@@ -1781,7 +1799,13 @@ func bswap(v uint64, operandSize uint8) uint64 {
 // they rotate THROUGH the carry bit, treating CF as an extra bit).
 // Zero-count operations leave all flags unchanged.
 func (c *CPU) opGroup2(rex, operandSize uint8, implicitCount uint64) error {
-	m := c.parseModRM64(rex)
+	// 0xC0/0xC1 take an imm8 (count); 0xD0/D1/D2/D3 take none.
+	// implicitCount==0 ⇒ imm8-encoded count follows the ModRM.
+	var immBytes uint8
+	if implicitCount == 0 {
+		immBytes = 1
+	}
+	m := c.parseModRM64WithImm(rex, immBytes)
 	var count uint64
 	if implicitCount == 0 {
 		count = uint64(c.fetch8())
@@ -1940,7 +1964,19 @@ func (c *CPU) opTEST(rex, operandSize uint8) error {
 // (0..7) lives in ModR/M.reg. operandSize=1 (the 0x80 byte form) uses
 // the REX-aware 8-bit register encoding for r/m.
 func (c *CPU) opGroup1(rex, operandSize uint8, imm8 bool) error {
-	m := c.parseModRM64(rex)
+	// Compute the trailing-immediate size so parseModRM64WithImm can
+	// adjust RIP-relative effective addresses by the right amount.
+	var immBytes uint8
+	if imm8 {
+		immBytes = 1
+	} else if operandSize == 1 {
+		immBytes = 1
+	} else if operandSize == 2 {
+		immBytes = 2
+	} else {
+		immBytes = 4
+	}
+	m := c.parseModRM64WithImm(rex, immBytes)
 	var imm uint64
 	if imm8 {
 		if operandSize == 1 {
@@ -2047,7 +2083,16 @@ func (c *CPU) opGroup5(rex, operandSize uint8) error {
 // opMOVImm implements 0xC7 /0 — MOV r/m, imm. In 64-bit operand mode
 // the immediate is 32 bits, sign-extended to 64.
 func (c *CPU) opMOVImm(rex, operandSize uint8) error {
-	m := c.parseModRM64(rex)
+	// 0xC7 in 64-bit mode takes a 32-bit immediate (sign-extended to
+	// 64); 32/16/8-bit forms take matching immediate widths. The size
+	// must be passed to parseModRM64WithImm so RIP-relative effective
+	// addresses account for the trailing immediate (Intel SDM Vol 2
+	// §2.2.1.6).
+	immBytes := operandSize
+	if operandSize == 8 {
+		immBytes = 4
+	}
+	m := c.parseModRM64WithImm(rex, immBytes)
 	if m.reg != 0 {
 		return unimplemented("Group 11 /%d (only /0 = MOV)", m.reg)
 	}

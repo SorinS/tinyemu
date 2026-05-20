@@ -205,6 +205,72 @@ func TestDecode_LEA_RIPRelative(t *testing.T) {
 	}
 }
 
+// MOV qword [rip+disp32], imm32 — RIP-relative with a trailing imm32.
+// Per Intel SDM Vol 2 §2.2.1.6, the effective address is computed
+// against the RIP of the *next instruction* — i.e. past the imm32.
+// Previously our parseModRM64 used RIP after only the disp32, which
+// puts the store 4 bytes too low and was the root cause of the Linux
+// 6.18 boot failure where the kernel's
+//   mov qword [rip+0xafd40], 0x822c1500
+// split the qword across two adjacent slots and left a partial
+// 0xFFFFFFFF in the wrong location. The downstream
+//   mov rbx, [rdi+0x20]
+// then dereferenced that 0xFFFFFFFF as a pointer and the kernel's
+// boot_pf_handler rejected the fault as out-of-range.
+func TestDecode_MovImm_RIPRelative_TrailingImm(t *testing.T) {
+	c, mm := longModeFlat(t, 0x4000)
+	// 48 c7 05 10 00 00 00 78 56 34 12
+	//   mov qword [rip+0x10], 0x12345678
+	// Instruction is 11 bytes. RIP of next instruction = base + 11.
+	// EA = base + 11 + 0x10 = base + 0x1B.
+	const base = uint64(0x200)
+	loadCode(t, c, mm, base, []byte{
+		0x48, 0xC7, 0x05,
+		0x10, 0x00, 0x00, 0x00, // disp32 = +0x10
+		0x78, 0x56, 0x34, 0x12, // imm32 = 0x12345678 (sign-extends to 0x12345678 since MSB is 0)
+	})
+	stepN(t, c, 1)
+	got, err := mm.Read64(base + 11 + 0x10)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if got != 0x12345678 {
+		t.Errorf("[rip+0x10] = %#x, want %#x — RIP-relative EA off-by-imm bug", got, uint64(0x12345678))
+	}
+	// And the previous qword (where the bug used to land the low bytes) is untouched.
+	prev, _ := mm.Read64(base + 11 + 0x10 - 4)
+	if prev&0xFFFFFFFF != 0 {
+		t.Errorf("[rip+0xC] low4 = %#x, want 0 — store leaked backward", prev)
+	}
+}
+
+// Same shape for an imm8-bearing form (Group 1 imm8: ADD r/m64, imm8
+// sign-extended). 0x83 /0 = ADD.
+func TestDecode_AddImm8_RIPRelative_TrailingImm(t *testing.T) {
+	c, mm := longModeFlat(t, 0x4000)
+	const base = uint64(0x200)
+	// Seed the target with 0x10 so add ends up at 0x11.
+	if err := mm.Write64(base+8+0x20, 0x10); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// 48 83 05 20 00 00 00 01
+	//   add qword [rip+0x20], 0x01
+	// Instruction is 8 bytes. EA = base + 8 + 0x20.
+	loadCode(t, c, mm, base, []byte{
+		0x48, 0x83, 0x05,
+		0x20, 0x00, 0x00, 0x00, // disp32 = +0x20
+		0x01, // imm8 sign-extended
+	})
+	stepN(t, c, 1)
+	got, err := mm.Read64(base + 8 + 0x20)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if got != 0x11 {
+		t.Errorf("[rip+0x20] = %#x, want 0x11 — RIP-relative + imm8 EA off", got)
+	}
+}
+
 // LEA r, m — RIP-relative with a negative displacement.
 func TestDecode_LEA_RIPRelative_Negative(t *testing.T) {
 	c, mm := longModeFlat(t, 4096)

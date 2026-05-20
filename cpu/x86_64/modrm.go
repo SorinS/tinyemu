@@ -25,7 +25,27 @@ type modRMResult struct {
 
 // parseModRM64 parses ModR/M for 64-bit address-size mode (the default
 // in long mode; the only address size supported for now).
+//
+// Equivalent to parseModRM64WithImm(rex, 0); use this form only when
+// the instruction has no trailing immediate operand after the ModR/M
+// (+ SIB + disp). When there IS a trailing immediate, you MUST use
+// parseModRM64WithImm and pass its size — otherwise RIP-relative
+// addressing computes the wrong effective address.
 func (c *CPU) parseModRM64(rex uint8) modRMResult {
+	return c.parseModRM64WithImm(rex, 0)
+}
+
+// parseModRM64WithImm parses ModR/M like parseModRM64 but accepts the
+// size (in bytes) of the immediate operand that follows the ModR/M
+// (+ SIB + disp) bytes. The immediate hasn't been fetched yet at this
+// point — the caller fetches it after parseModRM64WithImm returns —
+// so for RIP-relative addressing we need to add `immBytes` to the
+// computed effective address. Per Intel SDM Vol 2 §2.2.1.6 the
+// RIP-relative offset is "from the address of the instruction
+// following the current one", which means past the immediate. Without
+// the adjustment, `mov qword [rip+disp32], imm32` wrote to EA-4
+// instead of EA — caught while debugging the Linux 6.18 boot.
+func (c *CPU) parseModRM64WithImm(rex uint8, immBytes uint8) modRMResult {
 	mb := c.fetch8()
 	mod := (mb >> 6) & 3
 	reg := (mb >> 3) & 7
@@ -98,8 +118,11 @@ func (c *CPU) parseModRM64(rex uint8) modRMResult {
 	case mod == 0 && rm == 5:
 		// RIP-relative + disp32 in long mode. (In legacy 32-bit mode
 		// this is "absolute disp32"; not supported by parseModRM64.)
+		// The reference RIP is the start of the *next* instruction,
+		// which lives `immBytes` past the end of the disp32 we just
+		// fetched. See header comment.
 		disp := int64(int32(c.fetch32()))
-		ea = c.rip + uint64(disp)
+		ea = c.rip + uint64(disp) + uint64(immBytes)
 		r.ripRelative = true
 
 	default:
@@ -127,4 +150,17 @@ func (c *CPU) parseModRM64(rex uint8) modRMResult {
 	}
 	r.rm = rm
 	return r
+}
+
+// shiftEAForImm adds extraImmBytes to the RIP-relative effective
+// address when the caller could not pass the immediate size up-front
+// (Group 3 is the only such case: the imm size depends on which
+// sub-op the ModR/M.reg field selects). Returns m unchanged for
+// non-RIP-relative operands. Calling this on a non-RIP-relative
+// operand is a no-op; calling it more than once on a RIP-relative
+// operand is a bug — it would double-adjust.
+func (m *modRMResult) shiftEAForImm(extraImmBytes uint8) {
+	if m.ripRelative {
+		m.ea += uint64(extraImmBytes)
+	}
 }
