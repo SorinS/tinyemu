@@ -327,6 +327,792 @@ func (c *CPU) opSSE2(opcode2, rex, repPrefix uint8, has66 bool) (bool, error) {
 		c.xmm[mr.reg] = v
 		return true, nil
 
+	// 0F 2A: CVTSI2SS / CVTSI2SD / CVTPI2PS / CVTPI2PD
+	//   F3 prefix → CVTSI2SS xmm, r/m32 (or r/m64 with REX.W)
+	//   F2 prefix → CVTSI2SD xmm, r/m32 (or r/m64 with REX.W)
+	//   no prefix → CVTPI2PS xmm, mm/m64 (MMX source — packed int→single)
+	//   66 prefix → CVTPI2PD xmm, mm/m64 (MMX source — packed int→double)
+	case 0x2A:
+		mr := c.parseModRM64(rex)
+		if repPrefix == 1 || repPrefix == 2 {
+			// Scalar variants — source is GPR or memory of int.
+			var src int64
+			if rex&rexW != 0 {
+				// 64-bit source
+				if mr.isReg {
+					src = int64(c.GetReg64(int(mr.rm)))
+				} else {
+					src = int64(c.readMem64(c.segBaseForModRM(mr) + mr.ea))
+				}
+			} else {
+				// 32-bit source — sign-extend
+				if mr.isReg {
+					src = int64(int32(c.GetReg32(int(mr.rm))))
+				} else {
+					src = int64(int32(c.readMem32(c.segBaseForModRM(mr) + mr.ea)))
+				}
+			}
+			if repPrefix == 1 {
+				// CVTSI2SS — single precision, low 32 bits of XMM
+				bits := ssemath.Float32bits(float32(src))
+				c.xmm[mr.reg][0] = (c.xmm[mr.reg][0] &^ 0xFFFFFFFF) | uint64(bits)
+			} else {
+				// CVTSI2SD — double precision, low 64 bits of XMM
+				c.xmm[mr.reg][0] = ssemath.Float64bits(float64(src))
+			}
+			return true, nil
+		}
+		// MMX → fp paths (CVTPI2PS, CVTPI2PD) — not yet wired
+		return false, nil
+
+	// 0F 2C: CVTTSS2SI / CVTTSD2SI (truncating fp→int)
+	//   F3 → CVTTSS2SI r32/r64, xmm/m32 (single→int with truncation)
+	//   F2 → CVTTSD2SI r32/r64, xmm/m64 (double→int with truncation)
+	// Truncation means round-toward-zero regardless of MXCSR.
+	case 0x2C:
+		mr := c.parseModRM64(rex)
+		if repPrefix == 1 || repPrefix == 2 {
+			var f float64
+			if repPrefix == 1 {
+				var b uint32
+				if mr.isReg {
+					b = uint32(c.xmm[mr.rm][0])
+				} else {
+					b = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
+				}
+				f = float64(ssemath.Float32frombits(b))
+			} else {
+				var b uint64
+				if mr.isReg {
+					b = c.xmm[mr.rm][0]
+				} else {
+					b = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+				}
+				f = ssemath.Float64frombits(b)
+			}
+			// Truncate toward zero. NaN / overflow → SDM says result
+			// is INT_MIN (saturate). Go's int conversion of NaN is
+			// undefined; clamp explicitly.
+			var r int64
+			if ssemath.IsNaN(f) {
+				r = ssemath.MinInt64
+			} else if rex&rexW != 0 {
+				if f >= float64(ssemath.MaxInt64) {
+					r = ssemath.MaxInt64
+				} else if f <= float64(ssemath.MinInt64) {
+					r = ssemath.MinInt64
+				} else {
+					r = int64(f) // truncation toward zero
+				}
+			} else {
+				if f >= float64(ssemath.MaxInt32) {
+					r = int64(ssemath.MinInt32) // SDM "indefinite integer"
+				} else if f <= float64(ssemath.MinInt32) {
+					r = int64(ssemath.MinInt32)
+				} else {
+					r = int64(int32(f))
+				}
+			}
+			if rex&rexW != 0 {
+				c.SetReg64(int(mr.reg), uint64(r))
+			} else {
+				c.SetReg32(int(mr.reg), uint32(int32(r)))
+			}
+			return true, nil
+		}
+		return false, nil
+
+	// 0F 2D: CVTSS2SI / CVTSD2SI (round-using-MXCSR fp→int)
+	// We don't implement MXCSR rounding modes — round-to-nearest
+	// (Go's default) is the SSE default at startup and what almost
+	// every program uses.
+	case 0x2D:
+		mr := c.parseModRM64(rex)
+		if repPrefix == 1 || repPrefix == 2 {
+			var f float64
+			if repPrefix == 1 {
+				var b uint32
+				if mr.isReg {
+					b = uint32(c.xmm[mr.rm][0])
+				} else {
+					b = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
+				}
+				f = float64(ssemath.Float32frombits(b))
+			} else {
+				var b uint64
+				if mr.isReg {
+					b = c.xmm[mr.rm][0]
+				} else {
+					b = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+				}
+				f = ssemath.Float64frombits(b)
+			}
+			// Round to nearest, ties to even (RN — the SSE default).
+			rounded := ssemath.RoundToEven(f)
+			var r int64
+			if ssemath.IsNaN(rounded) {
+				r = ssemath.MinInt64
+			} else if rex&rexW != 0 {
+				if rounded >= float64(ssemath.MaxInt64) {
+					r = ssemath.MaxInt64
+				} else if rounded <= float64(ssemath.MinInt64) {
+					r = ssemath.MinInt64
+				} else {
+					r = int64(rounded)
+				}
+			} else {
+				if rounded >= float64(ssemath.MaxInt32) {
+					r = int64(ssemath.MinInt32)
+				} else if rounded <= float64(ssemath.MinInt32) {
+					r = int64(ssemath.MinInt32)
+				} else {
+					r = int64(int32(rounded))
+				}
+			}
+			if rex&rexW != 0 {
+				c.SetReg64(int(mr.reg), uint64(r))
+			} else {
+				c.SetReg32(int(mr.reg), uint32(int32(r)))
+			}
+			return true, nil
+		}
+		return false, nil
+
+	// 0F 51 / 58 / 59 / 5C / 5D / 5E / 5F: SSE FP arithmetic.
+	//   F3 prefix → scalar single (low 32 of XMM)
+	//   F2 prefix → scalar double (low 64 of XMM)
+	//   66 prefix → packed double (2 × 64-bit lanes)
+	//   no prefix → packed single (4 × 32-bit lanes)
+	// 0x51=SQRT, 0x58=ADD, 0x59=MUL, 0x5C=SUB, 0x5D=MIN, 0x5E=DIV, 0x5F=MAX.
+	case 0x51, 0x58, 0x59, 0x5C, 0x5D, 0x5E, 0x5F:
+		mr := c.parseModRM64(rex)
+		isSqrt := opcode2 == 0x51
+		op2 := func(a, b float64) float64 {
+			switch opcode2 {
+			case 0x58:
+				return a + b
+			case 0x59:
+				return a * b
+			case 0x5C:
+				return a - b
+			case 0x5D:
+				if a < b {
+					return a
+				}
+				return b
+			case 0x5E:
+				return a / b
+			case 0x5F:
+				if a > b {
+					return a
+				}
+				return b
+			}
+			return a
+		}
+		op2f32 := func(a, b float32) float32 {
+			switch opcode2 {
+			case 0x58:
+				return a + b
+			case 0x59:
+				return a * b
+			case 0x5C:
+				return a - b
+			case 0x5D:
+				if a < b {
+					return a
+				}
+				return b
+			case 0x5E:
+				return a / b
+			case 0x5F:
+				if a > b {
+					return a
+				}
+				return b
+			}
+			return a
+		}
+		if repPrefix == 2 {
+			// Scalar double — low 64 bits of XMM
+			var srcBits uint64
+			if mr.isReg {
+				srcBits = c.xmm[mr.rm][0]
+			} else {
+				srcBits = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+			}
+			b := ssemath.Float64frombits(srcBits)
+			var r float64
+			if isSqrt {
+				r = ssemath.Sqrt(b)
+			} else {
+				a := ssemath.Float64frombits(c.xmm[mr.reg][0])
+				r = op2(a, b)
+			}
+			c.xmm[mr.reg][0] = ssemath.Float64bits(r)
+			return true, nil
+		}
+		if repPrefix == 1 {
+			// Scalar single — low 32 bits of XMM
+			var srcBits uint32
+			if mr.isReg {
+				srcBits = uint32(c.xmm[mr.rm][0])
+			} else {
+				srcBits = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
+			}
+			b := ssemath.Float32frombits(srcBits)
+			var r float32
+			if isSqrt {
+				r = float32(ssemath.Sqrt(float64(b)))
+			} else {
+				a := ssemath.Float32frombits(uint32(c.xmm[mr.reg][0]))
+				r = op2f32(a, b)
+			}
+			c.xmm[mr.reg][0] = (c.xmm[mr.reg][0] &^ 0xFFFFFFFF) | uint64(ssemath.Float32bits(r))
+			return true, nil
+		}
+		if has66 {
+			// Packed double — 2 lanes of 64-bit
+			var src [2]uint64
+			if mr.isReg {
+				src = c.xmm[mr.rm]
+			} else {
+				src = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+			}
+			dst := c.xmm[mr.reg]
+			for i := 0; i < 2; i++ {
+				b := ssemath.Float64frombits(src[i])
+				var r float64
+				if isSqrt {
+					r = ssemath.Sqrt(b)
+				} else {
+					a := ssemath.Float64frombits(dst[i])
+					r = op2(a, b)
+				}
+				dst[i] = ssemath.Float64bits(r)
+			}
+			c.xmm[mr.reg] = dst
+			return true, nil
+		}
+		// Packed single — 4 lanes of 32-bit
+		var src [2]uint64
+		if mr.isReg {
+			src = c.xmm[mr.rm]
+		} else {
+			src = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+		}
+		dst := c.xmm[mr.reg]
+		for i := 0; i < 4; i++ {
+			var srcLane uint32
+			if i < 2 {
+				srcLane = uint32(src[0] >> (uint(i) * 32))
+			} else {
+				srcLane = uint32(src[1] >> (uint(i-2) * 32))
+			}
+			b := ssemath.Float32frombits(srcLane)
+			var r float32
+			if isSqrt {
+				r = float32(ssemath.Sqrt(float64(b)))
+			} else {
+				var dstLane uint32
+				if i < 2 {
+					dstLane = uint32(dst[0] >> (uint(i) * 32))
+				} else {
+					dstLane = uint32(dst[1] >> (uint(i-2) * 32))
+				}
+				a := ssemath.Float32frombits(dstLane)
+				r = op2f32(a, b)
+			}
+			rb := uint64(ssemath.Float32bits(r))
+			if i < 2 {
+				mask := uint64(0xFFFFFFFF) << (uint(i) * 32)
+				dst[0] = (dst[0] &^ mask) | (rb << (uint(i) * 32))
+			} else {
+				mask := uint64(0xFFFFFFFF) << (uint(i-2) * 32)
+				dst[1] = (dst[1] &^ mask) | (rb << (uint(i-2) * 32))
+			}
+		}
+		c.xmm[mr.reg] = dst
+		return true, nil
+
+	// 0F DA / DE: PMINUB / PMAXUB — packed unsigned-byte min/max.
+	// MMX (no prefix) or SSE2 (66 prefix) — 8 or 16 bytes per lane.
+	case 0xDA, 0xDE:
+		mr := c.parseModRM64(rex)
+		isMax := opcode2 == 0xDE
+		choose := func(a, b byte) byte {
+			if isMax {
+				if a > b {
+					return a
+				}
+				return b
+			}
+			if a < b {
+				return a
+			}
+			return b
+		}
+		if has66 {
+			var src [2]uint64
+			if mr.isReg {
+				src = c.xmm[mr.rm]
+			} else {
+				src = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+			}
+			dst := c.xmm[mr.reg]
+			for i := 0; i < 16; i++ {
+				ai := byte(dst[i/8] >> (uint(i%8) * 8))
+				bi := byte(src[i/8] >> (uint(i%8) * 8))
+				r := uint64(choose(ai, bi))
+				m := uint64(0xFF) << (uint(i%8) * 8)
+				dst[i/8] = (dst[i/8] &^ m) | (r << (uint(i%8) * 8))
+			}
+			c.xmm[mr.reg] = dst
+		} else {
+			var v uint64
+			if mr.isReg {
+				v = c.mm[mr.rm&7]
+			} else {
+				v = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+			}
+			d := c.mm[mr.reg&7]
+			var out uint64
+			for i := 0; i < 8; i++ {
+				ai := byte(d >> (uint(i) * 8))
+				bi := byte(v >> (uint(i) * 8))
+				out |= uint64(choose(ai, bi)) << (uint(i) * 8)
+			}
+			c.mm[mr.reg&7] = out
+		}
+		return true, nil
+
+	// 0F EA / EE: PMINSW / PMAXSW — packed signed-word min/max.
+	case 0xEA, 0xEE:
+		mr := c.parseModRM64(rex)
+		isMax := opcode2 == 0xEE
+		choose := func(a, b int16) int16 {
+			if isMax {
+				if a > b {
+					return a
+				}
+				return b
+			}
+			if a < b {
+				return a
+			}
+			return b
+		}
+		if has66 {
+			var src [2]uint64
+			if mr.isReg {
+				src = c.xmm[mr.rm]
+			} else {
+				src = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+			}
+			dst := c.xmm[mr.reg]
+			for i := 0; i < 8; i++ {
+				ai := int16(dst[i/4] >> (uint(i%4) * 16))
+				bi := int16(src[i/4] >> (uint(i%4) * 16))
+				r := uint64(uint16(choose(ai, bi)))
+				m := uint64(0xFFFF) << (uint(i%4) * 16)
+				dst[i/4] = (dst[i/4] &^ m) | (r << (uint(i%4) * 16))
+			}
+			c.xmm[mr.reg] = dst
+		} else {
+			var v uint64
+			if mr.isReg {
+				v = c.mm[mr.rm&7]
+			} else {
+				v = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+			}
+			d := c.mm[mr.reg&7]
+			var out uint64
+			for i := 0; i < 4; i++ {
+				ai := int16(d >> (uint(i) * 16))
+				bi := int16(v >> (uint(i) * 16))
+				out |= uint64(uint16(choose(ai, bi))) << (uint(i) * 16)
+			}
+			c.mm[mr.reg&7] = out
+		}
+		return true, nil
+
+	// 0F F0 /r: LDDQU xmm, m128 — unaligned 128-bit load (F2 prefix).
+	// Semantically identical to MOVDQU (which is 0F 6F with F3 prefix);
+	// the encoding exists for cache-line crossing optimization that we
+	// don't model.
+	case 0xF0:
+		mr := c.parseModRM64(rex)
+		if !mr.isReg {
+			c.xmm[mr.reg] = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+		} else {
+			c.xmm[mr.reg] = c.xmm[mr.rm]
+		}
+		return true, nil
+
+	// 0F F6 /r: PSADBW — sum of absolute byte differences. Computes
+	// |a[i]-b[i]| for i in 0..7 (or 0..15 for SSE2), sums them into
+	// the low word of the destination (per 64-bit lane).
+	case 0xF6:
+		mr := c.parseModRM64(rex)
+		if has66 {
+			var src [2]uint64
+			if mr.isReg {
+				src = c.xmm[mr.rm]
+			} else {
+				src = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+			}
+			dst := c.xmm[mr.reg]
+			for half := 0; half < 2; half++ {
+				var sum uint64
+				for i := 0; i < 8; i++ {
+					a := int(byte(dst[half] >> (uint(i) * 8)))
+					b := int(byte(src[half] >> (uint(i) * 8)))
+					d := a - b
+					if d < 0 {
+						d = -d
+					}
+					sum += uint64(d)
+				}
+				dst[half] = sum & 0xFFFF
+			}
+			c.xmm[mr.reg] = dst
+		} else {
+			var v uint64
+			if mr.isReg {
+				v = c.mm[mr.rm&7]
+			} else {
+				v = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+			}
+			d := c.mm[mr.reg&7]
+			var sum uint64
+			for i := 0; i < 8; i++ {
+				a := int(byte(d >> (uint(i) * 8)))
+				b := int(byte(v >> (uint(i) * 8)))
+				diff := a - b
+				if diff < 0 {
+					diff = -diff
+				}
+				sum += uint64(diff)
+			}
+			c.mm[mr.reg&7] = sum & 0xFFFF
+		}
+		return true, nil
+
+	// 0F E0 /r: PAVGB — packed average byte
+	// 0F E3 /r: PAVGW — packed average word
+	case 0xE0, 0xE3:
+		mr := c.parseModRM64(rex)
+		isWord := opcode2 == 0xE3
+		if has66 {
+			var src [2]uint64
+			if mr.isReg {
+				src = c.xmm[mr.rm]
+			} else {
+				src = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+			}
+			dst := c.xmm[mr.reg]
+			if isWord {
+				for i := 0; i < 8; i++ {
+					a := uint32(uint16(dst[i/4] >> (uint(i%4) * 16)))
+					b := uint32(uint16(src[i/4] >> (uint(i%4) * 16)))
+					avg := (a + b + 1) >> 1
+					m := uint64(0xFFFF) << (uint(i%4) * 16)
+					dst[i/4] = (dst[i/4] &^ m) | (uint64(avg) << (uint(i%4) * 16))
+				}
+			} else {
+				for i := 0; i < 16; i++ {
+					a := uint32(byte(dst[i/8] >> (uint(i%8) * 8)))
+					b := uint32(byte(src[i/8] >> (uint(i%8) * 8)))
+					avg := (a + b + 1) >> 1
+					m := uint64(0xFF) << (uint(i%8) * 8)
+					dst[i/8] = (dst[i/8] &^ m) | (uint64(avg&0xFF) << (uint(i%8) * 8))
+				}
+			}
+			c.xmm[mr.reg] = dst
+		} else {
+			var v uint64
+			if mr.isReg {
+				v = c.mm[mr.rm&7]
+			} else {
+				v = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+			}
+			d := c.mm[mr.reg&7]
+			var out uint64
+			if isWord {
+				for i := 0; i < 4; i++ {
+					a := uint32(uint16(d >> (uint(i) * 16)))
+					b := uint32(uint16(v >> (uint(i) * 16)))
+					avg := (a + b + 1) >> 1
+					out |= uint64(avg&0xFFFF) << (uint(i) * 16)
+				}
+			} else {
+				for i := 0; i < 8; i++ {
+					a := uint32(byte(d >> (uint(i) * 8)))
+					b := uint32(byte(v >> (uint(i) * 8)))
+					avg := (a + b + 1) >> 1
+					out |= uint64(avg&0xFF) << (uint(i) * 8)
+				}
+			}
+			c.mm[mr.reg&7] = out
+		}
+		return true, nil
+
+	// 0F 12 /r: MOVLPS / MOVLPD / MOVHLPS / MOVDDUP
+	//   no prefix, mem src → MOVLPS xmm, m64  (load low 64 into low 64 of dst, high 64 preserved)
+	//   no prefix, reg src → MOVHLPS xmm, xmm (high 64 of src → low 64 of dst)
+	//   66 prefix → MOVLPD xmm, m64
+	//   F2 prefix → MOVDDUP xmm, m64/xmm (duplicate low 64 into both halves)
+	//   F3 prefix → MOVSLDUP — duplicate even-indexed singles (SSE3)
+	case 0x12:
+		mr := c.parseModRM64(rex)
+		dst := c.xmm[mr.reg]
+		if repPrefix == 2 {
+			// MOVDDUP
+			var v uint64
+			if mr.isReg {
+				v = c.xmm[mr.rm][0]
+			} else {
+				v = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+			}
+			c.xmm[mr.reg] = [2]uint64{v, v}
+			return true, nil
+		}
+		if mr.isReg && !has66 && repPrefix == 0 {
+			// MOVHLPS — high 64 of src → low 64 of dst, high unchanged
+			c.xmm[mr.reg] = [2]uint64{c.xmm[mr.rm][1], dst[1]}
+			return true, nil
+		}
+		// MOVLPS / MOVLPD — load 64 bits from memory into low 64 of dst
+		v := c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+		c.xmm[mr.reg] = [2]uint64{v, dst[1]}
+		return true, nil
+
+	// 0F 13 /r: MOVLPS / MOVLPD store — write low 64 of dst to m64
+	case 0x13:
+		mr := c.parseModRM64(rex)
+		if !mr.isReg {
+			c.writeMem64(c.segBaseForModRM(mr)+mr.ea, c.xmm[mr.reg][0])
+		}
+		return true, nil
+
+	// 0F 16 /r: MOVHPS / MOVHPD / MOVLHPS
+	//   no prefix, mem src → MOVHPS xmm, m64 (load 64 into high 64 of dst)
+	//   no prefix, reg src → MOVLHPS xmm, xmm (low 64 of src → high 64 of dst)
+	//   66 prefix → MOVHPD
+	//   F3 prefix → MOVSHDUP (SSE3, duplicate odd singles)
+	case 0x16:
+		mr := c.parseModRM64(rex)
+		dst := c.xmm[mr.reg]
+		if mr.isReg && !has66 && repPrefix == 0 {
+			// MOVLHPS — low 64 of src → high 64 of dst, low unchanged
+			c.xmm[mr.reg] = [2]uint64{dst[0], c.xmm[mr.rm][0]}
+			return true, nil
+		}
+		// MOVHPS / MOVHPD — load 64 bits from memory into high 64 of dst
+		v := c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+		c.xmm[mr.reg] = [2]uint64{dst[0], v}
+		return true, nil
+
+	// 0F 17 /r: MOVHPS / MOVHPD store — write high 64 of dst to m64
+	case 0x17:
+		mr := c.parseModRM64(rex)
+		if !mr.isReg {
+			c.writeMem64(c.segBaseForModRM(mr)+mr.ea, c.xmm[mr.reg][1])
+		}
+		return true, nil
+
+	// 0F C2 /r ib: CMPPS / CMPSS / CMPPD / CMPSD — FP compare with
+	// immediate predicate. imm8 selects the predicate (0=EQ, 1=LT,
+	// 2=LE, 3=UNORD, 4=NEQ, 5=NLT, 6=NLE, 7=ORD). Result lanes are
+	// all-ones (true) or all-zeros (false) per comparison.
+	//   F3 → CMPSS  (single scalar)
+	//   F2 → CMPSD  (double scalar)
+	//   66 → CMPPD  (packed double, 2 lanes)
+	//   no → CMPPS  (packed single, 4 lanes)
+	case 0xC2:
+		mr := c.parseModRM64WithImm(rex, 1)
+		var src [2]uint64
+		if mr.isReg {
+			src = c.xmm[mr.rm]
+		} else {
+			src = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+		}
+		imm := c.fetch8() & 7
+		cmp64 := func(a, b float64) bool {
+			if ssemath.IsNaN(a) || ssemath.IsNaN(b) {
+				return imm == 3 || imm == 4
+			}
+			switch imm {
+			case 0:
+				return a == b
+			case 1:
+				return a < b
+			case 2:
+				return a <= b
+			case 3:
+				return false // UNORD: already handled
+			case 4:
+				return a != b
+			case 5:
+				return !(a < b)
+			case 6:
+				return !(a <= b)
+			case 7:
+				return true // ORD: not NaN
+			}
+			return false
+		}
+		cmp32 := func(a, b float32) bool {
+			af, bf := float64(a), float64(b)
+			return cmp64(af, bf)
+		}
+		dst := c.xmm[mr.reg]
+		if repPrefix == 2 {
+			// CMPSD — low 64 only
+			a := ssemath.Float64frombits(dst[0])
+			b := ssemath.Float64frombits(src[0])
+			if cmp64(a, b) {
+				dst[0] = ^uint64(0)
+			} else {
+				dst[0] = 0
+			}
+			c.xmm[mr.reg] = dst
+			return true, nil
+		}
+		if repPrefix == 1 {
+			// CMPSS — low 32 only
+			a := ssemath.Float32frombits(uint32(dst[0]))
+			b := ssemath.Float32frombits(uint32(src[0]))
+			mask := uint32(0)
+			if cmp32(a, b) {
+				mask = ^uint32(0)
+			}
+			dst[0] = (dst[0] &^ 0xFFFFFFFF) | uint64(mask)
+			c.xmm[mr.reg] = dst
+			return true, nil
+		}
+		if has66 {
+			// CMPPD — 2 × 64-bit
+			for i := 0; i < 2; i++ {
+				a := ssemath.Float64frombits(dst[i])
+				b := ssemath.Float64frombits(src[i])
+				if cmp64(a, b) {
+					dst[i] = ^uint64(0)
+				} else {
+					dst[i] = 0
+				}
+			}
+			c.xmm[mr.reg] = dst
+			return true, nil
+		}
+		// CMPPS — 4 × 32-bit
+		for i := 0; i < 4; i++ {
+			var aBits, bBits uint32
+			if i < 2 {
+				aBits = uint32(dst[0] >> (uint(i) * 32))
+				bBits = uint32(src[0] >> (uint(i) * 32))
+			} else {
+				aBits = uint32(dst[1] >> (uint(i-2) * 32))
+				bBits = uint32(src[1] >> (uint(i-2) * 32))
+			}
+			a := ssemath.Float32frombits(aBits)
+			b := ssemath.Float32frombits(bBits)
+			mask := uint32(0)
+			if cmp32(a, b) {
+				mask = ^uint32(0)
+			}
+			rb := uint64(mask)
+			if i < 2 {
+				m := uint64(0xFFFFFFFF) << (uint(i) * 32)
+				dst[0] = (dst[0] &^ m) | (rb << (uint(i) * 32))
+			} else {
+				m := uint64(0xFFFFFFFF) << (uint(i-2) * 32)
+				dst[1] = (dst[1] &^ m) | (rb << (uint(i-2) * 32))
+			}
+		}
+		c.xmm[mr.reg] = dst
+		return true, nil
+
+	// 0F C6 /r ib: SHUFPS / SHUFPD — pick lanes from dst/src by imm8.
+	//   no prefix → SHUFPS (4 × 32-bit lanes; 8-bit imm picks 4 × 2-bit
+	//     selectors: low 2 bits from dst[imm8[1:0]], next 2 from
+	//     dst[imm8[3:2]], next 2 from src[imm8[5:4]], top 2 from
+	//     src[imm8[7:6]]).
+	//   66 prefix → SHUFPD (2 × 64-bit lanes; imm8[0] picks dst lane,
+	//     imm8[1] picks src lane).
+	case 0xC6:
+		mr := c.parseModRM64WithImm(rex, 1)
+		var src [2]uint64
+		if mr.isReg {
+			src = c.xmm[mr.rm]
+		} else {
+			src = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+		}
+		imm := c.fetch8()
+		dst := c.xmm[mr.reg]
+		var out [2]uint64
+		if has66 {
+			// SHUFPD — 2 × 64-bit
+			if imm&1 == 0 {
+				out[0] = dst[0]
+			} else {
+				out[0] = dst[1]
+			}
+			if imm&2 == 0 {
+				out[1] = src[0]
+			} else {
+				out[1] = src[1]
+			}
+		} else {
+			// SHUFPS — 4 × 32-bit
+			lane32 := func(v [2]uint64, idx uint8) uint32 {
+				if idx < 2 {
+					return uint32(v[0] >> (uint(idx) * 32))
+				}
+				return uint32(v[1] >> (uint(idx-2) * 32))
+			}
+			l0 := lane32(dst, imm&3)
+			l1 := lane32(dst, (imm>>2)&3)
+			l2 := lane32(src, (imm>>4)&3)
+			l3 := lane32(src, (imm>>6)&3)
+			out[0] = uint64(l0) | (uint64(l1) << 32)
+			out[1] = uint64(l2) | (uint64(l3) << 32)
+		}
+		c.xmm[mr.reg] = out
+		return true, nil
+
+	// 0F 5A: CVTSS2SD / CVTSD2SS / CVTPS2PD / CVTPD2PS — between
+	// single and double precision.
+	//   F3 → CVTSS2SD xmm, xmm/m32 — single→double, low 64 of XMM
+	//   F2 → CVTSD2SS xmm, xmm/m64 — double→single, low 32 of XMM
+	//   no prefix → CVTPS2PD — packed single→double (2 lanes)
+	//   66 → CVTPD2PS — packed double→single (2 lanes)
+	case 0x5A:
+		mr := c.parseModRM64(rex)
+		if repPrefix == 1 {
+			var b uint32
+			if mr.isReg {
+				b = uint32(c.xmm[mr.rm][0])
+			} else {
+				b = c.readMem32(c.segBaseForModRM(mr) + mr.ea)
+			}
+			f := float64(ssemath.Float32frombits(b))
+			c.xmm[mr.reg][0] = ssemath.Float64bits(f)
+			return true, nil
+		}
+		if repPrefix == 2 {
+			var b uint64
+			if mr.isReg {
+				b = c.xmm[mr.rm][0]
+			} else {
+				b = c.readMem64(c.segBaseForModRM(mr) + mr.ea)
+			}
+			f := float32(ssemath.Float64frombits(b))
+			c.xmm[mr.reg][0] = (c.xmm[mr.reg][0] &^ 0xFFFFFFFF) | uint64(ssemath.Float32bits(f))
+			return true, nil
+		}
+		return false, nil
+
 	// UCOMISS/UCOMISD/COMISS/COMISD
 	case 0x2E, 0x2F:
 		mr := c.parseModRM64(rex)

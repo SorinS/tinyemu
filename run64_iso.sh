@@ -18,12 +18,14 @@
 
 set -e
 
-if [ $# -ne 1 ]; then
-    echo "Usage: $0 <tinycore|alpine-debug>" >&2
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+    echo "Usage: $0 <tinycore|alpine-debug> [bare]" >&2
+    echo "  bare: drop straight to /bin/sh from initramfs (no Alpine init script)" >&2
     exit 1
 fi
 
 NAME=$1
+VARIANT=${2:-}
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 OS=$(uname -s | tr A-Z a-z)
 ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
@@ -64,22 +66,18 @@ case $NAME in
             KERNEL="$ROOT/bin/alpine64-debug/vmlinuz-virt"
         fi
         INITRD="$ROOT/bin/alpine64-debug/initramfs-virt"
+        ISO="$ROOT/bin/iso/alpine-virt-3.19.1-x86-64.iso"
         MEM=512
-        # rdinit=/bin/sh: bypass Alpine's /init shell script entirely
-        # (which calls nlplug-findfs and hangs waiting for boot media we
-        # don't have) and drop straight into a busybox shell from the
-        # initramfs. We get a usable PID-1 shell to verify the boot
-        # works end-to-end. Without this, init's nlplug-findfs scans
-        # for /dev/sda* etc. indefinitely.
+        # Matches run86_iso.sh's alpine path: attach the Alpine ISO as
+        # virtio-blk-pci /dev/vda, tell Alpine's init it's the boot
+        # media, load the virtio modules it needs to mount it.
         #
-        # modloop=none: belt-and-suspenders skip of the Alpine modloop
-        # mount; redundant once rdinit=/bin/sh bypasses /init entirely
-        # but harmless.
+        # libata.force=disable ide=disable: skip the legacy IDE/SATA
+        # probe (we have no IDE controller; the probe times out slowly).
         #
-        # module.sig_enforce=0: skip per-module RSA-SHA256 signature
-        # verification (no value for our use, expensive under software
-        # big-int math).
-        APPEND="console=ttyS0,115200 loglevel=8 earlyprintk=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable modloop=none module.sig_enforce=0 rdinit=/bin/sh"
+        # module.sig_enforce=0: skip per-module RSA-SHA256 verify
+        # (no value here, expensive under software big-int math).
+        APPEND="console=ttyS0,115200 loglevel=8 earlyprintk=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable libata.force=disable ide=disable alpine_dev=vda:iso9660 usbdelay=1 modules=virtio_pci,virtio_blk,virtio_net,loop,squashfs module.sig_enforce=0"
         ;;
     *)
         echo "unknown OS '$NAME'" >&2
@@ -89,10 +87,32 @@ esac
 
 [ -r "$KERNEL" ] || { echo "missing kernel: $KERNEL" >&2; exit 1; }
 
+# `bare` variant: bypass Alpine's /init script (which calls nlplug-findfs
+# and would normally probe boot media), drop straight to /bin/sh from
+# the initramfs. Useful when the ISO isn't attached or for diagnosing
+# the kernel boot path in isolation.
+case $VARIANT in
+    "")
+        ;;
+    bare)
+        APPEND="$APPEND rdinit=/bin/sh"
+        # Keep the ISO attached so you can insmod virtio_blk and mount
+        # /dev/vda manually from the shell — useful for debugging the
+        # I/O path in isolation.
+        echo "[run64_iso] bare mode: rdinit=/bin/sh (no Alpine init, raw busybox shell)"
+        ;;
+    *)
+        echo "Unknown variant '$VARIANT' (expected: bare)" >&2
+        exit 1
+        ;;
+esac
+
 echo "Starting $NAME (x86_64) at: $(date)"
 
-if [ -n "$INITRD" ] && [ -r "$INITRD" ]; then
-    exec "$TEMU" -machine x86_64 -m "$MEM" -kernel "$KERNEL" -initrd "$INITRD" -net-user -append "$APPEND"
-else
-    exec "$TEMU" -machine x86_64 -m "$MEM" -kernel "$KERNEL" -net-user -append "$APPEND"
-fi
+# Build the exec args. Use eval-friendly array semantics.
+ARGS="-machine x86_64 -m $MEM -kernel $KERNEL"
+[ -n "$INITRD" ] && [ -r "$INITRD" ] && ARGS="$ARGS -initrd $INITRD"
+[ -n "$ISO" ] && [ -r "$ISO" ] && ARGS="$ARGS -drive $ISO -ro"
+ARGS="$ARGS -net-user -append"
+
+exec "$TEMU" $ARGS "$APPEND"
