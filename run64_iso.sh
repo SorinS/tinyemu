@@ -19,8 +19,11 @@
 set -e
 
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
-    echo "Usage: $0 <tinycore|alpine-debug> [bare]" >&2
-    echo "  bare: drop straight to /bin/sh from initramfs (no Alpine init script)" >&2
+    echo "Usage: $0 <tinycore|alpine|alpine-debug> [bare|nohw|nomodloop|fast|superfast]" >&2
+    echo "  alpine       : Alpine-standard x86_64 (same path as run86_iso.sh alpine)" >&2
+    echo "  alpine-debug : Alpine-virt x86_64 with full System.map for fault triage" >&2
+    echo "  bare         : drop straight to /bin/sh from initramfs" >&2
+    echo "  nohw/.../fast: use patched initrd variant from bin/alpine64/" >&2
     exit 1
 fi
 
@@ -49,6 +52,19 @@ case $NAME in
         # printk output so missing-opcode failures get a clear
         # context. console_msg_format=syslog/timestamp adds prefixes.
         APPEND="console=ttyS0,115200 loglevel=8 earlyprintk=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable cde"
+        ;;
+    alpine)
+        # Alpine-standard x86_64 — same boot path as run86_iso.sh's
+        # alpine target. The /init script + initramfs were proven to
+        # boot end-to-end on the 32-bit emulator; reusing the standard
+        # ISO's flow (rather than alpine-virt's) on x86_64 gives the
+        # same shell-with-OpenRC experience.
+        "$ROOT/scripts/extract_alpine64.sh"
+        KERNEL="$ROOT/bin/alpine64/vmlinuz"
+        INITRD="$ROOT/bin/alpine64/initrd"
+        ISO="$ROOT/bin/alpine/alpine-standard-3.23.4-x86_64.iso"
+        MEM=512
+        APPEND="console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable libata.force=disable ide=disable alpine_dev=vda:iso9660 usbdelay=1 modules=virtio_pci,virtio_blk,virtio_net,loop,squashfs module.sig_enforce=0"
         ;;
     alpine-debug)
         # Alpine 3.19 'virt' x86_64 kernel — extracted from
@@ -101,8 +117,20 @@ case $VARIANT in
         # I/O path in isolation.
         echo "[run64_iso] bare mode: rdinit=/bin/sh (no Alpine init, raw busybox shell)"
         ;;
+    nohw|nomodloop|fast|superfast)
+        # Use the matching patched-initrd variant (built by
+        # scripts/extract_alpine64.sh). Each variant skips slow OpenRC
+        # services to shorten boot time.
+        candidate="$ROOT/bin/alpine64/initrd.$VARIANT"
+        if [ -f "$candidate" ]; then
+            INITRD="$candidate"
+            echo "[run64_iso] using $VARIANT initrd ($candidate)"
+        else
+            echo "[run64_iso] warning: '$VARIANT' has no effect (missing $candidate)" >&2
+        fi
+        ;;
     *)
-        echo "Unknown variant '$VARIANT' (expected: bare)" >&2
+        echo "Unknown variant '$VARIANT' (expected: bare|nohw|nomodloop|fast|superfast)" >&2
         exit 1
         ;;
 esac
