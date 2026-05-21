@@ -2904,11 +2904,23 @@ func (c *CPU) segBaseForModRM(m modRMResult) uint64 {
 	return c.segBase[seg]
 }
 
+// push64 implements the architectural PUSH: the write at [new RSP]
+// happens BEFORE RSP commits, so a #PF on the store (lazily-allocated
+// stack page) leaves RSP unchanged. Without this, Step's deferred
+// recover rewinds c.rip for kernel #PF delivery, the kernel handles
+// the PF, IRETQ returns to the same CALL/PUSH, and the re-executed
+// push subtracts ANOTHER 8 from RSP — silently corrupting the stack
+// frame by 8 bytes for every PF-during-push. (Symptom: fork-wrapper's
+// epilogue pops from the wrong slot, RET reads the saved RBP slot,
+// jumps to RBP's value, NX fault, init dies.)
 func (c *CPU) push64(v uint64) {
-	c.reg64[RSP] -= 8
-	c.writeMem64(c.reg64[RSP], v)
+	newRSP := c.reg64[RSP] - 8
+	c.writeMem64(newRSP, v)
+	c.reg64[RSP] = newRSP
 }
 
+// pop64 already reads before incrementing RSP, so a #PF on the load
+// leaves RSP unchanged — the architecturally-correct behaviour.
 func (c *CPU) pop64() uint64 {
 	v := c.readMem64(c.reg64[RSP])
 	c.reg64[RSP] += 8

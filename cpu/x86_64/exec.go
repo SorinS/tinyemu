@@ -36,8 +36,52 @@ const (
 // *PageFaultError (Phase 5 will route this back through the IDT as a
 // #PF). For any other failure mode it returns a wrapped
 // ErrNotImplemented or a plain error.
+// ripRing is a debug-only circular buffer of the last 32 RIPs we've
+// executed. Enabled by setting TINYEMU_X64_RIPTRAP=1. When a user-mode
+// instruction-fetch fault hits (the fault address equals RIP), the
+// ring is dumped so the caller can identify the indirect CALL/JMP/RET
+// that landed on a non-executable page.  Off by default to avoid
+// per-Step overhead in production.
+const ripRingSize = 32
+
+var (
+	ripRing       [ripRingSize]uint64
+	ripRingIdx    int
+	ripRingFull   bool
+	ripTrapEnabled = os.Getenv("TINYEMU_X64_RIPTRAP") == "1"
+)
+
+func recordRIP(r uint64) {
+	if !ripTrapEnabled {
+		return
+	}
+	ripRing[ripRingIdx] = r
+	ripRingIdx = (ripRingIdx + 1) % ripRingSize
+	if ripRingIdx == 0 {
+		ripRingFull = true
+	}
+}
+
+func dumpRipRing(label string) {
+	if !ripTrapEnabled {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[%s] last %d RIPs (oldest first):\n", label, ripRingSize)
+	start := 0
+	count := ripRingIdx
+	if ripRingFull {
+		start = ripRingIdx
+		count = ripRingSize
+	}
+	for i := 0; i < count; i++ {
+		idx := (start + i) % ripRingSize
+		fmt.Fprintf(os.Stderr, "  %d: %#x\n", i, ripRing[idx])
+	}
+}
+
 func (c *CPU) Step() (err error) {
 	origRIP := c.rip
+	recordRIP(origRIP)
 	if stepTrace || (ripTraceLo < ripTraceHi && origRIP >= ripTraceLo && origRIP < ripTraceHi) {
 		var bytes [8]byte
 		for i := uint64(0); i < 8; i++ {
@@ -91,6 +135,18 @@ func (c *CPU) Step() (err error) {
 						// On a "page present" fault, dump the walk so we
 						// can see WHICH entry triggered the rsvd check.
 						c.dumpWalk(ex.Err.Addr)
+					}
+					// Dump the RIP ring on a user-mode "jumped to NX page"
+					// fault — i.e. an instruction-fetch fault on a
+					// page that's present (P=1) with NX set. We do NOT
+					// fire on P=0 faults: those are normal lazy-paging
+					// where the kernel will install the PTE and resume.
+					const X86_PF_P = uint32(1 << 0)
+					const X86_PF_INSTR = uint32(1 << 4)
+					if c.cpl == 3 && ex.Err.Addr == origRIP &&
+						ex.Err.ErrorCode&X86_PF_INSTR != 0 &&
+						ex.Err.ErrorCode&X86_PF_P != 0 {
+						dumpRipRing("rip-trap")
 					}
 					if derr := c.deliverInterrupt(14, true, ex.Err.ErrorCode); derr == nil {
 						err = nil
