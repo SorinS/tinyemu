@@ -64,7 +64,11 @@ case $NAME in
         INITRD="$ROOT/bin/alpine64/initrd"
         ISO="$ROOT/bin/alpine/alpine-standard-3.23.4-x86_64.iso"
         MEM=512
-        APPEND="console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable libata.force=disable ide=disable alpine_dev=vda:iso9660 usbdelay=1 modules=virtio_pci,virtio_blk,virtio_net,loop,squashfs module.sig_enforce=0"
+        # modprobe.blacklist: keep the kernel from auto-loading drivers
+        # for hardware we don't emulate. ata_piix in particular has a
+        # ~60-second probe timeout per phantom port. usb-storage is
+        # similar — usbdelay=1 helps but blacklisting is faster.
+        APPEND="console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable libata.force=disable ide=disable alpine_dev=vda:iso9660 usbdelay=1 modules=virtio_pci,virtio_blk,virtio_net,loop,squashfs module.sig_enforce=0 modprobe.blacklist=ata_piix,pata_acpi,usb-storage,usbhid"
         ;;
     alpine-debug)
         # Alpine 3.19 'virt' x86_64 kernel — extracted from
@@ -116,6 +120,26 @@ case $VARIANT in
         # /dev/vda manually from the shell — useful for debugging the
         # I/O path in isolation.
         echo "[run64_iso] bare mode: rdinit=/bin/sh (no Alpine init, raw busybox shell)"
+        ;;
+    single)
+        # Drop into Alpine's single-user shell early in /init, BEFORE
+        # nlplug-findfs runs. Lets you poke around the partially-set-up
+        # initramfs without waiting on hardware probes.
+        APPEND="$APPEND single"
+        echo "[run64_iso] single mode: stops at single-user shell pre-nlplug"
+        ;;
+    nonlplug)
+        # Patched initrd that replaces the nlplug-findfs call with a
+        # direct `mount /dev/vda /media/cdrom`. Works around the
+        # x86_64 nlplug-findfs hang while keeping the rest of Alpine's
+        # /init flow (sysroot tmpfs, switch_root, OpenRC).
+        candidate="$ROOT/bin/alpine64/initrd.nonlplug"
+        if [ -f "$candidate" ]; then
+            INITRD="$candidate"
+            echo "[run64_iso] using nonlplug initrd ($candidate)"
+        else
+            echo "[run64_iso] warning: nonlplug initrd missing — run scripts/extract_alpine64.sh" >&2
+        fi
         ;;
     nohw|nomodloop|fast|superfast)
         # Use the matching patched-initrd variant (built by

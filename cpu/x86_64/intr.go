@@ -454,6 +454,16 @@ func leUint32(buf []byte, off int) uint32 {
 func (c *CPU) opSYSCALL() error {
 	// EFER.SCE governs whether SYSCALL is enabled. Real hardware
 	// raises #UD if SCE=0; M6 ignores that bit for simplicity.
+	if userSyscallTrace {
+		// Log user-mode syscalls — the syscall number is in RAX (SysV
+		// ABI), args in RDI/RSI/RDX/R10/R8/R9. We only log from CPL=3
+		// (user mode); kernel-internal syscalls (CPL=0) are noise.
+		if c.cpl == 3 {
+			fmt.Fprintf(os.Stderr, "[usys] nr=%d (%s) rdi=%#x rsi=%#x rdx=%#x r10=%#x rip=%#x\n",
+				c.reg64[RAX], linuxSyscallName(uint32(c.reg64[RAX])),
+				c.reg64[RDI], c.reg64[RSI], c.reg64[RDX], c.reg64[R10], c.rip)
+		}
+	}
 	c.SetReg64(RCX, c.rip)
 	c.SetReg64(R11, c.rflags)
 

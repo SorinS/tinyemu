@@ -25,6 +25,109 @@ var msrTrace = os.Getenv("TINYEMU_X64_MSR") == "1"
 // the kernel's first printk going?" and similar IO investigations.
 var ioTrace = os.Getenv("TINYEMU_X64_IO") == "1"
 
+// userSyscallTrace logs every user-mode SYSCALL with its number and
+// the SysV ABI argument registers. Diagnostic for "what is this user
+// process blocked on?" investigations — particularly nlplug-findfs
+// hangs.
+var userSyscallTrace = os.Getenv("TINYEMU_X64_USYS") == "1"
+
+// linuxSyscallName returns the symbolic name for a small set of
+// commonly-blocked syscall numbers (just enough for diagnostics).
+// Numbers from arch/x86/entry/syscalls/syscall_64.tbl.
+func linuxSyscallName(n uint32) string {
+	switch n {
+	case 0:
+		return "read"
+	case 1:
+		return "write"
+	case 2:
+		return "open"
+	case 3:
+		return "close"
+	case 7:
+		return "poll"
+	case 8:
+		return "lseek"
+	case 9:
+		return "mmap"
+	case 10:
+		return "mprotect"
+	case 13:
+		return "rt_sigaction"
+	case 16:
+		return "ioctl"
+	case 21:
+		return "access"
+	case 22:
+		return "pipe"
+	case 23:
+		return "select"
+	case 35:
+		return "nanosleep"
+	case 41:
+		return "socket"
+	case 42:
+		return "connect"
+	case 43:
+		return "accept"
+	case 44:
+		return "sendto"
+	case 45:
+		return "recvfrom"
+	case 46:
+		return "sendmsg"
+	case 47:
+		return "recvmsg"
+	case 49:
+		return "bind"
+	case 50:
+		return "listen"
+	case 56:
+		return "clone"
+	case 57:
+		return "fork"
+	case 59:
+		return "execve"
+	case 60:
+		return "exit"
+	case 61:
+		return "wait4"
+	case 62:
+		return "kill"
+	case 80:
+		return "chdir"
+	case 89:
+		return "readlink"
+	case 96:
+		return "gettimeofday"
+	case 158:
+		return "arch_prctl"
+	case 165:
+		return "mount"
+	case 166:
+		return "umount2"
+	case 202:
+		return "futex"
+	case 217:
+		return "getdents64"
+	case 230:
+		return "clock_nanosleep"
+	case 231:
+		return "exit_group"
+	case 232:
+		return "epoll_wait"
+	case 233:
+		return "epoll_ctl"
+	case 257:
+		return "openat"
+	case 281:
+		return "epoll_pwait"
+	case 291:
+		return "epoll_create1"
+	}
+	return "?"
+}
+
 // executeOpcode dispatches a decoded primary opcode after the prefix
 // loop in Step has consumed the leading prefix bytes. operandSize is
 // 2, 4, or 8 (bytes); addressSize is 4 or 8 in long mode.

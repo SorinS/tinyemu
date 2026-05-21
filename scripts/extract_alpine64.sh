@@ -74,3 +74,41 @@ build_variant "$OUT/initrd.superfast" \
     /etc/runlevels/boot/syslog \
     /etc/runlevels/boot/bootmisc \
     /etc/runlevels/default/firstboot
+
+# nonlplug: replace the `nlplug-findfs` invocation in /init with a
+# direct `mount -r -t iso9660 /dev/vda /media/cdrom`.  nlplug-findfs
+# uses netlink+epoll in a way that hangs indefinitely on x86_64 (root
+# cause TBD); since we know /dev/vda is the boot device via the
+# alpine_dev=vda:iso9660 kernel cmdline, we can skip the device-
+# discovery step entirely. This also disables modloop verification
+# and apkovl pickup — fine for a "just get to a shell" boot.
+build_nonlplug() {
+    out=$1
+    if [ -f "$out" ] && [ ! "$INITRD" -nt "$out" ] && [ ! "$0" -nt "$out" ]; then
+        return
+    fi
+    echo "[extract_alpine64] building $(basename "$out")"
+    tmp=$(mktemp -d)
+    (cd "$tmp" && gunzip -c "$INITRD" | cpio -id 2>/dev/null)
+    awk '
+        /^ebegin "Mounting boot media"$/ {
+            print "ebegin \"Mounting boot media (nlplug bypass)\""
+            print "mkdir -p /media/cdrom"
+            print "mount -r -t iso9660 /dev/vda /media/cdrom"
+            skip = 1
+            next
+        }
+        skip && /^eend / {
+            print
+            skip = 0
+            next
+        }
+        !skip { print }
+    ' "$tmp/init" > "$tmp/init.new"
+    mv "$tmp/init.new" "$tmp/init"
+    chmod +x "$tmp/init"
+    (cd "$tmp" && find . | cpio -o -H newc 2>/dev/null) | gzip > "$out"
+    rm -rf "$tmp"
+}
+
+build_nonlplug "$OUT/initrd.nonlplug"
