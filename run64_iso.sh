@@ -65,7 +65,21 @@ case $NAME in
         fi
         INITRD="$ROOT/bin/alpine64-debug/initramfs-virt"
         MEM=512
-        APPEND="console=ttyS0,115200 loglevel=8 earlyprintk=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable"
+        # rdinit=/bin/sh: bypass Alpine's /init shell script entirely
+        # (which calls nlplug-findfs and hangs waiting for boot media we
+        # don't have) and drop straight into a busybox shell from the
+        # initramfs. We get a usable PID-1 shell to verify the boot
+        # works end-to-end. Without this, init's nlplug-findfs scans
+        # for /dev/sda* etc. indefinitely.
+        #
+        # modloop=none: belt-and-suspenders skip of the Alpine modloop
+        # mount; redundant once rdinit=/bin/sh bypasses /init entirely
+        # but harmless.
+        #
+        # module.sig_enforce=0: skip per-module RSA-SHA256 signature
+        # verification (no value for our use, expensive under software
+        # big-int math).
+        APPEND="console=ttyS0,115200 loglevel=8 earlyprintk=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable modloop=none module.sig_enforce=0 rdinit=/bin/sh"
         ;;
     *)
         echo "unknown OS '$NAME'" >&2
