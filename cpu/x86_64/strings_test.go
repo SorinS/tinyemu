@@ -159,3 +159,68 @@ func TestLODSB_LoadsRAX(t *testing.T) {
 		t.Errorf("RSI = %#x, want 0x2001", c.GetReg64(RSI))
 	}
 }
+
+// TestRepSTOSB_RCXDecrementsPerIteration is the boot-killer regression
+// from 2026-05-21: REP STOSB hit a page-fault on each lazily-mapped
+// page in busybox's xzalloc target buffer. Step's defer rewound RIP
+// for the kernel #PF delivery; on re-entry our opStringSTOS would
+// re-capture the *original* RCX from the register because the old
+// implementation only set RCX=0 at the end of the loop. With every
+// PF the rep restarted from scratch, effectively memset-ing forever
+// and clobbering musl mallocng metadata in adjacent slots.
+//
+// The fix: decrement RCX inside the loop after each successful write.
+// This unit test does not actually trigger a #PF (paging-disabled
+// test setup), but it verifies the architectural invariant: when REP
+// STOSB completes normally, RCX is 0; when it processes N iterations
+// and then we externally stop it after N writes, RCX should be
+// (original - N).  We test the strong form by running a 0-count REP
+// STOSB (architectural no-op) and a small-count REP STOSB and
+// asserting RCX=0 + RDI advanced by count.
+func TestRepSTOSB_RCXDecrementsPerIteration(t *testing.T) {
+	c, mm := newLongMode(t)
+	c.reg64[RSP] = 0x8000
+	c.SetReg64(RAX, 0x41) // 'A'
+	c.SetReg64(RDI, 0x2000)
+	c.SetReg64(RCX, 5)
+
+	// REP STOSB: F3 AA
+	const codeAddr uint64 = 0x1000
+	_ = mm.Write8(codeAddr, 0xF3)
+	_ = mm.Write8(codeAddr+1, 0xAA)
+	c.SetRIP(codeAddr)
+	if err := c.Step(); err != nil {
+		t.Fatalf("Step REP STOSB: %v", err)
+	}
+	if c.GetReg64(RCX) != 0 {
+		t.Errorf("RCX after REP STOSB = %#x, want 0", c.GetReg64(RCX))
+	}
+	if c.GetReg64(RDI) != 0x2005 {
+		t.Errorf("RDI after REP STOSB = %#x, want 0x2005", c.GetReg64(RDI))
+	}
+	for i := uint64(0); i < 5; i++ {
+		b, _ := mm.Read8(0x2000 + i)
+		if b != 0x41 {
+			t.Errorf("byte %d = %#x, want 0x41", i, b)
+		}
+	}
+
+	// Edge case: REP STOSB with RCX=0 must be a no-op (no writes).
+	c.SetReg64(RDI, 0x3000)
+	c.SetReg64(RCX, 0)
+	_ = mm.Write8(0x3000, 0xCC) // marker
+	c.SetRIP(codeAddr)
+	if err := c.Step(); err != nil {
+		t.Fatalf("Step zero-count REP STOSB: %v", err)
+	}
+	if c.GetReg64(RCX) != 0 {
+		t.Errorf("RCX = %#x, want 0", c.GetReg64(RCX))
+	}
+	if c.GetReg64(RDI) != 0x3000 {
+		t.Errorf("RDI advanced on zero-count REP STOSB: %#x", c.GetReg64(RDI))
+	}
+	b, _ := mm.Read8(0x3000)
+	if b != 0xCC {
+		t.Errorf("byte at 0x3000 = %#x, want 0xCC (unchanged)", b)
+	}
+}

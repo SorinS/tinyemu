@@ -19,21 +19,17 @@ var (
 	physWatchHi      uint64
 )
 
+// vaWatch{Lo,Hi} same idea but for guest-linear (virtual) addresses.
+// Logs every write whose target VA falls in [lo, hi). Different from
+// physWatch because we want to catch the LOGICAL write — e.g. "musl
+// wrote zero to user VA 0x7f7dad3d1490". Set TINYEMU_X64_VAWATCH=<lo>-<hi>.
+var (
+	vaWatchEnabled bool
+	vaWatchLo      uint64
+	vaWatchHi      uint64
+)
+
 func init() {
-	s := os.Getenv("TINYEMU_X64_PHYSWATCH")
-	if s == "" {
-		return
-	}
-	dash := -1
-	for i, ch := range s {
-		if ch == '-' {
-			dash = i
-			break
-		}
-	}
-	if dash < 0 {
-		return
-	}
 	parseHex := func(s string) uint64 {
 		if len(s) >= 2 && (s[0:2] == "0x" || s[0:2] == "0X") {
 			s = s[2:]
@@ -55,11 +51,33 @@ func init() {
 		}
 		return v
 	}
-	physWatchLo = parseHex(s[:dash])
-	physWatchHi = parseHex(s[dash+1:])
-	physWatchEnabled = physWatchLo < physWatchHi
-	if physWatchEnabled {
-		fmt.Fprintf(os.Stderr, "[physw] watching writes in [%#x, %#x)\n", physWatchLo, physWatchHi)
+	parseRange := func(spec string) (lo, hi uint64, ok bool) {
+		dash := -1
+		for i, ch := range spec {
+			if ch == '-' {
+				dash = i
+				break
+			}
+		}
+		if dash <= 0 {
+			return 0, 0, false
+		}
+		lo = parseHex(spec[:dash])
+		hi = parseHex(spec[dash+1:])
+		return lo, hi, lo < hi
+	}
+
+	if s := os.Getenv("TINYEMU_X64_PHYSWATCH"); s != "" {
+		if lo, hi, ok := parseRange(s); ok {
+			physWatchLo, physWatchHi, physWatchEnabled = lo, hi, true
+			fmt.Fprintf(os.Stderr, "[physw] watching writes in [%#x, %#x)\n", physWatchLo, physWatchHi)
+		}
+	}
+	if s := os.Getenv("TINYEMU_X64_VAWATCH"); s != "" {
+		if lo, hi, ok := parseRange(s); ok {
+			vaWatchLo, vaWatchHi, vaWatchEnabled = lo, hi, true
+			fmt.Fprintf(os.Stderr, "[vaw] watching virtual writes in [%#x, %#x)\n", vaWatchLo, vaWatchHi)
+		}
 	}
 }
 
@@ -75,6 +93,9 @@ func (c *CPU) readMem8(addr uint64) uint8 {
 	v, err := c.memMap.Read8(phys)
 	if err != nil {
 		panic(pageFaultPanic{Err: &PageFaultError{Addr: addr}})
+	}
+	if vaWatchEnabled && addr >= vaWatchLo && addr < vaWatchHi {
+		fmt.Fprintf(os.Stderr, "[vaR] VA=%#x phys=%#x RIP=%#x byte=%#x\n", addr, phys, c.rip, v)
 	}
 	return v
 }
@@ -104,6 +125,9 @@ func (c *CPU) writeMem8(addr uint64, v uint8) {
 	phys, perr := c.translateForData(addr, true)
 	if perr != nil {
 		panic(pageFaultPanic{Err: perr})
+	}
+	if vaWatchEnabled && addr >= vaWatchLo && addr < vaWatchHi {
+		fmt.Fprintf(os.Stderr, "[vaW] VA=%#x phys=%#x RIP=%#x byte=%#x\n", addr, phys, c.rip, v)
 	}
 	if physWatchEnabled {
 		// One-shot watch on a physical-address range. Logs every write,
