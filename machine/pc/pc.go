@@ -167,22 +167,27 @@ func New(cfg Config) (*PC, error) {
 	// 0x1F0 is handled by the existing ATAController (the PCI device is
 	// just an advertisement so the kernel discovers the controller via
 	// the PCI bus walk).
-	ideDev := NewPCIDevice("PIIX3 IDE", 0x8086, 0x7010, 0x010180, 0x00)
-	ideDev.SetIRQLine(0x0E, 0x01) // IRQ 14, INT A
-	// BMDMA: BAR4 advertised as 16-byte I/O region at 0xC000. On a real
-	// PIIX3 this is the bus-master DMA register file (8 bytes for primary,
-	// 8 for secondary). We don't model DMA; the ports read as zero, writes
-	// are ignored. SetIOBAR implements PCI BAR-sizing so the kernel sees a
-	// 16-byte region (without sizing the kernel logs "BMDMA: BAR4 is zero,
-	// falling back to PIO" and may not dispatch the async ATAPI probe).
-	ideDev.SetIOBAR(4, 0xC000, 16)
-	p.io.RegisterRead(0xC000, 0xC00F, func(uint16) uint32 { return 0 })
-	p.io.RegisterWrite(0xC000, 0xC00F, func(uint16, uint32) {})
-	p.pciHost.Bus().AddDevice(1, 1, ideDev)
+	//
+	// Skip on x86_64 — modern Linux's libata (6.10+) hangs in async-EH
+	// probing the secondary PATA channel even with our "no device"
+	// stubs. Since the x86_64 boot path uses virtio-blk-pci for all
+	// disk I/O, the PIIX3 IDE PCI device is dead weight that just
+	// triggers a 5-minute boot stall. We keep it on x86 (32-bit) for
+	// compatibility with the older 3.19 kernel paths that work today.
+	if !p.is64 {
+		ideDev := NewPCIDevice("PIIX3 IDE", 0x8086, 0x7010, 0x010180, 0x00)
+		ideDev.SetIRQLine(0x0E, 0x01) // IRQ 14, INT A
+		// BMDMA: BAR4 advertised as 16-byte I/O region at 0xC000. See
+		// SetIOBAR docs for the size-sizing handshake.
+		ideDev.SetIOBAR(4, 0xC000, 16)
+		p.io.RegisterRead(0xC000, 0xC00F, func(uint16) uint32 { return 0 })
+		p.io.RegisterWrite(0xC000, 0xC00F, func(uint16, uint32) {})
+		p.pciHost.Bus().AddDevice(1, 1, ideDev)
 
-	// Stub the secondary IDE channel (0x170-0x177 + 0x376) — see
-	// RegisterEmptySecondary docs.
-	RegisterEmptySecondary(p.io)
+		// Stub the secondary IDE channel (0x170-0x177 + 0x376) — see
+		// RegisterEmptySecondary docs.
+		RegisterEmptySecondary(p.io)
+	}
 
 	// VGA. Owns the 128 KB framebuffer aperture at 0xA0000-0xBFFFF and
 	// the legacy register ports (0x3C0-0x3CF, 0x3D4-0x3DF). When the
