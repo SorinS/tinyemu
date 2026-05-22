@@ -1315,21 +1315,48 @@ func (c *CPU) opGroup7(rex uint8) error {
 		return unimplemented("Group 7 mod=11 reg=%d rm=%d", m.reg, m.rm)
 	}
 	switch m.reg {
-	case 0: // SGDT
-		c.writeMem16(c.segBaseForModRM(m) + m.ea, uint16(c.segLimit[GDTR]))
-		c.writeMem64(c.segBaseForModRM(m) + m.ea+2, c.segBase[GDTR])
+	case 0: // SGDT — pseudo-descriptor size depends on mode (6 bytes
+		// in 16/32-bit, 10 bytes in long mode).
+		addr := c.segBaseForModRM(m) + m.ea
+		c.writeMem16(addr, uint16(c.segLimit[GDTR]))
+		if c.mode == ModeLong64 {
+			c.writeMem64(addr+2, c.segBase[GDTR])
+		} else {
+			c.writeMem32(addr+2, uint32(c.segBase[GDTR]))
+		}
 		return nil
 	case 1: // SIDT
-		c.writeMem16(c.segBaseForModRM(m) + m.ea, uint16(c.segLimit[IDTR]))
-		c.writeMem64(c.segBaseForModRM(m) + m.ea+2, c.segBase[IDTR])
+		addr := c.segBaseForModRM(m) + m.ea
+		c.writeMem16(addr, uint16(c.segLimit[IDTR]))
+		if c.mode == ModeLong64 {
+			c.writeMem64(addr+2, c.segBase[IDTR])
+		} else {
+			c.writeMem32(addr+2, uint32(c.segBase[IDTR]))
+		}
 		return nil
-	case 2: // LGDT — load GDT base+limit from memory
-		c.segLimit[GDTR] = uint32(c.readMem16(c.segBaseForModRM(m) + m.ea))
-		c.segBase[GDTR] = c.readMem64(c.segBaseForModRM(m) + m.ea + 2)
+	case 2: // LGDT — load GDT base+limit. Pseudo-descriptor in 16/32-
+		// bit modes is limit(2) + base(4) = 6 bytes; in long mode it's
+		// limit(2) + base(8) = 10 bytes. We picked the wrong format
+		// before — reading 64 bits in real mode loaded 4 bytes of
+		// adjacent garbage into the high half of GDTR.base, then the
+		// next far jump's descriptor read landed at a random address
+		// and CS came back without its D-bit.
+		addr := c.segBaseForModRM(m) + m.ea
+		c.segLimit[GDTR] = uint32(c.readMem16(addr))
+		if c.mode == ModeLong64 {
+			c.segBase[GDTR] = c.readMem64(addr + 2)
+		} else {
+			c.segBase[GDTR] = uint64(c.readMem32(addr + 2))
+		}
 		return nil
-	case 3: // LIDT
-		c.segLimit[IDTR] = uint32(c.readMem16(c.segBaseForModRM(m) + m.ea))
-		c.segBase[IDTR] = c.readMem64(c.segBaseForModRM(m) + m.ea + 2)
+	case 3: // LIDT — same mode-aware base width as LGDT.
+		addr := c.segBaseForModRM(m) + m.ea
+		c.segLimit[IDTR] = uint32(c.readMem16(addr))
+		if c.mode == ModeLong64 {
+			c.segBase[IDTR] = c.readMem64(addr + 2)
+		} else {
+			c.segBase[IDTR] = uint64(c.readMem32(addr + 2))
+		}
 		if intrTrace {
 			fmt.Fprintf(os.Stderr, "[lidt] RIP=%#x base=%#x limit=%#x\n",
 				c.rip, c.segBase[IDTR], c.segLimit[IDTR])

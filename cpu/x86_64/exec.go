@@ -346,7 +346,8 @@ func (c *CPU) Run(maxCycles int) error {
 			c.powerDown = false
 		}
 		if ripSampleEvery > 0 && c.cycles%ripSampleEvery == 0 {
-			fmt.Fprintf(os.Stderr, "[sample] cycle=%d RIP=%#x\n", c.cycles, c.rip)
+			fmt.Fprintf(os.Stderr, "[sample] cycle=%d mode=%v RIP=%#x\n",
+				c.cycles, c.mode, c.rip)
 		}
 		if err := c.Step(); err != nil {
 			return err

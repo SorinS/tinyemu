@@ -200,6 +200,47 @@ func TestRealMode_ModRM16RegPair(t *testing.T) {
 	}
 }
 
+// TestRealMode_LGDT32BitBase pins that LGDT in real / 32-bit modes
+// reads a 32-bit base from the pseudo-descriptor, not a 64-bit base.
+// SeaBIOS hit this — its pseudo-descriptor is limit(2) + base(4) = 6
+// bytes in real mode, but our LGDT unconditionally read 8 bytes,
+// loading 4 bytes of adjacent garbage into GDTR.base. Then the next
+// far jump's descriptor lookup landed at a random address and CS came
+// back without its D-bit — mode stuck at pm16 even after the kernel
+// thought it was in pm32, every subsequent operand-size-dependent
+// decode mis-framed.
+func TestRealMode_LGDT32BitBase(t *testing.T) {
+	c, mm := newRealModeCPU(t)
+	// Lay down a pseudo-descriptor at 0x600: limit=0xFFFF, base=0x00ABCDEF.
+	writeBytes(t, mm, 0x600, []byte{
+		0xFF, 0xFF, // limit
+		0xEF, 0xCD, 0xAB, 0x00, // base (32-bit LE)
+	})
+	// Plant 8 bytes of garbage immediately after — these should NOT
+	// be merged into the loaded base.
+	writeBytes(t, mm, 0x606, []byte{0xFF, 0xFF, 0xFF, 0xFF})
+
+	// LGDT [0x600]:
+	//   0F 01 16 00 06  (16-bit addressing: 0F 01 + ModRM 0x16 mod=00
+	//   rm=6 disp16 + disp16=0x0600). Then HLT.
+	writeBytes(t, mm, 0xFFFF0, []byte{
+		0x0F, 0x01, 0x16, 0x00, 0x06,
+		0xF4,
+	})
+
+	for !c.IsPowerDown() {
+		if err := c.Step(); err != nil {
+			t.Fatalf("step: %v", err)
+		}
+	}
+	if got := c.GetSegBase64(GDTR); got != 0x00ABCDEF {
+		t.Errorf("GDTR.base = %#x, want 0xABCDEF (loaded 64-bit instead of 32-bit?)", got)
+	}
+	if got := c.GetSegLimit(GDTR); got != 0xFFFF {
+		t.Errorf("GDTR.limit = %#x, want 0xFFFF", got)
+	}
+}
+
 // TestRealMode_ModRM16BPDefaultSS pins that [BP] addressing
 // (mod=01, rm=6) uses SS as the default segment, not DS.
 func TestRealMode_ModRM16BPDefaultSS(t *testing.T) {
