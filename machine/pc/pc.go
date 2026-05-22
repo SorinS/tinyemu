@@ -289,11 +289,15 @@ func (p *PC) LoadBIOS(biosData []byte, kernelData []byte, initrdData []byte, cmd
 	// If kernel data is provided, try direct bzImage boot
 	if len(kernelData) > 0 {
 		if p.is64 {
-			// Long-mode boot. Try direct ELF (vmlinux) first — that
-			// bypasses the bzImage decompressor entirely, which is the
-			// part that exhausts its small static pgt_buf when set up
-			// in identity-map mode. Fall back to the bzImage path so
-			// either format is accepted.
+			// Long-mode boot. Try PVH first (OSv, FreeBSD-as-Xen-DomU,
+			// any ELF with XEN_ELFNOTE_PHYS32_ENTRY); fall through to
+			// vmlinux64 (Linux ELF kernels with the standard 64-bit
+			// entry); fall through to bzImage (compressed Linux). Each
+			// loader inspects the kernel image and returns an error if
+			// the format doesn't match, so order is just a try-in-turn.
+			if err := p.loadPVH64(kernelData, initrdData, cmdLine); err == nil {
+				return nil
+			}
 			if err := p.loadVMLinux64(kernelData, initrdData, cmdLine); err == nil {
 				return nil
 			}

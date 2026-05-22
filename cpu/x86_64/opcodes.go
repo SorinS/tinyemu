@@ -504,6 +504,52 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.rip = uint64(int64(c.rip) + disp)
 		return nil
 
+	case op == 0xEA:
+		// JMP FAR PTR16:32 / FAR PTR16:16 — direct intersegment jump.
+		// Invalid in long mode (the opcode was reassigned); valid in
+		// 16-bit and 32-bit protected mode. PVH-style i386→x86_64
+		// bootstraps use this to reload CS after their own GDT goes live,
+		// so we have to implement it for OSv et al.
+		if c.efer&EFER_LMA != 0 {
+			return unimplemented("0xEA JMP FAR is invalid in long mode")
+		}
+		var off uint64
+		if operandSize == 2 {
+			off = uint64(c.fetch16())
+		} else {
+			off = uint64(c.fetch32())
+		}
+		sel := c.fetch16()
+		// Read the target descriptor. Selector bits 2..15 are the index;
+		// bits 0..1 are RPL/TI (we ignore TI — assume GDT, which is what
+		// every boot path we care about uses). With paging off (the case
+		// PVH cares about) GDTR.base is a physical address.
+		gdtBase := c.segBase[GDTR]
+		descAddr := gdtBase + uint64(sel&0xFFF8)
+		desc, err := c.memMap.Read64(descAddr)
+		if err != nil {
+			return fmt.Errorf("0xEA: read GDT entry %#x: %w", sel, err)
+		}
+		// Descriptor layout (Intel SDM Vol 3 §3.4.5):
+		//   bits  0..15  limit[15:0]
+		//   bits 16..39  base[23:0]
+		//   bits 40..47  access byte (P, DPL, S, Type)
+		//   bits 48..51  limit[19:16]
+		//   bits 52..55  flags nibble (AVL, L, D/B, G)
+		//   bits 56..63  base[31:24]
+		base := uint64(uint32((desc>>16)&0xFFFFFF)) | ((desc >> 56) << 24)
+		access := uint8((desc >> 40) & 0xFF)
+		flags := uint8((desc >> 52) & 0x0F)
+		// segAccess layout: low byte = access; bits 8..11 = flags nibble.
+		// That matches the encoding mode.go's csLBit / csDBit read.
+		segAccess := uint32(access) | (uint32(flags) << 8)
+		c.seg[CS] = sel
+		c.segBase[CS] = base
+		c.segLimit[CS] = 0xFFFFFFFF // limit isn't checked on most code paths
+		c.SetSegAccess(CS, segAccess)
+		c.rip = off
+		return nil
+
 	case op >= 0x70 && op <= 0x7F:
 		// Conditional jump rel8.
 		disp := int64(int8(c.fetch8()))
