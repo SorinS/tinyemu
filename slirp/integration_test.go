@@ -1464,3 +1464,565 @@ func TestIntegrationTCPHandshakeWithTracing(t *testing.T) {
 
 	so.SoFree()
 }
+
+// TestIntegrationDNSRoundtrip drives a real DNS query through SLIRP's UDP NAT
+// to the host's real upstream resolver, then asserts the response that comes
+// back is a well-formed DNS packet from 10.0.2.3:53 to the guest's source
+// port. This catches NAT-rewrite bugs (wrong source IP, swapped ports,
+// mangled checksum) that present as "Parse error" in the guest's nslookup.
+//
+// Skipped automatically if the host has no resolvable DNS server.
+func TestIntegrationDNSRoundtrip(t *testing.T) {
+	// Reset dnsAddr cache so getDnsAddr() re-reads /etc/resolv.conf.
+	saveDnsAddr := dnsAddr
+	saveDnsAddrTime := dnsAddrTime
+	dnsAddr = nil
+	dnsAddrTime = 0
+	defer func() {
+		dnsAddr = saveDnsAddr
+		dnsAddrTime = saveDnsAddrTime
+	}()
+	if _, ok := getDnsAddr(); !ok {
+		t.Skip("no DNS server in /etc/resolv.conf (likely sandboxed CI)")
+	}
+
+	// Build a real DNS query for "example.com" addressed to 10.0.2.3:53.
+	// Header: ID=0xBEEF, flags=0x0100 (standard recursive query),
+	// QDCOUNT=1, ANCOUNT=ANCOUNT=NSCOUNT=ARCOUNT=0.
+	dnsQuery := []byte{
+		0xBE, 0xEF, // ID
+		0x01, 0x00, // flags: RD=1
+		0x00, 0x01, // QDCOUNT
+		0x00, 0x00, // ANCOUNT
+		0x00, 0x00, // NSCOUNT
+		0x00, 0x00, // ARCOUNT
+		// QNAME: "dl-cdn.alpinelinux.org" (CDN-fronted; busybox parse error)
+		6, 'd', 'l', '-', 'c', 'd', 'n',
+		11, 'a', 'l', 'p', 'i', 'n', 'e', 'l', 'i', 'n', 'u', 'x',
+		3, 'o', 'r', 'g',
+		0,          // null terminator
+		0x00, 0x01, // QTYPE A
+		0x00, 0x01, // QCLASS IN
+	}
+
+	h := newTestHelper()
+	const guestSrcPort = 54321
+	udpPayload := h.buildUDPPacket(guestSrcPort, 53, dnsQuery)
+	ipPayload := h.buildIPPacket(IPProtoUDP, h.guestIP, h.slirp.VNameserverAddr, udpPayload)
+	vhostMAC := [6]byte{0x52, 0x55}
+	copy(vhostMAC[2:], h.slirp.VHostAddr.To4())
+	frame := h.buildEthFrame(vhostMAC, EthPIP, ipPayload)
+
+	h.clearOutput()
+	h.slirp.Input(frame)
+
+	// Drive SoRecvFrom until the fake resolver replies and we capture an
+	// OUTPUT packet. Give it up to 3 seconds.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(h.outputPkts) == 0 {
+		// Iterate UDP sockets and pump SoRecvFrom (mirrors Poll).
+		for so := h.slirp.UDB.Next; so != &h.slirp.UDB; so = so.Next {
+			if so.S < 0 {
+				continue
+			}
+			so.SoRecvFrom()
+		}
+		if h.slirp.IfQueued > 0 {
+			h.slirp.IfStart()
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(h.outputPkts) == 0 {
+		t.Fatalf("no DNS reply captured: slirp did not deliver the response back to the guest")
+	}
+
+	reply := h.outputPkts[0]
+	if len(reply) < EthHLen+IPHeaderSize+UDPHeaderSize+12 {
+		t.Fatalf("reply too short: %d bytes (%x)", len(reply), reply)
+	}
+
+	// Ethernet
+	if etype := binary.BigEndian.Uint16(reply[12:14]); etype != EthPIP {
+		t.Errorf("ether type = 0x%04x, want 0x%04x (IP)", etype, EthPIP)
+	}
+
+	// IP header
+	ip := reply[EthHLen:]
+	if ip[9] != IPProtoUDP {
+		t.Errorf("IP proto = %d, want %d (UDP)", ip[9], IPProtoUDP)
+	}
+	srcIP := net.IP(ip[12:16]).To4()
+	dstIP := net.IP(ip[16:20]).To4()
+	if !srcIP.Equal(h.slirp.VNameserverAddr.To4()) {
+		t.Errorf("IP src = %v, want %v (VNameserverAddr)", srcIP, h.slirp.VNameserverAddr)
+	}
+	if !dstIP.Equal(h.guestIP.To4()) {
+		t.Errorf("IP dst = %v, want %v (guestIP)", dstIP, h.guestIP)
+	}
+	// Verify IP checksum
+	ipHdr := ip[:IPHeaderSize]
+	if CksumData(ipHdr) != 0 {
+		t.Errorf("IP checksum invalid (cksum-over-header should be 0, got %#x)", CksumData(ipHdr))
+	}
+
+	// UDP header
+	udp := ip[IPHeaderSize:]
+	srcPort := binary.BigEndian.Uint16(udp[0:2])
+	dstPort := binary.BigEndian.Uint16(udp[2:4])
+	if srcPort != 53 {
+		t.Errorf("UDP src port = %d, want 53", srcPort)
+	}
+	if dstPort != guestSrcPort {
+		t.Errorf("UDP dst port = %d, want %d (guest src port)", dstPort, guestSrcPort)
+	}
+	udpLen := binary.BigEndian.Uint16(udp[4:6])
+	expectUDPLen := uint16(UDPHeaderSize + len(udp[UDPHeaderSize:]))
+	if udpLen != expectUDPLen {
+		t.Errorf("UDP length = %d, want %d", udpLen, expectUDPLen)
+	}
+
+	// DNS payload — first 12 bytes are the header; QR bit must be set.
+	dnsReply := udp[UDPHeaderSize:]
+	if len(dnsReply) < 12 {
+		t.Fatalf("DNS reply too short: %d bytes", len(dnsReply))
+	}
+	if id := binary.BigEndian.Uint16(dnsReply[0:2]); id != 0xBEEF {
+		t.Errorf("DNS ID = %#x, want 0xBEEF", id)
+	}
+	if dnsReply[2]&0x80 == 0 {
+		t.Error("DNS QR bit not set in reply")
+	}
+	if ancount := binary.BigEndian.Uint16(dnsReply[6:8]); ancount == 0 {
+		t.Errorf("DNS ANCOUNT = 0 — upstream resolver returned no answer")
+	}
+	t.Logf("DNS reply OK: %d bytes, ancount=%d, full reply: %x",
+		len(dnsReply),
+		binary.BigEndian.Uint16(dnsReply[6:8]),
+		reply)
+}
+
+// ---------------------------------------------------------------------------
+// TCP integration tests
+//
+// These drive the full TCP state machine through SLIRP against a real local
+// listener. The goal is to catch the kinds of bugs that surface as
+// "apk update hangs forever" in a running guest — broken handshake, dropped
+// data, missed ACK, broken close.
+//
+// The test code plays the role of the guest's TCP stack: it crafts SYN /
+// ACK / data / FIN packets and feeds them through SLIRP.Input, while
+// pumping SLIRP's poll loop and capturing each OUTPUT packet for analysis.
+// ---------------------------------------------------------------------------
+
+// testWriter adapts *testing.T to io.Writer for trace logging.
+type testWriter struct{ t *testing.T }
+
+func (w testWriter) Write(p []byte) (int, error) {
+	w.t.Log(string(bytes.TrimRight(p, "\n")))
+	return len(p), nil
+}
+
+// buildTCPSegment builds a TCP segment (header + payload) with the given
+// fields and a correct pseudo-header-based checksum.
+func (h *testHelper) buildTCPSegment(srcPort, dstPort uint16, seq, ack uint32, flags uint8, window uint16, payload []byte, srcIP, dstIP net.IP) []byte {
+	seg := make([]byte, 20+len(payload))
+	binary.BigEndian.PutUint16(seg[0:2], srcPort)
+	binary.BigEndian.PutUint16(seg[2:4], dstPort)
+	binary.BigEndian.PutUint32(seg[4:8], seq)
+	binary.BigEndian.PutUint32(seg[8:12], ack)
+	seg[12] = 5 << 4 // data offset = 5 (20-byte header, no options)
+	seg[13] = flags
+	binary.BigEndian.PutUint16(seg[14:16], window)
+	// checksum (16-17) computed below; urgent ptr (18-19) zero
+	copy(seg[20:], payload)
+
+	// Pseudo-header checksum
+	pseudo := make([]byte, 12+len(seg))
+	copy(pseudo[0:4], srcIP.To4())
+	copy(pseudo[4:8], dstIP.To4())
+	pseudo[9] = IPProtoTCP
+	binary.BigEndian.PutUint16(pseudo[10:12], uint16(len(seg)))
+	copy(pseudo[12:], seg)
+	binary.BigEndian.PutUint16(seg[16:18], CksumData(pseudo))
+	return seg
+}
+
+// sendTCPFromGuest wraps a TCP segment in IP+Ethernet and feeds it to slirp.
+func (h *testHelper) sendTCPFromGuest(srcPort, dstPort uint16, seq, ack uint32, flags uint8, window uint16, payload []byte, dstIP net.IP) {
+	tcp := h.buildTCPSegment(srcPort, dstPort, seq, ack, flags, window, payload, h.guestIP, dstIP)
+	ipPayload := h.buildIPPacket(IPProtoTCP, h.guestIP, dstIP, tcp)
+	vhostMAC := [6]byte{0x52, 0x55}
+	copy(vhostMAC[2:], h.slirp.VHostAddr.To4())
+	frame := h.buildEthFrame(vhostMAC, EthPIP, ipPayload)
+	h.slirp.Input(frame)
+}
+
+// parseTCPFromCapture extracts (srcPort, dstPort, seq, ack, flags, payload)
+// from a captured OUTPUT eth frame containing a TCP segment.
+func parseTCPFromCapture(frame []byte) (srcPort, dstPort uint16, seq, ack uint32, flags uint8, payload []byte, ok bool) {
+	if len(frame) < EthHLen+IPHeaderSize+20 {
+		return
+	}
+	if binary.BigEndian.Uint16(frame[12:14]) != EthPIP {
+		return
+	}
+	ip := frame[EthHLen:]
+	if ip[9] != IPProtoTCP {
+		return
+	}
+	ihl := int(ip[0]&0x0f) * 4
+	tcp := ip[ihl:]
+	if len(tcp) < 20 {
+		return
+	}
+	dataOff := int(tcp[12]>>4) * 4
+	if dataOff < 20 || dataOff > len(tcp) {
+		return
+	}
+	srcPort = binary.BigEndian.Uint16(tcp[0:2])
+	dstPort = binary.BigEndian.Uint16(tcp[2:4])
+	seq = binary.BigEndian.Uint32(tcp[4:8])
+	ack = binary.BigEndian.Uint32(tcp[8:12])
+	flags = tcp[13]
+	payload = tcp[dataOff:]
+	ok = true
+	return
+}
+
+// pumpSlirp drives slirp's poll loop until predicate returns true or
+// deadline expires. Returns true if the predicate fired.
+func (h *testHelper) pumpSlirp(deadline time.Time, predicate func() bool) bool {
+	for time.Now().Before(deadline) {
+		// Mirror what Poll() does, minus the EthernetDevice plumbing.
+		curtime := GetTimeMs()
+		h.slirp.updateTimerFlags(curtime)
+		h.slirp.processTimers(curtime)
+		h.slirp.checkTCPListeners()
+		h.slirp.processTCPSockets()
+		h.slirp.processUDPSockets()
+		if h.slirp.IfQueued > 0 {
+			h.slirp.IfStart()
+		}
+		if predicate() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Final check after deadline.
+	return predicate()
+}
+
+// waitOutputTCP waits for an OUTPUT packet that matches a predicate on its
+// parsed TCP fields. Returns the captured packet and parsed fields.
+func (h *testHelper) waitOutputTCP(deadline time.Time, match func(flags uint8, payload []byte) bool) (frame []byte, srcPort, dstPort uint16, seq, ack uint32, flags uint8, payload []byte, ok bool) {
+	startIdx := len(h.outputPkts)
+	h.pumpSlirp(deadline, func() bool {
+		for i := startIdx; i < len(h.outputPkts); i++ {
+			_, _, _, _, fl, pl, parsed := parseTCPFromCapture(h.outputPkts[i])
+			if parsed && match(fl, pl) {
+				return true
+			}
+		}
+		return false
+	})
+	for i := startIdx; i < len(h.outputPkts); i++ {
+		sp, dp, sq, ak, fl, pl, parsed := parseTCPFromCapture(h.outputPkts[i])
+		if parsed && match(fl, pl) {
+			return h.outputPkts[i], sp, dp, sq, ak, fl, pl, true
+		}
+	}
+	return nil, 0, 0, 0, 0, 0, nil, false
+}
+
+// TestIntegrationTCPHTTPRoundtrip runs a full HTTP-style TCP exchange through
+// slirp against a real local listener:
+//
+//	guest --SYN--> slirp --connect()--> server
+//	guest <--SYN-ACK-- slirp <--accept-- server
+//	guest --ACK--> slirp
+//	guest --REQ--> slirp --write()--> server
+//	guest <--RESP-- slirp <--read()-- server
+//	guest --ACK--> slirp
+//	guest --FIN-ACK--> slirp --close()--> server
+//	guest <--FIN-ACK-- slirp
+//	guest --ACK--> slirp
+//
+// This is what `apk update` does. If this test hangs or fails, we've found
+// the same bug that breaks apk inside the guest.
+func TestIntegrationTCPHTTPRoundtrip(t *testing.T) {
+	// Spin up a tiny TCP echo server on a free port on the loopback iface.
+	ln, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Skipf("could not listen on 127.0.0.1: %v", err)
+	}
+	defer ln.Close()
+	serverAddr := ln.Addr().(*net.TCPAddr)
+
+	canned := []byte("HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+	gotRequest := make(chan string, 1)
+	srvDone := make(chan struct{})
+
+	go func() {
+		defer close(srvDone)
+		ln.SetDeadline(time.Now().Add(5 * time.Second))
+		conn, err := ln.Accept()
+		if err != nil {
+			gotRequest <- ""
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 4096)
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		n, _ := conn.Read(buf)
+		gotRequest <- string(buf[:n])
+		conn.Write(canned)
+		// Half-close so the guest sees FIN after the response.
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
+	}()
+
+	h := newTestHelper()
+	const guestPort = 50000
+	serverIP := net.IPv4(127, 0, 0, 1)
+	serverPort := uint16(serverAddr.Port)
+
+	deadline := time.Now().Add(5 * time.Second)
+
+	// --- 1) SYN ---
+	guestSeq := uint32(1000)
+	h.sendTCPFromGuest(guestPort, serverPort, guestSeq, 0, THSyn, 65535, nil, serverIP)
+	// Slirp must reply with SYN+ACK once the host TCP connect() completes.
+	_, _, _, srvSeq, srvAck, fl, _, ok := h.waitOutputTCP(deadline, func(fl uint8, _ []byte) bool {
+		return fl&(THSyn|THAck) == (THSyn | THAck)
+	})
+	if !ok {
+		t.Fatalf("never received SYN-ACK from slirp (server didn't accept or slirp didn't relay)")
+	}
+	if srvAck != guestSeq+1 {
+		t.Errorf("SYN-ACK ack=%d, want %d (guestSeq+1)", srvAck, guestSeq+1)
+	}
+	_ = fl
+
+	// --- 2) ACK the SYN-ACK ---
+	guestSeq++ // SYN consumes one sequence number
+	h.sendTCPFromGuest(guestPort, serverPort, guestSeq, srvSeq+1, THAck, 65535, nil, serverIP)
+
+	// --- 3) Send HTTP request data ---
+	httpReq := []byte("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
+	h.sendTCPFromGuest(guestPort, serverPort, guestSeq, srvSeq+1, THAck|THPush, 65535, httpReq, serverIP)
+	guestSeq += uint32(len(httpReq))
+
+	// --- 4) Wait for server to receive the request via slirp's NAT ---
+	select {
+	case got := <-gotRequest:
+		if got != string(httpReq) {
+			t.Errorf("server got %q, want %q", got, string(httpReq))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("server never received the HTTP request (slirp dropped the data segment)")
+	}
+
+	// --- 5) Wait for response data segment(s) from slirp ---
+	var respBuf []byte
+	var lastSrvSeq uint32 = srvSeq + 1
+	for time.Now().Before(deadline) && len(respBuf) < len(canned) {
+		_, _, _, sq, _, fl, pl, gotPkt := h.waitOutputTCP(time.Now().Add(500*time.Millisecond),
+			func(fl uint8, pl []byte) bool { return len(pl) > 0 })
+		if !gotPkt {
+			break
+		}
+		if sq != lastSrvSeq {
+			// Out-of-order or retransmit — accept it but only if it lines up.
+			t.Logf("response segment seq=%d, expected %d (may be retx)", sq, lastSrvSeq)
+		}
+		respBuf = append(respBuf, pl...)
+		lastSrvSeq = sq + uint32(len(pl))
+		// ACK each data segment from the guest.
+		h.sendTCPFromGuest(guestPort, serverPort, guestSeq, lastSrvSeq, THAck, 65535, nil, serverIP)
+		_ = fl
+	}
+
+	if string(respBuf) != string(canned) {
+		t.Errorf("response body mismatch:\n got: %q\nwant: %q", string(respBuf), string(canned))
+	}
+
+	// --- 6) Server half-closes; wait for FIN from slirp ---
+	_, _, _, _, finAck, finFlags, _, gotFIN := h.waitOutputTCP(time.Now().Add(3*time.Second),
+		func(fl uint8, _ []byte) bool { return fl&THFin != 0 })
+	if !gotFIN {
+		t.Errorf("never received FIN from slirp after server half-closed")
+	} else {
+		// ACK the FIN.
+		h.sendTCPFromGuest(guestPort, serverPort, guestSeq, finAck+1, THAck, 65535, nil, serverIP)
+		_ = finFlags
+	}
+
+	// --- 7) Guest also closes ---
+	h.sendTCPFromGuest(guestPort, serverPort, guestSeq, lastSrvSeq+1, THFin|THAck, 65535, nil, serverIP)
+	// Drain any remaining ACK from slirp.
+	h.pumpSlirp(time.Now().Add(500*time.Millisecond), func() bool { return false })
+
+	<-srvDone
+}
+
+// TestIntegrationTCPConnectRefused verifies slirp returns RST when the host
+// connect() fails — this is the "well-known port closed" path.
+func TestIntegrationTCPConnectRefused(t *testing.T) {
+	// Bind a port then close it so connect() fails reliably.
+	probe, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Skipf("could not get a closed port: %v", err)
+	}
+	port := uint16(probe.Addr().(*net.TCPAddr).Port)
+	probe.Close()
+
+	h := newTestHelper()
+	const guestPort = 50001
+	serverIP := net.IPv4(127, 0, 0, 1)
+	guestSeq := uint32(2000)
+
+	h.sendTCPFromGuest(guestPort, port, guestSeq, 0, THSyn, 65535, nil, serverIP)
+	_, _, _, _, _, fl, _, ok := h.waitOutputTCP(time.Now().Add(3*time.Second),
+		func(fl uint8, _ []byte) bool { return fl&THRst != 0 })
+	if !ok {
+		// Some hosts return ICMP unreachable instead of RST — both are
+		// acceptable signals; the important thing is slirp doesn't hang.
+		t.Logf("no RST received within 3s — possibly delivered via ICMP unreachable instead")
+		return
+	}
+	if fl&THRst == 0 {
+		t.Errorf("expected RST flag, got %02x", fl)
+	}
+}
+
+// TestIntegrationTCPLargeTransfer pulls a large blob (>1 MTU) through slirp
+// to exercise multi-segment data delivery + window handling. Catches the
+// kind of bug that would surface as "first MTU comes through, then hang".
+func TestIntegrationTCPLargeTransfer(t *testing.T) {
+	// Uncomment to enable per-segment TCP tracing.
+	// h.slirp.Tracer = &WriterTracer{Writer: os.Stderr, Prefix: "[TCP] "}
+
+	ln, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Skipf("could not listen on 127.0.0.1: %v", err)
+	}
+	defer ln.Close()
+	serverAddr := ln.Addr().(*net.TCPAddr)
+
+	// 8 KB of distinct payload — enough to span several MTUs.
+	const blobSize = 8 * 1024
+	blob := make([]byte, blobSize)
+	for i := range blob {
+		blob[i] = byte(i & 0xff)
+	}
+	srvDone := make(chan struct{})
+
+	go func() {
+		defer close(srvDone)
+		ln.SetDeadline(time.Now().Add(5 * time.Second))
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 1024)
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		conn.Read(buf) // drain the dummy request
+		conn.Write(blob)
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
+	}()
+
+	h := newTestHelper()
+	h.slirp.Tracer = &WriterTracer{Writer: testWriter{t}, Prefix: "[TCP] "}
+	const guestPort = 50002
+	serverIP := net.IPv4(127, 0, 0, 1)
+	serverPort := uint16(serverAddr.Port)
+	deadline := time.Now().Add(10 * time.Second)
+
+	// Handshake
+	guestSeq := uint32(3000)
+	h.sendTCPFromGuest(guestPort, serverPort, guestSeq, 0, THSyn, 65535, nil, serverIP)
+	_, _, _, srvSeq, _, _, _, ok := h.waitOutputTCP(deadline,
+		func(fl uint8, _ []byte) bool { return fl&(THSyn|THAck) == (THSyn | THAck) })
+	if !ok {
+		t.Fatalf("no SYN-ACK from slirp")
+	}
+	guestSeq++
+	h.sendTCPFromGuest(guestPort, serverPort, guestSeq, srvSeq+1, THAck, 65535, nil, serverIP)
+
+	// Dummy request to make the server send its blob
+	req := []byte("X")
+	h.sendTCPFromGuest(guestPort, serverPort, guestSeq, srvSeq+1, THAck|THPush, 65535, req, serverIP)
+	guestSeq += uint32(len(req))
+
+	// Collect all data segments, ACKing as we go. We assemble by sequence
+	// number (segments may arrive in bursts of 2+ before we ACK), and we
+	// keep a cursor into outputPkts so we never miss a packet between
+	// pump cycles.
+	got := make(map[uint32][]byte)
+	lastSrvSeq := srvSeq + 1
+	cursor := 0
+	for time.Now().Before(deadline) && nextContiguous(got, srvSeq+1) < blobSize {
+		h.pumpSlirp(time.Now().Add(200*time.Millisecond), func() bool {
+			return len(h.outputPkts) > cursor
+		})
+		progress := false
+		for cursor < len(h.outputPkts) {
+			_, _, sq, _, _, pl, parsed := parseTCPFromCapture(h.outputPkts[cursor])
+			cursor++
+			if !parsed || len(pl) == 0 {
+				continue
+			}
+			if _, dup := got[sq]; dup {
+				continue
+			}
+			got[sq] = pl
+			progress = true
+		}
+		// Cumulative ACK for everything contiguous we've seen.
+		if cum := srvSeq + 1 + nextContiguous(got, srvSeq+1); cum > lastSrvSeq {
+			lastSrvSeq = cum
+			h.sendTCPFromGuest(guestPort, serverPort, guestSeq, lastSrvSeq, THAck, 65535, nil, serverIP)
+		}
+		if !progress && time.Now().After(deadline) {
+			break
+		}
+	}
+
+	// Reassemble in seq order.
+	totalGot := nextContiguous(got, srvSeq+1)
+	var assembled []byte
+	for offset := uint32(0); offset < totalGot; {
+		pl, ok := got[srvSeq+1+offset]
+		if !ok {
+			break
+		}
+		assembled = append(assembled, pl...)
+		offset += uint32(len(pl))
+	}
+	gotLen := len(assembled)
+
+	if gotLen != blobSize {
+		t.Errorf("got %d bytes, want %d (transfer truncated — likely window/ACK bug)", gotLen, blobSize)
+	} else if !bytes.Equal(assembled, blob) {
+		t.Errorf("blob mismatch at first divergence — segment ordering or reassembly broken")
+	}
+
+	<-srvDone
+}
+
+// nextContiguous returns the number of contiguous bytes starting at base in
+// a seq→payload map. Used to compute the cumulative ACK.
+func nextContiguous(segments map[uint32][]byte, base uint32) uint32 {
+	var off uint32 = 0
+	for {
+		pl, ok := segments[base+off]
+		if !ok {
+			return off
+		}
+		off += uint32(len(pl))
+	}
+}

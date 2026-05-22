@@ -19,7 +19,7 @@
 set -e
 
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
-    echo "Usage: $0 <tinycore|alpine|alpine-debug> [bare|nohw|nomodloop|fast|superfast]" >&2
+    echo "Usage: $0 <tinycore|alpine|alpine-debug> [bare|single|nonlplug|nohw|nomodloop|fast|superfast|nonlplug-fast]" >&2
     echo "  alpine       : Alpine-standard x86_64 (same path as run86_iso.sh alpine)" >&2
     echo "  alpine-debug : Alpine-virt x86_64 with full System.map for fault triage" >&2
     echo "  bare         : drop straight to /bin/sh from initramfs" >&2
@@ -141,7 +141,7 @@ case $VARIANT in
             echo "[run64_iso] warning: nonlplug initrd missing — run scripts/extract_alpine64.sh" >&2
         fi
         ;;
-    nohw|nomodloop|fast|superfast)
+    nohw|nomodloop|fast|superfast|nonlplug-fast)
         # Use the matching patched-initrd variant (built by
         # scripts/extract_alpine64.sh). Each variant skips slow OpenRC
         # services to shorten boot time.
@@ -154,7 +154,7 @@ case $VARIANT in
         fi
         ;;
     *)
-        echo "Unknown variant '$VARIANT' (expected: bare|nohw|nomodloop|fast|superfast)" >&2
+        echo "Unknown variant '$VARIANT' (expected: bare|single|nonlplug|nohw|nomodloop|fast|superfast|nonlplug-fast)" >&2
         exit 1
         ;;
 esac

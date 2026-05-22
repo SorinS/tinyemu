@@ -88,6 +88,7 @@ func NewSlirp() *Slirp {
 		VHostAddr:       net.IPv4(10, 0, 2, 2),
 		VDHCPStartAddr:  net.IPv4(10, 0, 2, 15),
 		VNameserverAddr: net.IPv4(10, 0, 2, 3),
+		Tracer:          DefaultTracer,
 	}
 
 	// Initialize mbuf lists

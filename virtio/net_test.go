@@ -259,10 +259,15 @@ func TestNetRXWritePacket(t *testing.T) {
 	// Check that header + packet data was written to guest memory
 	dataRAM := memMap.GetRAMPtr(rxDataAddr, false)
 
-	// First 12 bytes should be zero header
+	// First 12 bytes are the virtio-net header: all zero except
+	// num_buffers (offset 10, little-endian) which must be 1.
 	for i := 0; i < NetHeaderSize; i++ {
-		if dataRAM[i] != 0 {
-			t.Errorf("header[%d] = %02x, want 0", i, dataRAM[i])
+		want := byte(0)
+		if i == 10 {
+			want = 1
+		}
+		if dataRAM[i] != want {
+			t.Errorf("header[%d] = %02x, want %02x", i, dataRAM[i], want)
 		}
 	}
 
@@ -456,5 +461,27 @@ func TestNetHeaderSize(t *testing.T) {
 	// uint16_t num_buffers (2) = 12 bytes
 	if NetHeaderSize != 12 {
 		t.Errorf("NetHeaderSize = %d, want 12", NetHeaderSize)
+	}
+}
+
+// TestMaxQueueNumLinuxNetThreshold asserts that the ring size we advertise
+// is large enough to satisfy Linux's virtio_net flow-control threshold.
+// virtnet_poll_tx (drivers/net/virtio_net.c) only re-wakes the TX subqueue
+// when num_free >= 2 + MAX_SKB_FRAGS. MAX_SKB_FRAGS is 17 on x86_64 (and
+// higher on some arches), so a ring smaller than 19 freezes after one TX:
+// num_free can never reach the wake threshold. We pin this at >= 32 so
+// future MAX_SKB_FRAGS bumps don't silently regress the boot.
+func TestMaxQueueNumLinuxNetThreshold(t *testing.T) {
+	const linuxMaxSkbFragsCeiling = 32 // safe upper bound across arches
+	const wakeMargin = 2                // virtio_net adds 2 (descriptors for hdr + skb head)
+	required := linuxMaxSkbFragsCeiling + wakeMargin
+	if MaxQueueNum < required {
+		t.Errorf("MaxQueueNum=%d too small for Linux virtio_net: needs >= %d "+
+			"(2 + MAX_SKB_FRAGS) or TX subqueue stops after first packet",
+			MaxQueueNum, required)
+	}
+	if MaxQueueNum&(MaxQueueNum-1) != 0 {
+		t.Errorf("MaxQueueNum=%d must be a power of two (used as ring-wrap mask)",
+			MaxQueueNum)
 	}
 }

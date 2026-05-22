@@ -7,6 +7,22 @@ import (
 
 var pciTransportDebug = os.Getenv("TINYEMU_VIRTIO_PCI_DEBUG") == "1"
 
+func devTag(id uint32) string {
+	switch id {
+	case DeviceIDNet:
+		return "net"
+	case DeviceIDBlock:
+		return "blk"
+	case DeviceIDConsole:
+		return "con"
+	case DeviceIDEntropy:
+		return "rng"
+	case DeviceIDInput:
+		return "inp"
+	}
+	return fmt.Sprintf("id%d", id)
+}
+
 // Legacy VirtIO PCI transport — implements the I/O-port register layout
 // used by virtio 0.9.5 / "legacy" devices. This is the layout the
 // `virtio_pci_legacy` driver in Linux's drivers/virtio/ binds to when a
@@ -75,8 +91,8 @@ func (t *LegacyTransport) IORead(off uint16, size int) uint32 {
 	defer dev.mu.Unlock()
 	val := t.ioReadLocked(off, size)
 	if pciTransportDebug {
-		fmt.Fprintf(os.Stderr, "[vpci] R off=%02x sz=%d -> %x  status=%02x intStatus=%x\n",
-			off, size, val, dev.Status, dev.IntStatus)
+		fmt.Fprintf(os.Stderr, "[vpci-%s] R off=%02x sz=%d -> %x  status=%02x intStatus=%x\n",
+			devTag(dev.DeviceID), off, size, val, dev.Status, dev.IntStatus)
 	}
 	return val
 }
@@ -146,7 +162,7 @@ func (t *LegacyTransport) ioReadLocked(off uint16, size int) uint32 {
 // `size` bytes (1, 2, or 4).
 func (t *LegacyTransport) IOWrite(off uint16, val uint32, size int) {
 	if pciTransportDebug {
-		fmt.Fprintf(os.Stderr, "[vpci] W off=%02x sz=%d <- %x\n", off, size, val)
+		fmt.Fprintf(os.Stderr, "[vpci-%s] W off=%02x sz=%d <- %x\n", devTag(t.dev.DeviceID), off, size, val)
 	}
 	dev := t.dev
 	dev.mu.Lock()
@@ -222,8 +238,8 @@ func (t *LegacyTransport) IOWrite(off uint16, val uint32, size int) {
 			dev.write16(qs.UsedAddr, 0)
 		}
 		if pciTransportDebug {
-			fmt.Fprintf(os.Stderr, "[vpci] PFN write q=%d pfn=%08x num=%d desc=%016x avail=%016x used=%016x\n",
-				dev.QueueSel, val, num, descAddr, availAddr, usedAddr)
+			fmt.Fprintf(os.Stderr, "[vpci-%s] PFN write q=%d pfn=%08x num=%d desc=%016x avail=%016x used=%016x\n",
+				devTag(dev.DeviceID), dev.QueueSel, val, num, descAddr, availAddr, usedAddr)
 		}
 	case pciQueueSelect:
 		if val < MaxQueue {
@@ -233,8 +249,8 @@ func (t *LegacyTransport) IOWrite(off uint16, val uint32, size int) {
 		if val < MaxQueue {
 			if pciTransportDebug {
 				qs := &dev.Queues[val]
-				fmt.Fprintf(os.Stderr, "[vpci] notify q=%d avail.idx=%d lastAvail=%d\n",
-					val, dev.read16(qs.AvailAddr+2), qs.LastAvailIdx)
+				fmt.Fprintf(os.Stderr, "[vpci-%s] notify q=%d avail.idx=%d lastAvail=%d\n",
+					devTag(dev.DeviceID), val, dev.read16(qs.AvailAddr+2), qs.LastAvailIdx)
 			}
 			dev.queueNotify(val)
 		}

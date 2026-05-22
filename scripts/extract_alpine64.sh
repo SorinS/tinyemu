@@ -112,3 +112,44 @@ build_nonlplug() {
 }
 
 build_nonlplug "$OUT/initrd.nonlplug"
+
+# nonlplug-fast: nlplug bypass + drop hwdrivers, modloop, syslog,
+# bootmisc, firstboot. Fastest path to a shell when you also need
+# the nlplug workaround (e.g. x86_64).
+build_nonlplug_fast() {
+    out=$1
+    if [ -f "$out" ] && [ ! "$INITRD" -nt "$out" ] && [ ! "$0" -nt "$out" ]; then
+        return
+    fi
+    echo "[extract_alpine64] building $(basename "$out")"
+    tmp=$(mktemp -d)
+    (cd "$tmp" && gunzip -c "$INITRD" | cpio -id 2>/dev/null)
+    awk '
+        /^ebegin "Mounting boot media"$/ {
+            print "ebegin \"Mounting boot media (nlplug bypass)\""
+            print "mkdir -p /media/cdrom"
+            print "mount -r -t iso9660 /dev/vda /media/cdrom"
+            skip = 1
+            next
+        }
+        skip && /^eend / {
+            print
+            skip = 0
+            next
+        }
+        /^exec switch_root/ {
+            print "rm -f \"$sysroot\"/etc/runlevels/sysinit/hwdrivers"
+            print "rm -f \"$sysroot\"/etc/runlevels/sysinit/modloop"
+            print "rm -f \"$sysroot\"/etc/runlevels/boot/syslog"
+            print "rm -f \"$sysroot\"/etc/runlevels/boot/bootmisc"
+            print "rm -f \"$sysroot\"/etc/runlevels/default/firstboot"
+        }
+        !skip { print }
+    ' "$tmp/init" > "$tmp/init.new"
+    mv "$tmp/init.new" "$tmp/init"
+    chmod +x "$tmp/init"
+    (cd "$tmp" && find . | cpio -o -H newc 2>/dev/null) | gzip > "$out"
+    rm -rf "$tmp"
+}
+
+build_nonlplug_fast "$OUT/initrd.nonlplug-fast"

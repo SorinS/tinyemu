@@ -277,11 +277,25 @@ func (s *Slirp) processTCPSockets() {
 		// Check for OOB (urgent) data first
 		// Reference: tinyemu-2019-12-21/slirp/slirp.c:407-408
 		// The C code uses select() with xfds to detect OOB. We use Poll with POLLPRI.
+		//
+		// On Darwin (and some Linux configurations) POLLPRI on a TCP socket
+		// can fire spuriously when the kernel has any out-of-band-ish state
+		// (peer half-close, error queue, etc.) — not just real RFC-1122
+		// urgent data. Mistakenly entering the OOB path makes SoRecvOOB set
+		// tp.SndUp = SndUna + SbCC, after which every subsequent data
+		// segment is tagged TH_URG. Real Linux receivers process URG as
+		// special-cased, which manifests as "first MTU comes through, then
+		// hang" (apk update style). We narrow the check: only treat the
+		// fd as OOB-ready if POLLPRI is set AND no normal-data flags
+		// (POLLIN | POLLHUP) are set in the same revents — that lets POLLPRI
+		// fire for real urgent data but ignores spurious wake-ups that
+		// coincide with normal recv.
 		hasOOB := false
 		if so.S >= 0 {
 			pollFds := []unix.PollFd{{Fd: int32(so.S), Events: unix.POLLPRI}}
 			n, _ := unix.Poll(pollFds, 0) // timeout=0 for non-blocking check
-			if n > 0 && (pollFds[0].Revents&unix.POLLPRI) != 0 {
+			rev := pollFds[0].Revents
+			if n > 0 && (rev&unix.POLLPRI) != 0 && (rev&(unix.POLLIN|unix.POLLHUP)) == 0 {
 				hasOOB = true
 			}
 		}

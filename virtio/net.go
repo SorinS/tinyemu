@@ -6,9 +6,16 @@ package virtio
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/jtolio/tinyemu-go/mem"
 )
+
+func init() {
+	if os.Getenv("TINYEMU_VIRTIO_NET_DEBUG") == "1" {
+		DebugNetRX = true
+	}
+}
 
 // Net queue indices
 // Reference: virtio.c - queue 0 is RX (network->guest), queue 1 is TX (guest->network)
@@ -20,8 +27,9 @@ const (
 // Net feature bits
 // Reference: tinyemu-2019-12-21/virtio.c:1243
 const (
-	NetFeatureMAC    = 1 << 5  // VIRTIO_NET_F_MAC - device has MAC address
-	NetFeatureStatus = 1 << 16 // VIRTIO_NET_F_STATUS - device has status field (not enabled)
+	NetFeatureMAC       = 1 << 5  // VIRTIO_NET_F_MAC - device has MAC address
+	NetFeatureMRG_RXBUF = 1 << 15 // VIRTIO_NET_F_MRG_RXBUF - 12-byte header w/ num_buffers
+	NetFeatureStatus    = 1 << 16 // VIRTIO_NET_F_STATUS - device has status field (not enabled)
 )
 
 // Net configuration space layout
@@ -139,7 +147,11 @@ func NewNetCore(memMap *mem.PhysMemoryMap, irq *mem.IRQSignal, es *EthernetDevic
 //                                                       offload, not
 //                                                       implemented.
 func (n *Net) setup(es *EthernetDevice) {
-	n.dev.SetFeatures(NetFeatureMAC)
+	// MRG_RXBUF is required so Linux's virtio_net driver uses the 12-byte
+	// header (matches NetHeaderSize). Without it, the driver picks 10 bytes
+	// and we mis-frame every packet by 2 (TX corrupts dst-MAC, RX header
+	// trails into payload). We always emit num_buffers=1 (single-buffer RX).
+	n.dev.SetFeatures(NetFeatureMAC | NetFeatureMRG_RXBUF)
 	n.dev.SetFeaturesHi(0) // no high-bit features (no STANDBY, etc.)
 	n.dev.Queues[NetQueueRX].ManualRecv = true
 	copy(n.dev.ConfigSpace[NetConfigMAC:], es.MACAddr[:])
@@ -161,6 +173,10 @@ func (n *Net) Device() *Device {
 //
 // Reference: tinyemu-2019-12-21/virtio.c:1153-1175 (virtio_net_recv_request)
 func (n *Net) recvRequest(dev *Device, queueIdx int, descIdx int, readSize int, writeSize int) int {
+	if DebugNetRX {
+		fmt.Fprintf(os.Stderr, "[VIRTIO-NET] recvRequest queue=%d desc=%d readSize=%d writeSize=%d hdr=%d\n",
+			queueIdx, descIdx, readSize, writeSize, n.headerSize)
+	}
 	if queueIdx == NetQueueTX {
 		// Guest is sending a packet to the network
 		// Skip the VirtIO net header
@@ -176,6 +192,14 @@ func (n *Net) recvRequest(dev *Device, queueIdx int, descIdx int, readSize int, 
 		if err := dev.MemcpyFromQueue(buf, queueIdx, descIdx, n.headerSize, packetLen); err != nil {
 			dev.ConsumeDesc(queueIdx, descIdx, 0)
 			return 0
+		}
+
+		if DebugNetRX {
+			m := len(buf)
+			if m > 32 {
+				m = 32
+			}
+			fmt.Fprintf(os.Stderr, "[VIRTIO-NET] TX %d bytes: %x\n", len(buf), buf[:m])
 		}
 
 		// Send to the network backend
@@ -274,9 +298,13 @@ func (n *Net) WritePacket(buf []byte) {
 		return // packet too large for buffer
 	}
 
-	// Write zero header
-	// Reference: tinyemu-2019-12-21/virtio.c:1212-1213
+	// Write header. With VIRTIO_NET_F_MRG_RXBUF negotiated, the 12-byte
+	// header's last 2 bytes are num_buffers — must be at least 1, otherwise
+	// the guest treats the descriptor as empty.
 	header := make([]byte, n.headerSize)
+	if n.headerSize >= 12 {
+		header[10] = 0x01 // num_buffers = 1 (little-endian)
+	}
 	if err := n.dev.MemcpyToQueue(NetQueueRX, int(descIdx), 0, header, n.headerSize); err != nil {
 		return
 	}

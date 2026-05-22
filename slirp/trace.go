@@ -24,7 +24,15 @@ type Tracer interface {
 
 // DefaultTracer is the default tracer used for new Slirp instances.
 // Set this before creating Slirp instances to enable tracing globally.
+// Auto-enabled to stderr if TINYEMU_SLIRP_TRACE=1.
 var DefaultTracer Tracer
+
+func init() {
+	if os.Getenv("TINYEMU_SLIRP_TRACE") == "1" {
+		DefaultTracer = StderrTracer()
+		fmt.Fprintln(os.Stderr, "[SLIRP] tracing enabled via TINYEMU_SLIRP_TRACE=1")
+	}
+}
 
 // WriterTracer is a Tracer that writes to an io.Writer.
 type WriterTracer struct {

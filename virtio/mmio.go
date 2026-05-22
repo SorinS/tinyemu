@@ -70,7 +70,13 @@ const (
 const (
 	MaxQueue      = 8   // Maximum number of queues per device
 	MaxConfigSize = 256 // Maximum configuration space size
-	MaxQueueNum   = 16  // Maximum queue entries (power of 2)
+	// MaxQueueNum: Linux's virtio_net needs num_free >= 2+MAX_SKB_FRAGS
+	// (= 19 on x86_64) to re-wake netif_tx_subqueue after each xmit;
+	// with anything below that threshold the TX queue stops forever
+	// after the first packet. 256 is the standard ring size everyone
+	// else uses and gives generous headroom. Must be a power of two so
+	// the (idx & (Num-1)) ring-wrap mask works.
+	MaxQueueNum = 256
 )
 
 // VirtIO descriptor flags
@@ -617,6 +623,12 @@ func (dev *Device) ConsumeDesc(queueIdx int, descIdx int, descLen int) {
 // DebugConsumeDesc enables debug logging for used ring writes.
 var DebugConsumeDesc bool
 
+func init() {
+	if os.Getenv("TINYEMU_VIRTIO_CONSUME_DEBUG") == "1" {
+		DebugConsumeDesc = true
+	}
+}
+
 // consumeDescLocked is the internal implementation of ConsumeDesc.
 // Caller must hold dev.mu.
 // Reference: tinyemu-2019-12-21/virtio.c:461-478 (virtio_consume_desc)
@@ -636,9 +648,17 @@ func (dev *Device) consumeDescLocked(queueIdx int, descIdx int, descLen int) {
 	dev.write32(entryAddr+4, uint32(descLen))
 
 	if DebugConsumeDesc {
-		println("[VIRTIO] consumeDesc queue:", queueIdx, "usedAddr:", qs.UsedAddr,
-			"usedIdx:", usedIdx, "->", usedIdx+1, "entryAddr:", entryAddr,
-			"descIdx:", descIdx, "descLen:", descLen)
+		tag := "id?"
+		switch dev.DeviceID {
+		case DeviceIDNet:
+			tag = "net"
+		case DeviceIDBlock:
+			tag = "blk"
+		case DeviceIDConsole:
+			tag = "con"
+		}
+		fmt.Fprintf(os.Stderr, "[virtio-%s] consumeDesc queue=%d usedAddr=%x usedIdx=%d->%d entryAddr=%x descIdx=%d descLen=%d\n",
+			tag, queueIdx, qs.UsedAddr, usedIdx, usedIdx+1, entryAddr, descIdx, descLen)
 	}
 
 	// Signal interrupt
