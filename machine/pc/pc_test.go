@@ -16,11 +16,13 @@ func TestPCResetVector(t *testing.T) {
 	}
 	defer pc.Close()
 
-	// Write a simple program at the reset vector (0xF000:0xFFF0 = 0xFFFF0)
+	// Write a simple program at the reset vector (0xF000:0xFFF0 = 0xFFFF0).
+	// biosROM covers 0xC0000-0xFFFFF (256 KB), so the reset address lands
+	// in the last 16 bytes of the region — len(PhysMem)-16.
 	// 0x66 MOV EAX, 0x12345678  (operand-size prefix for 32-bit in real mode)
 	// HLT
 	code := []byte{0x66, 0xB8, 0x78, 0x56, 0x34, 0x12, 0xF4}
-	copy(pc.biosROM.PhysMem[0xFFF0:], code)
+	copy(pc.biosROM.PhysMem[len(pc.biosROM.PhysMem)-16:], code)
 
 	cpu := pc.GetCPU().(*x86.CPU)
 	for !cpu.IsPowerDown() {
@@ -85,7 +87,7 @@ func TestBootRealMode(t *testing.T) {
 		0xF4,       // HLT
 		0x90, 0x90, // NOP padding
 	}
-	copy(pc.biosROM.PhysMem[0xFFF0:], code)
+	copy(pc.biosROM.PhysMem[len(pc.biosROM.PhysMem)-16:], code)
 
 	// Run until HLT
 	for !cpu.IsPowerDown() {
@@ -132,7 +134,7 @@ func TestBootStringOp(t *testing.T) {
 		0xF4, // HLT
 		0x90, // NOP padding
 	}
-	copy(pc.biosROM.PhysMem[0xFFF0:], code)
+	copy(pc.biosROM.PhysMem[len(pc.biosROM.PhysMem)-16:], code)
 
 	for !cpu.IsPowerDown() {
 		if err := cpu.Step(); err != nil {

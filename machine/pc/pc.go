@@ -15,16 +15,20 @@ import (
 )
 
 // Memory map constants for a standard PC.
+//
+// BIOS layout uses the modern "256 KB at top of 4 GiB + shadowed at the
+// top of low 1 MiB" arrangement so SeaBIOS (256 KB) can boot here as it
+// does under QEMU. Small custom BIOSes ≤256 KB drop into the same
+// region — they're placed at the END of the 256 KB window so their
+// reset-vector offset (`size-16`) lands at the canonical 0xFFFFFFF0.
 const (
 	LowRAMAddr      = 0x00000000
 	LowRAMSize      = 0x000A0000 // 640KB conventional memory
 	VGAApertureAddr = 0x000A0000
 	VGAApertureSize = 0x00020000 // 128KB VGA memory
-	BIOSShadowAddr  = 0x000C0000
-	BIOSShadowSize  = 0x00040000 // 256KB
-	BIOSROMAddr     = 0x000F0000
-	BIOSROMSize     = 0x00010000 // 64KB
-	HighBIOSAddr    = 0xFFF00000
+	BIOSROMAddr     = 0x000C0000 // low BIOS shadow window
+	BIOSROMSize     = 0x00040000 // 256 KB — fits SeaBIOS
+	HighBIOSAddr    = 0xFFFC0000 // high BIOS window (last 256 KB of 4 GiB)
 
 	VirtIOBaseAddr = 0x00010000 // Fixed MMIO address for VirtIO devices
 	VirtIOSize     = 0x00001000 // 4KB per device
@@ -318,17 +322,33 @@ func (p *PC) LoadBIOS(biosData []byte, kernelData []byte, initrdData []byte, cmd
 		// If both fail, fall through to BIOS ROM load
 	}
 
-	// Copy BIOS to both low and high ROM regions
+	// Copy BIOS to both low and high ROM regions. Placement is at the END
+	// of the 256 KB window so the reset vector at file-offset (size-16)
+	// always lands at canonical 0xFFFFFFF0 (high alias) / 0xC0000+offset
+	// (low shadow), regardless of BIOS size.
 	biosLen := uint64(len(biosData))
 	if biosLen > BIOSROMSize {
-		return errors.New("BIOS image too large")
+		return errors.New("BIOS image too large (max 256 KB)")
 	}
-	copy(p.biosROM.PhysMem, biosData)
-	copy(p.biosHigh.PhysMem, biosData)
+	offset := BIOSROMSize - biosLen
+	copy(p.biosROM.PhysMem[offset:], biosData)
+	copy(p.biosHigh.PhysMem[offset:], biosData)
 
-	// Set CPU reset vector
+	// Set CPU reset vector. x86 reset state has CS.base = 0xFFFF0000 with
+	// EIP = 0xFFF0, so the first fetch is at 0xFFFFFFF0 — the last 16
+	// bytes of the high BIOS region, which all real BIOSes use for the
+	// initial far-jump-to-low-real-mode-entry.
+	//
+	// For tiny custom BIOSes ≤64 KB, the legacy convention used CS.base =
+	// 0xF0000 (low shadow). We pick high vs low by size: anything larger
+	// than 64 KB is a "modern" BIOS (SeaBIOS, OVMF in CSM, etc.) that
+	// expects the high reset; smaller images keep the legacy behaviour.
 	p.cpu.SetSeg(x86.CS, 0xF000)
-	p.cpu.SetSegBase(x86.CS, 0xF0000)
+	if biosLen > 0x10000 {
+		p.cpu.SetSegBase(x86.CS, 0xFFFF0000)
+	} else {
+		p.cpu.SetSegBase(x86.CS, 0xF0000)
+	}
 	p.cpu.SetEIP(0xFFF0)
 
 	return nil
