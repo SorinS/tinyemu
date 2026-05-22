@@ -2073,8 +2073,10 @@ func TestIntegrationTCPLargeTransfer(t *testing.T) {
 	defer ln.Close()
 	serverAddr := ln.Addr().(*net.TCPAddr)
 
-	// 8 KB of distinct payload — enough to span several MTUs.
-	const blobSize = 8 * 1024
+	// 512 KB of distinct payload — comparable in size to an APKINDEX
+	// download. Spans ~350 MTUs; will trigger any window/ACK or mbuf-
+	// pool issue that an 8 KB test wouldn't.
+	const blobSize = 512 * 1024
 	blob := make([]byte, blobSize)
 	for i := range blob {
 		blob[i] = byte(i & 0xff)
