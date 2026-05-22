@@ -46,6 +46,12 @@ func (c *CPU) parseModRM64(rex uint8) modRMResult {
 // the adjustment, `mov qword [rip+disp32], imm32` wrote to EA-4
 // instead of EA — caught while debugging the Linux 6.18 boot.
 func (c *CPU) parseModRM64WithImm(rex uint8, immBytes uint8) modRMResult {
+	// Dispatch to the 16-bit ModR/M decoder when the current address
+	// size is 16 — the encoding table is entirely different from the
+	// 32/64-bit case (see parseModRM16).
+	if c.currentAddressSize == 2 {
+		return c.parseModRM16(rex)
+	}
 	mb := c.fetch8()
 	mod := (mb >> 6) & 3
 	reg := (mb >> 3) & 7
@@ -163,4 +169,91 @@ func (m *modRMResult) shiftEAForImm(extraImmBytes uint8) {
 	if m.ripRelative {
 		m.ea += uint64(extraImmBytes)
 	}
+}
+
+// parseModRM16 decodes a ModR/M byte under 16-bit address-size mode.
+// The encoding is completely different from the 32/64-bit case — there
+// is no SIB byte, displacements are 16-bit, and the rm field selects
+// from a small fixed set of register pairs rather than any GPR. See
+// Intel SDM Vol 2 Table 2-1.
+//
+// The returned ea is a 16-bit segment OFFSET (caller adds the segment
+// base via segBaseForModRM). REX prefixes have no effect in 16-bit
+// modes — by Intel SDM the REX bytes 0x40..0x4F simply decode as
+// INC/DEC reg in non-long modes (they're filtered upstream before
+// parseModRM is ever reached).
+func (c *CPU) parseModRM16(rex uint8) modRMResult {
+	mb := c.fetch8()
+	mod := (mb >> 6) & 3
+	reg := (mb >> 3) & 7
+	rm := mb & 7
+
+	if rex&rexR != 0 {
+		reg |= 0x8
+	}
+
+	r := modRMResult{
+		mod:        mod,
+		reg:        reg,
+		defaultSeg: DS,
+		hasREX:     rex != 0,
+	}
+
+	if mod == 3 {
+		// Register operand — same semantics as in 32/64-bit mode for
+		// the 8 base regs. REX.B extension applies (though in 16-bit
+		// modes REX shouldn't actually be present).
+		if rex&rexB != 0 {
+			rm |= 0x8
+		}
+		r.rm = rm
+		r.isReg = true
+		return r
+	}
+
+	// rm field -> register-pair contribution + default segment.
+	var ea uint64
+	defaultSeg := DS
+	switch rm {
+	case 0: // [BX + SI]
+		ea = uint64(c.GetReg16(BX)) + uint64(c.GetReg16(SI))
+	case 1: // [BX + DI]
+		ea = uint64(c.GetReg16(BX)) + uint64(c.GetReg16(DI))
+	case 2: // [BP + SI] — SS-based by default
+		ea = uint64(c.GetReg16(BP)) + uint64(c.GetReg16(SI))
+		defaultSeg = SS
+	case 3: // [BP + DI] — SS-based
+		ea = uint64(c.GetReg16(BP)) + uint64(c.GetReg16(DI))
+		defaultSeg = SS
+	case 4: // [SI]
+		ea = uint64(c.GetReg16(SI))
+	case 5: // [DI]
+		ea = uint64(c.GetReg16(DI))
+	case 6:
+		if mod == 0 {
+			// mod=00, rm=6 is the special case: disp16 (direct).
+			// Not a [BP] reference and not SS-based.
+			ea = uint64(c.fetch16())
+		} else {
+			ea = uint64(c.GetReg16(BP))
+			defaultSeg = SS
+		}
+	case 7: // [BX]
+		ea = uint64(c.GetReg16(BX))
+	}
+
+	// Apply the displacement based on mod (skipped above for rm=6/mod=0
+	// which already consumed its disp16).
+	switch mod {
+	case 1:
+		ea += uint64(int64(int8(c.fetch8())))
+	case 2:
+		ea += uint64(int64(int16(c.fetch16())))
+	}
+
+	// 16-bit addressing wraps within the segment.
+	r.ea = ea & 0xFFFF
+	r.defaultSeg = defaultSeg
+	r.rm = rm // no REX.B in 16-bit addr mode
+	return r
 }

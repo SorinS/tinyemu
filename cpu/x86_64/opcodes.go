@@ -489,13 +489,27 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return c.opOUTEAX(port, operandSize)
 
 	case op == 0xE8:
-		disp := int64(int32(c.fetch32()))
+		// CALL rel — displacement size = operand size. Real mode uses
+		// rel16; 32-/64-bit modes use rel32 (REX.W doesn't promote to
+		// rel64 — there's no rel64 CALL in long mode).
+		var disp int64
+		if operandSize == 2 {
+			disp = int64(int16(c.fetch16()))
+		} else {
+			disp = int64(int32(c.fetch32()))
+		}
 		c.push64(c.rip)
 		c.rip = uint64(int64(c.rip) + disp)
 		return nil
 
 	case op == 0xE9:
-		disp := int64(int32(c.fetch32()))
+		// JMP rel — same operand-size dispatch as CALL rel.
+		var disp int64
+		if operandSize == 2 {
+			disp = int64(int16(c.fetch16()))
+		} else {
+			disp = int64(int32(c.fetch32()))
+		}
 		c.rip = uint64(int64(c.rip) + disp)
 		return nil
 
@@ -889,10 +903,16 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int, repPrefix uint8
 		return nil
 
 	case op2 >= 0x80 && op2 <= 0x8F:
-		// Jcc rel32 — even in 64-bit mode the displacement is 32 bits
-		// sign-extended (operand-size override could shrink to 16 but
-		// modern code never uses that).
-		disp := int64(int32(c.fetch32()))
+		// Jcc rel16 / rel32 — displacement size follows the operand
+		// size. In real / 16-bit modes the default is 16 bits; in 32-
+		// and 64-bit modes it's 32 bits. SeaBIOS's real-mode POST uses
+		// rel16 extensively, so dispatching by operandSize matters.
+		var disp int64
+		if operandSize == 2 {
+			disp = int64(int16(c.fetch16()))
+		} else {
+			disp = int64(int32(c.fetch32()))
+		}
 		if c.evalCond(op2 & 0xF) {
 			c.rip = uint64(int64(c.rip) + disp)
 		}

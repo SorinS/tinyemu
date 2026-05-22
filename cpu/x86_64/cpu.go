@@ -188,6 +188,13 @@ type CPU struct {
 	// currentSegOverride.
 	currentSegOverride int
 
+	// currentAddressSize is the address-size for the instruction currently
+	// being decoded (2, 4, or 8). Defaults derive from CPU mode at Step's
+	// dispatch boundary; the 0x67 prefix flips. parseModRM reads this to
+	// pick 16- vs 32-/64-bit ModR/M encoding tables — without it, real-
+	// mode 16-bit code (BIOS) misframes every ModR/M operand.
+	currentAddressSize uint8
+
 	intrLineState     int
 	interruptsBlocked bool
 	exitReason        int

@@ -328,6 +328,7 @@ func (c *CPU) Step() (err error) {
 			// so a stale override from the previous instruction
 			// can't leak into the next.
 			c.currentSegOverride = segOverride
+			c.currentAddressSize = addressSize
 			err := c.executeOpcode(b, rex, operandSize, addressSize, segOverride, repPrefix, operandOverride)
 			c.currentSegOverride = -1
 			return err
