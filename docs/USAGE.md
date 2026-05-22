@@ -55,6 +55,60 @@ RIP/CR2 addresses from fault traces during boot debugging.
 
 ---
 
+## Networking in the guest
+
+`-net-user` is on by default in the run scripts; slirp serves a
+self-contained 10.0.2.0/24 with the host bridged via NAT. Inside the
+guest:
+
+```sh
+ip link set eth0 up
+ip addr add 10.0.2.15/24 dev eth0
+ip route add default via 10.0.2.2
+echo nameserver 10.0.2.3 > /etc/resolv.conf
+```
+
+That's enough for `ping 10.0.2.2`, DNS, and TCP to the outside.
+
+### Prefer IPv4 (recommended)
+
+Slirp's address translation is IPv4-only — the gateway has no IPv6
+route. Modern `getaddrinfo` (used by `apk`, `wget`, `curl`) prefers
+AAAA answers when they exist, so resolution succeeds but the connect
+fails with "Network unreachable" or "Socket not connected".
+
+Tell `getaddrinfo` to prefer IPv4 instead of papering over it in
+slirp:
+
+```sh
+cat >> /etc/gai.conf <<EOF
+precedence ::ffff:0:0/96  100
+EOF
+```
+
+Once that's in place `apk update`, `apk add curl`, and similar all
+work end-to-end against `http://dl-cdn.alpinelinux.org`. Single-shot
+override per command: `wget -4 …`, `curl -4 …`.
+
+### What works / doesn't
+
+| operation                  | status                                                |
+|----------------------------|-------------------------------------------------------|
+| DNS (UDP/53 via 10.0.2.3)  | works (slirp forwards to host's resolver)             |
+| TCP outbound               | works (HTTP, HTTPS, APKINDEX, package downloads)      |
+| ICMP echo to 10.0.2.2      | works (slirp answers locally)                         |
+| ICMP echo to outside hosts | **doesn't** — needs raw sockets, temu isn't root      |
+| inbound from host          | not exposed (slirp is NAT-only, no port forwards yet) |
+
+### Service-grade defaults
+
+Some apk fetches stall briefly on bulk transfers (a few hundred ms)
+under software MMU emulation — the guest's RX ring fills, kernel
+emits window=0 ACK, slirp pauses until the window reopens. Visible
+but not a bug; downloads still complete.
+
+---
+
 ## Running individual assembly programs
 
 ```sh
