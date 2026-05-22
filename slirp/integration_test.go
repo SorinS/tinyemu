@@ -1601,6 +1601,107 @@ func TestIntegrationDNSRoundtrip(t *testing.T) {
 		reply)
 }
 
+// TestIntegrationDNSBackToBack drives two DNS queries from the same guest
+// source port in close succession through SLIRP's UDP NAT. busybox-nslookup
+// reuses its ephemeral source port for the A and AAAA queries it sends
+// when the user types `nslookup foo`; SLIRP must service both, not just
+// the first. The user reported a "first Parse error, second OK" pattern
+// in the guest — this test reproduces it at the slirp layer.
+func TestIntegrationDNSBackToBack(t *testing.T) {
+	saveDnsAddr := dnsAddr
+	saveDnsAddrTime := dnsAddrTime
+	dnsAddr = nil
+	dnsAddrTime = 0
+	defer func() {
+		dnsAddr = saveDnsAddr
+		dnsAddrTime = saveDnsAddrTime
+	}()
+	if _, ok := getDnsAddr(); !ok {
+		t.Skip("no DNS server in /etc/resolv.conf (likely sandboxed CI)")
+	}
+
+	mkQuery := func(id uint16, qname []byte) []byte {
+		q := []byte{
+			byte(id >> 8), byte(id),
+			0x01, 0x00,
+			0x00, 0x01,
+			0x00, 0x00,
+			0x00, 0x00,
+			0x00, 0x00,
+		}
+		q = append(q, qname...)
+		q = append(q, 0x00, 0x01, 0x00, 0x01)
+		return q
+	}
+	qname := []byte{7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0}
+
+	h := newTestHelper()
+	const guestSrcPort = 12345
+	vhostMAC := [6]byte{0x52, 0x55}
+	copy(vhostMAC[2:], h.slirp.VHostAddr.To4())
+	sendQ := func(id uint16) {
+		q := mkQuery(id, qname)
+		udp := h.buildUDPPacket(guestSrcPort, 53, q)
+		ip := h.buildIPPacket(IPProtoUDP, h.guestIP, h.slirp.VNameserverAddr, udp)
+		frame := h.buildEthFrame(vhostMAC, EthPIP, ip)
+		h.slirp.Input(frame)
+	}
+
+	// First query.
+	sendQ(0xBEEF)
+	deadline1 := time.Now().Add(3 * time.Second)
+	cursor1 := len(h.outputPkts)
+	h.pumpUDPUntilOutput(deadline1, cursor1)
+	if len(h.outputPkts) == cursor1 {
+		t.Fatalf("first DNS query: no response captured")
+	}
+	r1 := h.outputPkts[cursor1]
+	id1 := extractDNSID(t, r1)
+	if id1 != 0xBEEF {
+		t.Errorf("first reply has DNS ID %#x, want 0xBEEF", id1)
+	}
+
+	// Second query — same source port, different ID.
+	sendQ(0xCAFE)
+	deadline2 := time.Now().Add(3 * time.Second)
+	cursor2 := len(h.outputPkts)
+	h.pumpUDPUntilOutput(deadline2, cursor2)
+	if len(h.outputPkts) == cursor2 {
+		t.Fatalf("second DNS query (same source port as first): no response captured — slirp UDP socket-reuse bug")
+	}
+	r2 := h.outputPkts[cursor2]
+	id2 := extractDNSID(t, r2)
+	if id2 != 0xCAFE {
+		t.Errorf("second reply has DNS ID %#x, want 0xCAFE (probably a stale reply from socket reuse)", id2)
+	}
+}
+
+// pumpUDPUntilOutput drives slirp's poll loop until outputPkts grows past
+// cursor or the deadline elapses.
+func (h *testHelper) pumpUDPUntilOutput(deadline time.Time, cursor int) {
+	for time.Now().Before(deadline) && len(h.outputPkts) == cursor {
+		for so := h.slirp.UDB.Next; so != &h.slirp.UDB; so = so.Next {
+			if so.S < 0 {
+				continue
+			}
+			so.SoRecvFrom()
+		}
+		if h.slirp.IfQueued > 0 {
+			h.slirp.IfStart()
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// extractDNSID parses the DNS ID out of a captured eth/IP/UDP/DNS frame.
+func extractDNSID(t *testing.T, frame []byte) uint16 {
+	t.Helper()
+	if len(frame) < EthHLen+IPHeaderSize+UDPHeaderSize+12 {
+		t.Fatalf("captured frame too short: %d", len(frame))
+	}
+	return binary.BigEndian.Uint16(frame[EthHLen+IPHeaderSize+UDPHeaderSize:])
+}
+
 // ---------------------------------------------------------------------------
 // TCP integration tests
 //
