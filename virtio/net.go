@@ -6,14 +6,48 @@ package virtio
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/jtolio/tinyemu-go/mem"
 )
 
+// debugNetWriter is where DebugNetRX-gated traces are written.
+// Default os.Stderr; rerouted by TINYEMU_VIRTIO_NET_DEBUG.
+//
+// Routing rules (the env var holds the file path / sentinel):
+//
+//	(unset)         debug disabled
+//	"1"             enabled, output to ./tinyemu-virtio-net.log
+//	                — sensible default that keeps the interactive
+//	                  console clean while still capturing traces.
+//	"stderr"        enabled, output to stderr (legacy / debug-the-debug)
+//	"/some/path"    enabled, output truncated to that file
+var debugNetWriter io.Writer = io.Discard
+
 func init() {
-	if os.Getenv("TINYEMU_VIRTIO_NET_DEBUG") == "1" {
+	v := os.Getenv("TINYEMU_VIRTIO_NET_DEBUG")
+	if v == "" {
+		return
+	}
+	switch v {
+	case "stderr":
+		debugNetWriter = os.Stderr
 		DebugNetRX = true
+	case "1":
+		if f, err := os.OpenFile("tinyemu-virtio-net.log",
+			os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644); err == nil {
+			debugNetWriter = f
+			DebugNetRX = true
+			fmt.Fprintf(os.Stderr, "[VIRTIO-NET] tracing to ./tinyemu-virtio-net.log\n")
+		}
+	default:
+		if f, err := os.OpenFile(v,
+			os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644); err == nil {
+			debugNetWriter = f
+			DebugNetRX = true
+			fmt.Fprintf(os.Stderr, "[VIRTIO-NET] tracing to %s\n", v)
+		}
 	}
 }
 
@@ -174,7 +208,7 @@ func (n *Net) Device() *Device {
 // Reference: tinyemu-2019-12-21/virtio.c:1153-1175 (virtio_net_recv_request)
 func (n *Net) recvRequest(dev *Device, queueIdx int, descIdx int, readSize int, writeSize int) int {
 	if DebugNetRX {
-		fmt.Fprintf(os.Stderr, "[VIRTIO-NET] recvRequest queue=%d desc=%d readSize=%d writeSize=%d hdr=%d\n",
+		fmt.Fprintf(debugNetWriter, "[VIRTIO-NET] recvRequest queue=%d desc=%d readSize=%d writeSize=%d hdr=%d\n",
 			queueIdx, descIdx, readSize, writeSize, n.headerSize)
 	}
 	if queueIdx == NetQueueTX {
@@ -199,7 +233,7 @@ func (n *Net) recvRequest(dev *Device, queueIdx int, descIdx int, readSize int, 
 			if m > 32 {
 				m = 32
 			}
-			fmt.Fprintf(os.Stderr, "[VIRTIO-NET] TX %d bytes: %x\n", len(buf), buf[:m])
+			fmt.Fprintf(debugNetWriter, "[VIRTIO-NET] TX %d bytes: %x\n", len(buf), buf[:m])
 		}
 
 		// Send to the network backend
@@ -225,7 +259,7 @@ func (n *Net) CanWritePacket() bool {
 
 	if qs.Ready == 0 {
 		if DebugNetRX {
-			println("[VIRTIO-NET] CanWritePacket: queue not ready")
+			fmt.Fprintln(debugNetWriter, "[VIRTIO-NET] CanWritePacket: queue not ready")
 		}
 		return false
 	}
@@ -234,7 +268,7 @@ func (n *Net) CanWritePacket() bool {
 	availIdx := n.dev.read16(qs.AvailAddr + 2)
 	canWrite := qs.LastAvailIdx != availIdx
 	if DebugNetRX && !canWrite {
-		println("[VIRTIO-NET] CanWritePacket: no buffers available, lastAvail:", qs.LastAvailIdx, "availIdx:", availIdx)
+		fmt.Fprintln(debugNetWriter, "[VIRTIO-NET] CanWritePacket: no buffers available, lastAvail:", qs.LastAvailIdx, "availIdx:", availIdx)
 	}
 	return canWrite
 }
@@ -247,7 +281,7 @@ var DebugNetRX bool
 // Reference: tinyemu-2019-12-21/virtio.c:1189-1217 (virtio_net_write_packet)
 func (n *Net) WritePacket(buf []byte) {
 	if DebugNetRX {
-		println("[VIRTIO-NET] WritePacket: called with", len(buf), "bytes")
+		fmt.Fprintln(debugNetWriter, "[VIRTIO-NET] WritePacket: called with", len(buf), "bytes")
 	}
 	n.dev.mu.Lock()
 	defer n.dev.mu.Unlock()
@@ -256,7 +290,7 @@ func (n *Net) WritePacket(buf []byte) {
 
 	if qs.Ready == 0 {
 		if DebugNetRX {
-			println("[VIRTIO-NET] WritePacket: RX queue not ready, dropping packet")
+			fmt.Fprintln(debugNetWriter, "[VIRTIO-NET] WritePacket: RX queue not ready, dropping packet")
 		}
 		return
 	}
@@ -264,11 +298,11 @@ func (n *Net) WritePacket(buf []byte) {
 	// Read available index from guest memory
 	availIdx := n.dev.read16(qs.AvailAddr + 2)
 	if DebugNetRX {
-		println("[VIRTIO-NET] WritePacket: availIdx:", availIdx, "lastAvailIdx:", qs.LastAvailIdx, "diff:", availIdx-qs.LastAvailIdx)
+		fmt.Fprintln(debugNetWriter, "[VIRTIO-NET] WritePacket: availIdx:", availIdx, "lastAvailIdx:", qs.LastAvailIdx, "diff:", availIdx-qs.LastAvailIdx)
 	}
 	if qs.LastAvailIdx == availIdx {
 		if DebugNetRX {
-			println("[VIRTIO-NET] WritePacket: no available RX buffer, dropping packet. lastAvail:", qs.LastAvailIdx, "availIdx:", availIdx)
+			fmt.Fprintln(debugNetWriter, "[VIRTIO-NET] WritePacket: no available RX buffer, dropping packet. lastAvail:", qs.LastAvailIdx, "availIdx:", availIdx)
 		}
 		return
 	}
@@ -279,14 +313,14 @@ func (n *Net) WritePacket(buf []byte) {
 	if DebugNetRX {
 		// Debug: print the descriptor details
 		desc, _ := n.dev.getDesc(NetQueueRX, int(descIdx))
-		println("[VIRTIO-NET] Descriptor", descIdx, "addr:", desc.Addr, "len:", desc.Len, "flags:", desc.Flags)
+		fmt.Fprintln(debugNetWriter, "[VIRTIO-NET] Descriptor", descIdx, "addr:", desc.Addr, "len:", desc.Len, "flags:", desc.Flags)
 	}
 
 	// Check descriptor size
 	readSize, writeSize, ok := n.dev.getDescRWSize(NetQueueRX, int(descIdx))
 	if !ok {
 		if DebugNetRX {
-			println("[VIRTIO-NET] getDescRWSize failed for desc", descIdx)
+			fmt.Fprintln(debugNetWriter, "[VIRTIO-NET] getDescRWSize failed for desc", descIdx)
 		}
 		return
 	}
@@ -318,7 +352,7 @@ func (n *Net) WritePacket(buf []byte) {
 	n.dev.consumeDescLocked(NetQueueRX, int(descIdx), totalLen)
 	qs.LastAvailIdx++
 	if DebugNetRX {
-		println("[VIRTIO-NET] WritePacket: wrote", len(buf), "bytes to desc", descIdx, "lastAvail now", qs.LastAvailIdx)
+		fmt.Fprintln(debugNetWriter, "[VIRTIO-NET] WritePacket: wrote", len(buf), "bytes to desc", descIdx, "lastAvail now", qs.LastAvailIdx)
 		// Verify what we wrote by reading back the used ring
 		usedIdx := n.dev.read16(qs.UsedAddr + 2)
 		entryAddr := qs.UsedAddr + 4 + uint64((usedIdx-1)&uint16(qs.Num-1))*8
@@ -326,21 +360,15 @@ func (n *Net) WritePacket(buf []byte) {
 		if ptr != nil {
 			entryId := uint32(ptr[0]) | uint32(ptr[1])<<8 | uint32(ptr[2])<<16 | uint32(ptr[3])<<24
 			entryLen := uint32(ptr[4]) | uint32(ptr[5])<<8 | uint32(ptr[6])<<16 | uint32(ptr[7])<<24
-			println("[VIRTIO-NET] Used ring verify: usedIdx:", usedIdx, "entry id:", entryId, "len:", entryLen)
+			fmt.Fprintln(debugNetWriter, "[VIRTIO-NET] Used ring verify: usedIdx:", usedIdx, "entry id:", entryId, "len:", entryLen)
 		}
 		// Verify packet data in descriptor buffer
 		desc, _ := n.dev.getDesc(NetQueueRX, int(descIdx))
 		pktPtr := n.dev.MemMap.GetRAMPtr(desc.Addr, false)
 		if pktPtr != nil && len(buf) >= 14 {
 			// Skip 12-byte VirtIO header, show packet data in hex
-			print("[VIRTIO-NET] Packet in memory hex: ")
-			for i := 12; i < 12+len(buf) && i < len(pktPtr); i++ {
-				if pktPtr[i] < 16 {
-					print("0")
-				}
-				print(fmt.Sprintf("%x", pktPtr[i]))
-			}
-			println()
+			fmt.Fprintf(debugNetWriter, "[VIRTIO-NET] Packet in memory hex: %x\n",
+				pktPtr[12:min(12+len(buf), len(pktPtr))])
 		}
 	}
 }
