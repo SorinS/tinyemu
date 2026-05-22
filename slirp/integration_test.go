@@ -1601,12 +1601,22 @@ func TestIntegrationDNSRoundtrip(t *testing.T) {
 		reply)
 }
 
-// TestIntegrationDNSBackToBack drives two DNS queries from the same guest
+// TestIntegrationDNSBackToBack drives many DNS queries from the same guest
 // source port in close succession through SLIRP's UDP NAT. busybox-nslookup
 // reuses its ephemeral source port for the A and AAAA queries it sends
-// when the user types `nslookup foo`; SLIRP must service both, not just
-// the first. The user reported a "first Parse error, second OK" pattern
-// in the guest — this test reproduces it at the slirp layer.
+// when the user types `nslookup foo`; SLIRP must service every one, not
+// just the first. The user reported a "first Parse error, second OK"
+// pattern in the guest — this test reproduces it at the slirp layer and
+// also catches cumulative-state issues that only show up after several
+// queries (mbuf-pool exhaustion, used-but-not-released socket slot,
+// reorderings, etc.).
+//
+// Mix of behaviours we want to exercise:
+//   - many queries from the same (guest IP, port) tuple
+//   - mixed A and AAAA query types
+//   - quick succession (no sleep between sends) — the original symptom
+//   - that every reply's DNS ID matches the matching query
+//   - that no spurious extra replies show up
 func TestIntegrationDNSBackToBack(t *testing.T) {
 	saveDnsAddr := dnsAddr
 	saveDnsAddrTime := dnsAddrTime
@@ -1620,7 +1630,8 @@ func TestIntegrationDNSBackToBack(t *testing.T) {
 		t.Skip("no DNS server in /etc/resolv.conf (likely sandboxed CI)")
 	}
 
-	mkQuery := func(id uint16, qname []byte) []byte {
+	// Builds a minimal DNS query for the given name + qtype.
+	mkQuery := func(id uint16, qname []byte, qtype uint16) []byte {
 		q := []byte{
 			byte(id >> 8), byte(id),
 			0x01, 0x00,
@@ -1630,49 +1641,100 @@ func TestIntegrationDNSBackToBack(t *testing.T) {
 			0x00, 0x00,
 		}
 		q = append(q, qname...)
-		q = append(q, 0x00, 0x01, 0x00, 0x01)
+		q = append(q, byte(qtype>>8), byte(qtype))
+		q = append(q, 0x00, 0x01) // class IN
 		return q
 	}
-	qname := []byte{7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0}
+	// Two different qnames to ensure we're not hammering a single
+	// upstream cache entry.
+	names := [][]byte{
+		{7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0},
+		{6, 'g', 'o', 'o', 'g', 'l', 'e', 3, 'c', 'o', 'm', 0},
+	}
 
 	h := newTestHelper()
 	const guestSrcPort = 12345
 	vhostMAC := [6]byte{0x52, 0x55}
 	copy(vhostMAC[2:], h.slirp.VHostAddr.To4())
-	sendQ := func(id uint16) {
-		q := mkQuery(id, qname)
+
+	sendQ := func(id uint16, qname []byte, qtype uint16) {
+		q := mkQuery(id, qname, qtype)
 		udp := h.buildUDPPacket(guestSrcPort, 53, q)
 		ip := h.buildIPPacket(IPProtoUDP, h.guestIP, h.slirp.VNameserverAddr, udp)
 		frame := h.buildEthFrame(vhostMAC, EthPIP, ip)
 		h.slirp.Input(frame)
 	}
 
-	// First query.
-	sendQ(0xBEEF)
-	deadline1 := time.Now().Add(3 * time.Second)
-	cursor1 := len(h.outputPkts)
-	h.pumpUDPUntilOutput(deadline1, cursor1)
-	if len(h.outputPkts) == cursor1 {
-		t.Fatalf("first DNS query: no response captured")
+	// Build the schedule: 8 queries, alternating qtype (A/AAAA) and qname.
+	type entry struct {
+		id    uint16
+		name  []byte
+		qtype uint16
 	}
-	r1 := h.outputPkts[cursor1]
-	id1 := extractDNSID(t, r1)
-	if id1 != 0xBEEF {
-		t.Errorf("first reply has DNS ID %#x, want 0xBEEF", id1)
+	const nQueries = 8
+	schedule := make([]entry, nQueries)
+	for i := 0; i < nQueries; i++ {
+		schedule[i] = entry{
+			id:    0xBEEF + uint16(i),
+			name:  names[i%len(names)],
+			qtype: []uint16{1, 28}[i%2], // 1=A, 28=AAAA
+		}
 	}
 
-	// Second query — same source port, different ID.
-	sendQ(0xCAFE)
-	deadline2 := time.Now().Add(3 * time.Second)
-	cursor2 := len(h.outputPkts)
-	h.pumpUDPUntilOutput(deadline2, cursor2)
-	if len(h.outputPkts) == cursor2 {
-		t.Fatalf("second DNS query (same source port as first): no response captured — slirp UDP socket-reuse bug")
+	// Fire all queries first (mimicking back-to-back UDP sends with no
+	// waiting), then pump slirp until we've captured one reply per query
+	// or a global deadline elapses.
+	cursor := len(h.outputPkts)
+	for _, e := range schedule {
+		sendQ(e.id, e.name, e.qtype)
 	}
-	r2 := h.outputPkts[cursor2]
-	id2 := extractDNSID(t, r2)
-	if id2 != 0xCAFE {
-		t.Errorf("second reply has DNS ID %#x, want 0xCAFE (probably a stale reply from socket reuse)", id2)
+
+	overall := time.Now().Add(8 * time.Second)
+	for time.Now().Before(overall) && len(h.outputPkts)-cursor < nQueries {
+		h.pumpUDPUntilOutput(time.Now().Add(200*time.Millisecond), cursor+len(h.outputPkts[cursor:]))
+		// Give time for upstream + readback.
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	got := h.outputPkts[cursor:]
+	if len(got) < nQueries {
+		// First failure mode: some replies never arrived. Report which.
+		seen := map[uint16]bool{}
+		for _, pkt := range got {
+			if id := extractDNSID(t, pkt); id != 0 {
+				seen[id] = true
+			}
+		}
+		var missing []uint16
+		for _, e := range schedule {
+			if !seen[e.id] {
+				missing = append(missing, e.id)
+			}
+		}
+		t.Fatalf("only got %d/%d DNS replies (missing IDs: %v) — likely socket reuse / mbuf-pool / state-machine bug",
+			len(got), nQueries, missing)
+	}
+
+	// Verify each captured reply matches one of our queries by ID, and
+	// that every query has a corresponding reply (no spurious extras).
+	expectIDs := map[uint16]bool{}
+	for _, e := range schedule {
+		expectIDs[e.id] = true
+	}
+	for i, pkt := range got {
+		id := extractDNSID(t, pkt)
+		if !expectIDs[id] {
+			t.Errorf("reply %d has unexpected DNS ID %#x (was already matched or never sent)", i, id)
+			continue
+		}
+		delete(expectIDs, id)
+	}
+	if len(expectIDs) != 0 {
+		var missing []uint16
+		for id := range expectIDs {
+			missing = append(missing, id)
+		}
+		t.Errorf("no reply for query IDs: %v", missing)
 	}
 }
 
