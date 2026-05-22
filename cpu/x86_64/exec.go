@@ -226,9 +226,28 @@ func (c *CPU) Step() (err error) {
 	c.interruptsBlocked = false
 
 	var rex uint8
+	// Default operand/address size depends on the current CPU mode.
+	// 0x66/0x67 prefixes flip from this default; REX.W (long mode)
+	// promotes operand size to 8 unconditionally.
+	//
+	//                    operand   address
+	//   ModeReal16          2         2
+	//   ModeProtected16     2         2
+	//   ModeProtected32     4         4
+	//   ModeCompat32        4         4
+	//   ModeLong64          4         8
 	operandSize := uint8(4)
 	addressSize := uint8(8)
+	switch c.mode {
+	case ModeReal16, ModeProtected16:
+		operandSize = 2
+		addressSize = 2
+	case ModeProtected32, ModeCompat32:
+		operandSize = 4
+		addressSize = 4
+	}
 	operandOverride := false
+	addressOverride := false
 	segOverride := -1
 	// String-op repetition: 0 = none, 1 = REP/REPE (0xF3), 2 = REPNE
 	// (0xF2). The decoder for MOVS/STOS/LODS/SCAS consults it; on any
@@ -251,7 +270,7 @@ func (c *CPU) Step() (err error) {
 		case b == 0x66:
 			operandOverride = true
 		case b == 0x67:
-			addressSize = 4
+			addressOverride = true
 		case b == 0xF0:
 			// LOCK. Single-threaded emulation: every instruction is
 			// already serialized, so LOCK is functionally a no-op.
@@ -279,10 +298,29 @@ func (c *CPU) Step() (err error) {
 			// effect, per Intel SDM. We capture by overwrite.
 			rex = b
 		default:
+			// Apply prefix overrides relative to the mode-derived
+			// defaults set above. 0x66 flips operand size between 16
+			// and 32; REX.W overrides to 64. 0x67 flips address size:
+			// in 16-bit modes -> 32, in 32-bit modes -> 16, in long
+			// mode -> 32 (no 16-bit addressing under long mode).
 			if rex&rexW != 0 {
 				operandSize = 8
 			} else if operandOverride {
-				operandSize = 2
+				if operandSize == 2 {
+					operandSize = 4
+				} else {
+					operandSize = 2
+				}
+			}
+			if addressOverride {
+				switch c.mode {
+				case ModeReal16, ModeProtected16:
+					addressSize = 4
+				case ModeProtected32, ModeCompat32:
+					addressSize = 2
+				case ModeLong64:
+					addressSize = 4
+				}
 			}
 			// Stash the override so memory accessors can apply the
 			// right segment base without each opcode handler having

@@ -507,9 +507,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	case op == 0xEA:
 		// JMP FAR PTR16:32 / FAR PTR16:16 — direct intersegment jump.
 		// Invalid in long mode (the opcode was reassigned); valid in
-		// 16-bit and 32-bit protected mode. PVH-style i386→x86_64
-		// bootstraps use this to reload CS after their own GDT goes live,
-		// so we have to implement it for OSv et al.
+		// real, 16-bit protected, and 32-bit protected mode. SeaBIOS
+		// uses this for its first jump out of the reset vector (real
+		// mode); PVH-style i386→x86_64 bootstraps use it to reload CS
+		// after their own GDT goes live.
 		if c.efer&EFER_LMA != 0 {
 			return unimplemented("0xEA JMP FAR is invalid in long mode")
 		}
@@ -520,10 +521,24 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 			off = uint64(c.fetch32())
 		}
 		sel := c.fetch16()
-		// Read the target descriptor. Selector bits 2..15 are the index;
-		// bits 0..1 are RPL/TI (we ignore TI — assume GDT, which is what
-		// every boot path we care about uses). With paging off (the case
-		// PVH cares about) GDTR.base is a physical address.
+		// Real mode: CS.base is just sel<<4, no descriptor table is
+		// involved (and any GDTR base is meaningless). All the other
+		// segment-cache fields (limit, access, flags) stay the same —
+		// real mode permanently runs as 16-bit code with a 64 KB limit.
+		if c.cr[0]&CR0_PE == 0 {
+			c.seg[CS] = sel
+			c.segBase[CS] = uint64(sel) << 4
+			c.segLimit[CS] = 0xFFFF
+			// access stays at its real-mode default; recomputeMode will
+			// pick ModeReal16 because PE=0.
+			c.recomputeMode()
+			c.rip = off
+			return nil
+		}
+		// Protected mode: read the target descriptor. Selector bits 2..15
+		// are the index; bits 0..1 are RPL/TI (we ignore TI — assume GDT).
+		// With paging off (PVH / SeaBIOS pre-mode-switch) GDTR.base is a
+		// physical address.
 		gdtBase := c.segBase[GDTR]
 		descAddr := gdtBase + uint64(sel&0xFFF8)
 		desc, err := c.memMap.Read64(descAddr)

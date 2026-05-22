@@ -4,6 +4,7 @@ package pc
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/jtolio/tinyemu-go/cpu"
@@ -217,6 +218,59 @@ func New(cfg Config) (*PC, error) {
 	p.io.RegisterWrite(0x61, 0x61, func(port uint16, val uint32) {
 		port61 = uint8(val)
 	})
+
+	// QEMU/SeaBIOS debug ports.
+	//
+	// 0x402: byte-write debugcon — SeaBIOS prints its boot log here when
+	//        CONFIG_DEBUG_IO is on (the default in qemu's prebuilt). 0xE9
+	//        is the equivalent in Bochs/older builds.
+	// 0x80:  POST diagnostic byte — BIOSes also use writes to 0x80 as an
+	//        ~1 µs IO-delay primitive (real hw waited on the ISA bus),
+	//        so 99% of writes here are timing noise (often 0xff). The
+	//        port is accepted and the last value remembered so reads
+	//        return it, but logging is OFF by default — opt in via
+	//        TINYEMU_BIOS_POST=1 if you really want it.
+	//
+	// 0x402 / 0xE9 routing:
+	//   (unset)   silent — no console pollution
+	//   =1        file ./tinyemu-bios.log
+	//   =stderr   stderr (legacy / debug-the-debug)
+	//   =<path>   that file (truncated on start)
+	biosDbg := io.Writer(io.Discard)
+	switch v := os.Getenv("TINYEMU_BIOS_DEBUG"); v {
+	case "":
+		// silent
+	case "stderr":
+		biosDbg = os.Stderr
+	case "1":
+		if f, err := os.OpenFile("tinyemu-bios.log",
+			os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644); err == nil {
+			biosDbg = f
+			fmt.Fprintln(os.Stderr, "[BIOS] tracing to ./tinyemu-bios.log")
+		}
+	default:
+		if f, err := os.OpenFile(v,
+			os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644); err == nil {
+			biosDbg = f
+			fmt.Fprintf(os.Stderr, "[BIOS] tracing to %s\n", v)
+		}
+	}
+	logPost := os.Getenv("TINYEMU_BIOS_POST") == "1"
+	var postCode uint8
+	p.io.RegisterRead(0x80, 0x80, func(port uint16) uint32 { return uint32(postCode) })
+	p.io.RegisterWrite(0x80, 0x80, func(port uint16, val uint32) {
+		postCode = uint8(val)
+		if logPost {
+			fmt.Fprintf(biosDbg, "[bios-post] %#02x\n", postCode)
+		}
+	})
+	dbgWriter := func(port uint16, val uint32) {
+		_, _ = biosDbg.Write([]byte{byte(val)})
+	}
+	p.io.RegisterRead(0x402, 0x402, func(port uint16) uint32 { return 0xff })
+	p.io.RegisterWrite(0x402, 0x402, dbgWriter)
+	p.io.RegisterRead(0xE9, 0xE9, func(port uint16) uint32 { return 0xff })
+	p.io.RegisterWrite(0xE9, 0xE9, dbgWriter)
 
 	// LAPIC MMIO at 0xFEE00000 (4 KB) and IOAPIC at 0xFEC00000 (4 KB).
 	// We don't model APICs, but modern kernels poke these regions during
