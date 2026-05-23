@@ -200,6 +200,83 @@ func TestRealMode_ModRM16RegPair(t *testing.T) {
 	}
 }
 
+// pm32CPU brings the CPU into 32-bit protected mode with flat
+// segments and a small stack at 0x9000. Used by stack-width tests
+// that need to exercise pm32 path of pushStack/popStack.
+func pm32CPU(t *testing.T) (*CPU, *mem.PhysMemoryMap) {
+	t.Helper()
+	mm := mem.NewPhysMemoryMap()
+	t.Cleanup(mm.Close)
+	if _, err := mm.RegisterRAM(0, 1<<20, 0); err != nil {
+		t.Fatalf("RegisterRAM: %v", err)
+	}
+	c := NewCPU(mm)
+	c.SetCR64(0, CR0_PE|CR0_ET|CR0_NE)
+	c.SetSegAccess(CS, 0xC9A) // 32-bit code: G=1 D=1 P=1 type=A
+	c.SetSegBase64(CS, 0)
+	c.SetSegLimit(CS, 0xFFFFFFFF)
+	for _, s := range []int{DS, ES, SS, FS, GS} {
+		c.SetSegAccess(s, 0xC92) // 32-bit data
+		c.SetSegBase64(s, 0)
+		c.SetSegLimit(s, 0xFFFFFFFF)
+	}
+	c.SetReg64(RSP, 0x9000)
+	c.SetRIP(0x1000)
+	return c, mm
+}
+
+// TestPM32_RETPops4Bytes pins that RET in 32-bit protected mode pops
+// exactly 4 bytes from the stack, not 8. Push64 / pop64 were used
+// unconditionally; in pm32 the caller pushes EIP (4 bytes), our RET
+// read 8, and we returned to (push_value | high_garbage).
+func TestPM32_RETPops4Bytes(t *testing.T) {
+	c, mm := pm32CPU(t)
+	// Put the return address 0x1234 at [ESP]; 4 bytes above it put
+	// 0xCAFE — if we mistakenly pop 8 bytes we'd see that high half.
+	writeBytes(t, mm, 0x9000, []byte{
+		0x34, 0x12, 0x00, 0x00, // saved EIP
+		0xFE, 0xCA, 0x00, 0x00, // poison
+	})
+	// Program: RET ; the byte after isn't reached because RET jumps.
+	writeBytes(t, mm, 0x1000, []byte{0xC3})
+
+	if err := c.Step(); err != nil {
+		t.Fatalf("step: %v", err)
+	}
+	if got := c.GetRIP(); got != 0x1234 {
+		t.Errorf("RIP = %#x, want 0x1234 (popped 8 bytes instead of 4?)", got)
+	}
+	if got := c.GetReg64(RSP); got != 0x9004 {
+		t.Errorf("RSP = %#x, want 0x9004 (RET adjusted RSP by 8 instead of 4?)", got)
+	}
+}
+
+// TestPM32_PUSHimmPushes4Bytes pins that PUSH imm in 32-bit
+// protected mode consumes 4 stack bytes, not 8. SeaBIOS calls
+// printf-like functions with a format-string pointer pushed via
+// PUSH imm32; an 8-byte push would leave a 4-byte hole that later
+// RETs interpret as a return address into the BIOS rodata.
+func TestPM32_PUSHimmPushes4Bytes(t *testing.T) {
+	c, mm := pm32CPU(t)
+	// Program: PUSH 0xABCDEF12 ; HLT
+	writeBytes(t, mm, 0x1000, []byte{
+		0x68, 0x12, 0xEF, 0xCD, 0xAB,
+		0xF4,
+	})
+	for !c.IsPowerDown() {
+		if err := c.Step(); err != nil {
+			t.Fatalf("step: %v", err)
+		}
+	}
+	if got := c.GetReg64(RSP); got != 0x9000-4 {
+		t.Errorf("RSP = %#x, want %#x (PUSH imm consumed wrong slot width)", got, uint64(0x9000-4))
+	}
+	v, _ := c.memMap.Read32(uint64(c.GetReg64(RSP)))
+	if v != 0xABCDEF12 {
+		t.Errorf("stack[%#x] = %#x, want 0xABCDEF12", c.GetReg64(RSP), v)
+	}
+}
+
 // TestRealMode_LGDT32BitBase pins that LGDT in real / 32-bit modes
 // reads a 32-bit base from the pseudo-descriptor, not a 64-bit base.
 // SeaBIOS hit this — its pseudo-descriptor is limit(2) + base(4) = 6

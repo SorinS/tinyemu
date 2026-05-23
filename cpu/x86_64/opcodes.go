@@ -411,27 +411,35 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 
 	case op == 0x68:
 		// PUSH imm32 (or imm16 with 0x66) sign-extended to operand
-		// size. In long mode the pushed value occupies 8 bytes on
-		// the stack regardless.
+		// size. The width of the stack slot consumed follows the CPU
+		// mode (8 long / 4 pm32 / 2 pm16) — using push64 unconditionally
+		// was the next stack-imbalance bug after RET, dropping 4 spare
+		// bytes onto a pm32 stack on every PUSH-imm.
 		var v int64
 		if operandSize == 2 {
 			v = int64(int16(c.fetch16()))
 		} else {
 			v = int64(int32(c.fetch32()))
 		}
-		c.push64(uint64(v))
+		c.pushStack(uint64(v), c.stackSlotSize())
 		return nil
 
 	case op == 0x6A:
 		// PUSH imm8 sign-extended.
 		v := int64(int8(c.fetch8()))
-		c.push64(uint64(v))
+		c.pushStack(uint64(v), c.stackSlotSize())
 		return nil
 
 	// ===== Control flow =====
 
 	case op == 0xC3:
-		c.rip = c.pop64()
+		// RET near. The pop size follows the CPU mode (NOT the operand-
+		// size prefix, in practice) — long mode pops 8 bytes, pm32 pops
+		// 4, pm16 pops 2. Using pop64 unconditionally was the SeaBIOS-
+		// boot blocker: the 32-bit `call ; ret` pair pushed 4 bytes and
+		// our RET read 8, returning to a garbage address (which landed
+		// in the SeaBIOS string section).
+		c.rip = c.popStack(c.stackSlotSize())
 		return nil
 
 	case op == 0xCB:
@@ -491,14 +499,16 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	case op == 0xE8:
 		// CALL rel — displacement size = operand size. Real mode uses
 		// rel16; 32-/64-bit modes use rel32 (REX.W doesn't promote to
-		// rel64 — there's no rel64 CALL in long mode).
+		// rel64 — there's no rel64 CALL in long mode). The pushed
+		// return address width follows the CPU mode, not the operand
+		// size: long mode pushes 8 bytes, pm32 pushes 4, pm16 pushes 2.
 		var disp int64
 		if operandSize == 2 {
 			disp = int64(int16(c.fetch16()))
 		} else {
 			disp = int64(int32(c.fetch32()))
 		}
-		c.push64(c.rip)
+		c.pushStack(c.rip, c.stackSlotSize())
 		c.rip = uint64(int64(c.rip) + disp)
 		return nil
 
@@ -2688,20 +2698,24 @@ func (c *CPU) opGroup5(rex, operandSize uint8) error {
 		c.rflags = (c.rflags &^ RFLAGS_CF) | oldCF
 		return nil
 	case 2: // CALL r/m (near, absolute indirect)
-		// Long-mode default operand size for indirect CALL is 64 bits
-		// regardless of operand-size prefix. Push the return address
-		// (current RIP, already advanced past the instruction by
-		// parseModRM64) and jump.
-		target := c.readOperand(m, 8)
-		c.push64(c.rip)
+		// Width of the target (and the pushed return address) matches
+		// the natural stack-slot size for the current mode: 8 in long
+		// mode, 4 in pm32, 2 in pm16. Long mode forces 64-bit
+		// regardless of an operand-size prefix.
+		size := uint8(c.stackSlotSize())
+		target := c.readOperand(m, size)
+		c.pushStack(c.rip, int(size))
 		c.rip = target
 		return nil
 	case 4: // JMP r/m (near, absolute indirect)
-		target := c.readOperand(m, 8)
+		size := uint8(c.stackSlotSize())
+		target := c.readOperand(m, size)
 		c.rip = target
 		return nil
-	case 6: // PUSH r/m
-		c.push64(c.readOperand(m, 8))
+	case 6: // PUSH r/m — pushes operandSize bytes onto a stack of
+		// stackSlotSize width. They're the same in practice unless a
+		// 0x66 prefix shrinks the operand.
+		c.pushStack(c.readOperand(m, operandSize), c.stackSlotSize())
 		return nil
 	}
 	return c.unimplementedAt("Group 5 /%d", m.reg)
@@ -2973,7 +2987,7 @@ func (c *CPU) opPUSHReg(rd, rex uint8) error {
 	if rex&rexB != 0 {
 		idx |= 0x8
 	}
-	c.push64(c.reg64[idx])
+	c.pushStack(c.reg64[idx], c.stackSlotSize())
 	return nil
 }
 
@@ -2982,7 +2996,19 @@ func (c *CPU) opPOPReg(rd, rex uint8) error {
 	if rex&rexB != 0 {
 		idx |= 0x8
 	}
-	c.reg64[idx] = c.pop64()
+	size := c.stackSlotSize()
+	v := c.popStack(size)
+	switch size {
+	case 2:
+		// 16-bit POP: only the low 16 of the destination change.
+		c.reg64[idx] = (c.reg64[idx] & ^uint64(0xFFFF)) | (v & 0xFFFF)
+	case 4:
+		// 32-bit POP: write low 32 and zero the upper half (Intel SDM
+		// rule for 32-bit register writes in compat/protected mode).
+		c.reg64[idx] = v & 0xFFFFFFFF
+	default:
+		c.reg64[idx] = v
+	}
 	return nil
 }
 
@@ -3136,6 +3162,66 @@ func (c *CPU) pop64() uint64 {
 	v := c.readMem64(c.reg64[RSP])
 	c.reg64[RSP] += 8
 	return v
+}
+
+// stackSlotSize returns the natural stack-operation width in bytes for
+// the current CPU mode: long mode = 8, protected-32 / compat-32 = 4,
+// real / protected-16 = 2. The architectural rule keys off CS.D plus
+// SS.B (default-stack-size); the assumption here is that SS.B matches
+// the code segment's D-bit, which is the convention every kernel and
+// BIOS we boot follows. If a guest ever ran 32-bit code on a 16-bit
+// stack (or vice versa) this would need to read SS access directly.
+func (c *CPU) stackSlotSize() int {
+	switch c.mode {
+	case ModeLong64:
+		return 8
+	case ModeProtected32, ModeCompat32:
+		return 4
+	case ModeReal16, ModeProtected16:
+		return 2
+	}
+	return 8
+}
+
+// pushStack pushes `size` bytes of v onto the stack and decrements the
+// stack pointer (full RSP in long mode, low 32 in pm32, low 16 in pm16).
+// The high bits of RSP are preserved across the subtraction in non-long
+// modes so a later mode-switch back to long mode sees the same RSP
+// upper bits we entered with.
+func (c *CPU) pushStack(v uint64, size int) {
+	rsp := c.reg64[RSP]
+	switch size {
+	case 2:
+		newSP := (rsp & ^uint64(0xFFFF)) | uint64((uint16(rsp)-2)&0xFFFF)
+		c.writeMem16(c.segBase[SS]+(newSP&0xFFFF), uint16(v))
+		c.reg64[RSP] = newSP
+	case 4:
+		newSP := (rsp & ^uint64(0xFFFFFFFF)) | uint64(uint32(rsp)-4)
+		c.writeMem32(c.segBase[SS]+(newSP&0xFFFFFFFF), uint32(v))
+		c.reg64[RSP] = newSP
+	default:
+		c.push64(v)
+	}
+}
+
+// popStack pops `size` bytes off the stack and returns it
+// zero-extended to 64 bits. RSP advances by `size`. Like pop64, the
+// memory load happens BEFORE the stack pointer mutates so a #PF on the
+// load leaves RSP unchanged.
+func (c *CPU) popStack(size int) uint64 {
+	rsp := c.reg64[RSP]
+	switch size {
+	case 2:
+		v := uint64(c.readMem16(c.segBase[SS] + (rsp & 0xFFFF)))
+		c.reg64[RSP] = (rsp & ^uint64(0xFFFF)) | uint64((uint16(rsp)+2)&0xFFFF)
+		return v
+	case 4:
+		v := uint64(c.readMem32(c.segBase[SS] + (rsp & 0xFFFFFFFF)))
+		c.reg64[RSP] = (rsp & ^uint64(0xFFFFFFFF)) | uint64(uint32(rsp)+4)
+		return v
+	default:
+		return c.pop64()
+	}
 }
 
 // ===== ALU helpers =====
