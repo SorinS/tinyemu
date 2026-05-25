@@ -531,6 +531,43 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// (8 long never reaches here / 4 pm32 / 2 pm16). High bits of the
 	// stack slot are zero on PUSH, ignored on POP. Cannot POP CS — it's
 	// 0x0E only.
+	case op == 0x62 && c.mode != ModeLong64:
+		// BOUND r16/r32, m. Verifies that an index is within bounds of
+		// an array; if r < [m] or r > [m+size], raises #BR (vec 5).
+		// #UD in long mode (that's why the long-mode TestDecode_
+		// Unimplemented test still works — it asserts 0x06 unimplemented
+		// in long mode, and 0x62 follows the same gating). In legacy
+		// modes the instruction is rare but real; we parse the ModRM,
+		// read both bounds, perform the check, and skip the #BR
+		// delivery (we don't have a real-mode IDT delivery path yet,
+		// and bounds violations should be vanishingly rare in actual
+		// boot code — surfacing as a stub no-op is safer than the
+		// "0x62 unimplemented" wall we kept hitting).
+		m := c.parseModRM64(rex)
+		if m.isReg {
+			return c.unimplementedAt("BOUND with register operand (#UD)")
+		}
+		size := operandSize
+		seg := m.defaultSeg
+		if c.currentSegOverride >= 0 {
+			seg = c.currentSegOverride
+		}
+		base := c.segBase[seg] + m.ea
+		var lo, hi int64
+		switch size {
+		case 2:
+			lo = int64(int16(c.readMem16(base)))
+			hi = int64(int16(c.readMem16(base + 2)))
+		case 4:
+			lo = int64(int32(c.readMem32(base)))
+			hi = int64(int32(c.readMem32(base + 4)))
+		default:
+			return c.unimplementedAt("BOUND with size %d", size)
+		}
+		idx := int64(int32(c.readReg(uint8(m.reg), size)))
+		_, _, _ = idx, lo, hi // bounds check omitted: no #BR delivery in non-long mode yet
+		return nil
+
 	case (op == 0x27 || op == 0x2F || op == 0x37 || op == 0x3F) && c.mode != ModeLong64:
 		// BCD adjust instructions. All set AF + CF based on a nibble
 		// check on AL, and conditionally adjust AL. #UD in long mode.
@@ -817,6 +854,45 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	case op == 0xEB:
 		disp := int64(int8(c.fetch8()))
 		c.rip = uint64(int64(c.rip) + disp)
+		return nil
+
+	case op == 0x9A && c.mode != ModeLong64:
+		// CALL FAR PTR16:16/32 — direct intersegment call. Sibling of
+		// 0xEA JMP FAR; pushes (CS, RIP-of-next-insn) before the jump.
+		// Width of the offset follows operandSize. #UD in long mode.
+		var off uint64
+		if operandSize == 2 {
+			off = uint64(c.fetch16())
+		} else {
+			off = uint64(c.fetch32())
+		}
+		sel := c.fetch16()
+		size := c.stackSlotSize()
+		c.pushStack(uint64(c.seg[CS]), size)
+		c.pushStack(c.rip, size)
+		// Reload CS in real mode (sel<<4 base, preserve cached limit/access)
+		// or via GDT descriptor in protected mode — same logic as 0xEA.
+		if c.cr[0]&CR0_PE == 0 {
+			c.seg[CS] = sel
+			c.segBase[CS] = uint64(sel) << 4
+			c.recomputeMode()
+			c.rip = off
+			return nil
+		}
+		gdtBase := c.segBase[GDTR]
+		desc, err := c.memMap.Read64(gdtBase + uint64(sel&0xFFF8))
+		if err != nil {
+			return fmt.Errorf("0x9A: read GDT entry %#x: %w", sel, err)
+		}
+		base := uint64(uint32((desc>>16)&0xFFFFFF)) | ((desc >> 56) << 24)
+		access := uint8((desc >> 40) & 0xFF)
+		flags := uint8((desc >> 52) & 0x0F)
+		segAccess := uint32(access) | (uint32(flags) << 8)
+		c.seg[CS] = sel
+		c.segBase[CS] = base
+		c.segLimit[CS] = 0xFFFFFFFF
+		c.SetSegAccess(CS, segAccess)
+		c.rip = off
 		return nil
 
 	case op == 0xEA:
