@@ -2985,7 +2985,7 @@ func (c *CPU) opMOVImm(rex, operandSize uint8) error {
 	}
 	m := c.parseModRM64WithImm(rex, immBytes)
 	if m.reg != 0 {
-		return unimplemented("Group 11 /%d (only /0 = MOV)", m.reg)
+		return c.unimplementedAt("Group 11 /%d (only /0 = MOV)", m.reg)
 	}
 	var v uint64
 	switch operandSize {
