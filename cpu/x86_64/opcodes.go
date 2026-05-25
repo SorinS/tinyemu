@@ -761,13 +761,23 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// ===== Control flow =====
 
 	case op == 0xC3:
-		// RET near. The pop size follows the CPU mode (NOT the operand-
-		// size prefix, in practice) — long mode pops 8 bytes, pm32 pops
-		// 4, pm16 pops 2. Using pop64 unconditionally was the SeaBIOS-
-		// boot blocker: the 32-bit `call ; ret` pair pushed 4 bytes and
-		// our RET read 8, returning to a garbage address (which landed
-		// in the SeaBIOS string section).
-		c.rip = c.popStack(c.stackSlotSize())
+		// RET near. Per Intel SDM Vol 2A: the return-address width is
+		// the OPERAND SIZE, not the stack-slot size. Default operand
+		// size follows CS.D / mode, but the 0x66 prefix can flip it:
+		//   pm16 / real default + no 0x66 -> 2 bytes
+		//   pm16 / real with 0x66        -> 4 bytes
+		//   pm32 default + no 0x66       -> 4 bytes
+		//   pm32 with 0x66               -> 2 bytes
+		//   long mode default            -> 8 bytes
+		//   long mode with 0x66          -> 2 bytes
+		// Long mode is special-cased because long-mode near-return
+		// always uses an 8-byte return slot unless the 0x66 prefix
+		// shrinks it to 16.
+		retSize := int(operandSize)
+		if c.mode == ModeLong64 && operandSize == 4 {
+			retSize = 8
+		}
+		c.rip = c.popStack(retSize)
 		return nil
 
 	case op == 0xCB:
@@ -825,18 +835,22 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return c.opOUTEAX(port, operandSize)
 
 	case op == 0xE8:
-		// CALL rel — displacement size = operand size. Real mode uses
-		// rel16; 32-/64-bit modes use rel32 (REX.W doesn't promote to
-		// rel64 — there's no rel64 CALL in long mode). The pushed
-		// return address width follows the CPU mode, not the operand
-		// size: long mode pushes 8 bytes, pm32 pushes 4, pm16 pushes 2.
+		// CALL rel — displacement size and return-address push size
+		// both follow OPERAND SIZE (Intel SDM Vol 2A). Real mode uses
+		// rel16 + 16-bit push by default; 0x66 flips to rel32 + 32-bit
+		// push. Long mode forces 8-byte push (no 32-bit-CALL form),
+		// with 0x66 shrinking to 2 bytes.
 		var disp int64
 		if operandSize == 2 {
 			disp = int64(int16(c.fetch16()))
 		} else {
 			disp = int64(int32(c.fetch32()))
 		}
-		c.pushStack(c.rip, c.stackSlotSize())
+		pushSize := int(operandSize)
+		if c.mode == ModeLong64 && operandSize == 4 {
+			pushSize = 8
+		}
+		c.pushStack(c.rip, pushSize)
 		c.rip = uint64(int64(c.rip) + disp)
 		return nil
 
