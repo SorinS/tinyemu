@@ -380,6 +380,68 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		// source is always 16 bits regardless of operand-size prefix.
 		return c.opMOVtoSreg(rex)
 
+	case op == 0x6C, op == 0x6D, op == 0x6E, op == 0x6F:
+		// String IO:
+		//   0x6C  INSB                 IN AL,  DX ; MOV [ES:(E)DI], AL ; (E)DI+=±1
+		//   0x6D  INSW/INSD            IN ?X,  DX ; MOV [ES:(E)DI], ?X ; advance
+		//   0x6E  OUTSB                MOV AL, [DS:(E)SI] ; OUT DX, AL ; (E)SI+=±1
+		//   0x6F  OUTSW/OUTSD          MOV ?X, [DS:(E)SI] ; OUT DX, ?X ; advance
+		// Element size = operandSize for 6D/6F; always 1 for 6C/6E.
+		// REP prefix (F3) iterates RCX times. DF in RFLAGS picks
+		// direction. (E)SI/(E)DI mask follows addressSize.
+		size := operandSize
+		if op == 0x6C || op == 0x6E {
+			size = 1
+		}
+		port := uint16(c.GetReg64(RDX))
+		step := int64(size)
+		if c.rflags&RFLAGS_DF != 0 {
+			step = -step
+		}
+		// Iteration count. REP runs until RCX hits 0; non-REP runs once.
+		iter := uint64(1)
+		if repPrefix != 0 {
+			iter = c.GetReg64(RCX) & ((uint64(1) << (uint64(addressSize) * 8)) - 1)
+		}
+		isIn := op == 0x6C || op == 0x6D
+		for i := uint64(0); i < iter; i++ {
+			if isIn {
+				// Read from IO port, write to ES:DI.
+				di := c.GetReg64(RDI) & ((uint64(1) << (uint64(addressSize) * 8)) - 1)
+				addr := c.segBase[ES] + di
+				switch size {
+				case 1:
+					c.writeMem8(addr, uint8(c.ioRead8(port)))
+				case 2:
+					c.writeMem16(addr, uint16(c.ioRead16(port)))
+				case 4:
+					c.writeMem32(addr, c.ioRead32(port))
+				}
+				c.SetReg64(RDI, uint64(int64(di)+step))
+			} else {
+				// Read from DS:SI (segment override-aware), write to IO port.
+				seg := DS
+				if c.currentSegOverride >= 0 {
+					seg = c.currentSegOverride
+				}
+				si := c.GetReg64(RSI) & ((uint64(1) << (uint64(addressSize) * 8)) - 1)
+				addr := c.segBase[seg] + si
+				switch size {
+				case 1:
+					c.ioWrite8(port, c.readMem8(addr))
+				case 2:
+					c.ioWrite16(port, c.readMem16(addr))
+				case 4:
+					c.ioWrite32(port, c.readMem32(addr))
+				}
+				c.SetReg64(RSI, uint64(int64(si)+step))
+			}
+		}
+		if repPrefix != 0 {
+			c.SetReg64(RCX, 0)
+		}
+		return nil
+
 	case op == 0xA0, op == 0xA1, op == 0xA2, op == 0xA3:
 		// MOV AL/AX/EAX/RAX, moffs (direct memory addressing). The
 		// offset is fetched at address-size width (2/4/8 bytes); the
@@ -469,6 +531,42 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// (8 long never reaches here / 4 pm32 / 2 pm16). High bits of the
 	// stack slot are zero on PUSH, ignored on POP. Cannot POP CS — it's
 	// 0x0E only.
+	case (op == 0x60 || op == 0x61) && c.mode != ModeLong64:
+		// PUSHA/POPA (16-bit) / PUSHAD/POPAD (32-bit). #UD in long
+		// mode. Push order: EAX, ECX, EDX, EBX, ESP-original, EBP,
+		// ESI, EDI. POPA mirror: EDI first, then ESI..EAX, but the
+		// pushed ESP slot is DROPPED (not loaded back into ESP, per
+		// Intel SDM). Width follows stack-slot size (4 pm32 / 2 pm16).
+		size := c.stackSlotSize()
+		if op == 0x60 {
+			origSP := c.reg64[RSP]
+			c.pushStack(c.reg64[RAX], size)
+			c.pushStack(c.reg64[RCX], size)
+			c.pushStack(c.reg64[RDX], size)
+			c.pushStack(c.reg64[RBX], size)
+			c.pushStack(origSP, size)
+			c.pushStack(c.reg64[RBP], size)
+			c.pushStack(c.reg64[RSI], size)
+			c.pushStack(c.reg64[RDI], size)
+		} else {
+			setLow := func(r int, v uint64) {
+				if size == 4 {
+					c.reg64[r] = v & 0xFFFFFFFF
+				} else {
+					c.reg64[r] = (c.reg64[r] & ^uint64(0xFFFF)) | (v & 0xFFFF)
+				}
+			}
+			setLow(RDI, c.popStack(size))
+			setLow(RSI, c.popStack(size))
+			setLow(RBP, c.popStack(size))
+			c.popStack(size) // drop saved-SP slot
+			setLow(RBX, c.popStack(size))
+			setLow(RDX, c.popStack(size))
+			setLow(RCX, c.popStack(size))
+			setLow(RAX, c.popStack(size))
+		}
+		return nil
+
 	case (op == 0x06 || op == 0x07 || op == 0x0E ||
 		op == 0x16 || op == 0x17 || op == 0x1E || op == 0x1F) &&
 		c.mode != ModeLong64:
