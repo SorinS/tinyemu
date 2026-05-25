@@ -122,14 +122,23 @@ func (c *CPU) parseModRM64WithImm(rex uint8, immBytes uint8) modRMResult {
 		ea = baseContrib + indexContrib
 
 	case mod == 0 && rm == 5:
-		// RIP-relative + disp32 in long mode. (In legacy 32-bit mode
-		// this is "absolute disp32"; not supported by parseModRM64.)
-		// The reference RIP is the start of the *next* instruction,
-		// which lives `immBytes` past the end of the disp32 we just
-		// fetched. See header comment.
+		// mod=00 rm=5 has TWO different meanings depending on mode:
+		//   - Long mode (CS.L=1): RIP-relative + disp32. Reference RIP
+		//     is the start of the NEXT instruction (past the disp32 +
+		//     any trailing immediate — see header comment).
+		//   - Legacy 32-bit / compat (CS.L=0): absolute disp32. There's
+		//     no RIP-relative addressing outside long mode; the
+		//     descriptor's D-bit doesn't matter, only L.
+		// We KEY OFF c.mode rather than CS.L directly so a pm32 boot
+		// (SeaBIOS) and compat32 long-mode-userspace both pick the
+		// right interpretation.
 		disp := int64(int32(c.fetch32()))
-		ea = c.rip + uint64(disp) + uint64(immBytes)
-		r.ripRelative = true
+		if c.mode == ModeLong64 {
+			ea = c.rip + uint64(disp) + uint64(immBytes)
+			r.ripRelative = true
+		} else {
+			ea = uint64(uint32(disp))
+		}
 
 	default:
 		// Register-indirect. The bottom 3 bits of rm key the default

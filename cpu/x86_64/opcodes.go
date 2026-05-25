@@ -303,19 +303,22 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return c.opXCHGRM(rex, operandSize)
 
 	case op == 0x8F:
-		// POP r/m. ModR/M.reg must be 0; the rest are reserved.
+		// POP r/m. ModR/M.reg must be 0; the rest are reserved. Slot
+		// width follows the CPU mode (8 long / 4 pm32 / 2 pm16).
 		m := c.parseModRM64(rex)
 		if m.reg != 0 {
 			return unimplemented("0x8F /%d (reserved)", m.reg)
 		}
-		v := c.pop64()
-		c.writeOperand(m, v, 8) // long mode: always 64-bit stack ops
+		size := uint8(c.stackSlotSize())
+		v := c.popStack(int(size))
+		c.writeOperand(m, v, size)
 		return nil
 
 	case op == 0xC2:
 		// RET imm16 — pops return then pops imm16 bytes off stack.
+		// Both the return-pop and the cleanup use stack-slot semantics.
 		imm := uint64(c.fetch16())
-		c.rip = c.pop64()
+		c.rip = c.popStack(c.stackSlotSize())
 		c.SetReg64(RSP, c.GetReg64(RSP)+imm)
 		return nil
 
@@ -377,6 +380,54 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		// source is always 16 bits regardless of operand-size prefix.
 		return c.opMOVtoSreg(rex)
 
+	case op == 0xA0, op == 0xA1, op == 0xA2, op == 0xA3:
+		// MOV AL/AX/EAX/RAX, moffs (direct memory addressing). The
+		// offset is fetched at address-size width (2/4/8 bytes); the
+		// data transfer is at operand size (A0/A2 = byte; A1/A3 =
+		// operandSize). A0/A1 = load from moffs; A2/A3 = store to moffs.
+		var off uint64
+		switch addressSize {
+		case 2:
+			off = uint64(c.fetch16())
+		case 4:
+			off = uint64(c.fetch32())
+		case 8:
+			off = c.fetch64()
+		}
+		// moffs uses the DS segment by default (unless overridden by
+		// segment-override prefix), which is what segBaseForModRM-style
+		// access expects: just resolve the segment manually here.
+		seg := DS
+		if c.currentSegOverride >= 0 {
+			seg = c.currentSegOverride
+		}
+		linear := c.segBase[seg] + off
+		switch op {
+		case 0xA0: // MOV AL, [moffs8]
+			c.SetReg8(AL, c.readMem8(linear))
+		case 0xA1: // MOV AX/EAX/RAX, [moffs]
+			switch operandSize {
+			case 2:
+				c.SetReg16(AX, c.readMem16(linear))
+			case 4:
+				c.reg64[RAX] = uint64(c.readMem32(linear)) // zero-ext high
+			case 8:
+				c.SetReg64(RAX, c.readMem64(linear))
+			}
+		case 0xA2: // MOV [moffs8], AL
+			c.writeMem8(linear, c.GetReg8(AL))
+		case 0xA3: // MOV [moffs], AX/EAX/RAX
+			switch operandSize {
+			case 2:
+				c.writeMem16(linear, c.GetReg16(AX))
+			case 4:
+				c.writeMem32(linear, uint32(c.GetReg64(RAX)))
+			case 8:
+				c.writeMem64(linear, c.GetReg64(RAX))
+			}
+		}
+		return nil
+
 	case op == 0xB8, op == 0xB9, op == 0xBA, op == 0xBB,
 		op == 0xBC, op == 0xBD, op == 0xBE, op == 0xBF:
 		return c.opMOVImmToReg(op-0xB8, rex, operandSize)
@@ -408,6 +459,32 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return c.opPUSHReg(op-0x50, rex)
 	case op >= 0x58 && op <= 0x5F:
 		return c.opPOPReg(op-0x58, rex)
+
+	// ===== INC reg / DEC reg (16/32-bit modes only; REX in long mode) =====
+	//
+	// Reachable only when c.mode != ModeLong64 because the prefix-loop
+	// in Step() captures 0x40..0x4F as a REX prefix in long mode.
+	case op >= 0x40 && op <= 0x47:
+		// INC r16/r32 — operand size keys off mode. CF preserved per
+		// Intel SDM (only OF/SF/ZF/AF/PF touched).
+		idx := op - 0x40
+		v := c.readReg(idx, operandSize)
+		res, fl := add(v, 1, operandSize)
+		c.writeReg(idx, res, operandSize)
+		oldCF := c.rflags & RFLAGS_CF
+		c.setArithFlags(fl)
+		c.rflags = (c.rflags &^ RFLAGS_CF) | oldCF
+		return nil
+	case op >= 0x48 && op <= 0x4F:
+		// DEC r16/r32.
+		idx := op - 0x48
+		v := c.readReg(idx, operandSize)
+		res, fl := sub(v, 1, operandSize)
+		c.writeReg(idx, res, operandSize)
+		oldCF := c.rflags & RFLAGS_CF
+		c.setArithFlags(fl)
+		c.rflags = (c.rflags &^ RFLAGS_CF) | oldCF
+		return nil
 
 	case op == 0x68:
 		// PUSH imm32 (or imm16 with 0x66) sign-extended to operand
@@ -685,9 +762,23 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// ===== Flag manipulation =====
 
 	case op == 0xC9: // LEAVE — restore RBP, pop saved RBP
-		// LEAVE := mov rsp, rbp ; pop rbp
-		c.SetReg64(RSP, c.GetReg64(RBP))
-		c.SetReg64(RBP, c.pop64())
+		// LEAVE := mov rsp, rbp ; pop rbp. The pop is at stack-slot
+		// width — 8 in long mode, 4 in pm32, 2 in pm16. The MOV
+		// RSP, RBP copies the full mode-appropriate register width.
+		size := c.stackSlotSize()
+		switch size {
+		case 8:
+			c.SetReg64(RSP, c.GetReg64(RBP))
+			c.SetReg64(RBP, c.popStack(8))
+		case 4:
+			c.reg64[RSP] = (c.reg64[RSP] & ^uint64(0xFFFFFFFF)) | (c.reg64[RBP] & 0xFFFFFFFF)
+			v := c.popStack(4)
+			c.reg64[RBP] = (c.reg64[RBP] & ^uint64(0xFFFFFFFF)) | (v & 0xFFFFFFFF)
+		case 2:
+			c.reg64[RSP] = (c.reg64[RSP] & ^uint64(0xFFFF)) | (c.reg64[RBP] & 0xFFFF)
+			v := c.popStack(2)
+			c.reg64[RBP] = (c.reg64[RBP] & ^uint64(0xFFFF)) | (v & 0xFFFF)
+		}
 		return nil
 
 	case op == 0x98: // CBW / CWDE / CDQE — sign-extend AL/AX/EAX in place.
@@ -710,16 +801,34 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.writeReg(RDX, hi, operandSize)
 		return nil
 
-	case op == 0x9C: // PUSHFQ — push RFLAGS as 8 bytes (long-mode default)
-		c.push64(c.rflags)
+	case op == 0x9C: // PUSHF / PUSHFD / PUSHFQ — width is stack-slot
+		// size (8 long / 4 pm32 / 2 pm16). The 0x66 prefix forces
+		// 16 bits in long mode (PUSHFW); otherwise leave it alone.
+		size := c.stackSlotSize()
+		if operandSize == 2 {
+			size = 2
+		}
+		c.pushStack(c.rflags, size)
 		return nil
-	case op == 0x9D: // POPFQ — pop 8 bytes into RFLAGS
-		v := c.pop64()
+	case op == 0x9D: // POPF / POPFD / POPFQ — symmetric to PUSHF.
+		size := c.stackSlotSize()
+		if operandSize == 2 {
+			size = 2
+		}
+		v := c.popStack(size)
 		// Filter reserved bits via ValidFlagMask; bit 1 always reads 1
 		// per SDM. CPL=0 can change everything except VM/RF (RF gets
 		// cleared on POPF semantics — we fold the same effect by
-		// stripping RF from the popped value).
-		c.rflags = (v & ValidFlagMask &^ RFLAGS_RF) | 2
+		// stripping RF from the popped value). In 16/32-bit modes only
+		// the low half of the flags is touched; bits above operandSize*8
+		// are preserved.
+		mask := uint64(ValidFlagMask)
+		if size == 4 {
+			mask &= 0xFFFFFFFF
+		} else if size == 2 {
+			mask &= 0xFFFF
+		}
+		c.rflags = (c.rflags &^ mask) | (v & mask &^ RFLAGS_RF) | 2
 		return nil
 
 	case op == 0x9E: // SAHF — store AH into low byte of RFLAGS

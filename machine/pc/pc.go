@@ -267,9 +267,14 @@ func New(cfg Config) (*PC, error) {
 	dbgWriter := func(port uint16, val uint32) {
 		_, _ = biosDbg.Write([]byte{byte(val)})
 	}
-	p.io.RegisterRead(0x402, 0x402, func(port uint16) uint32 { return 0xff })
+	// Reads return 0xE9 (QEMU_DEBUGCON_READBACK) so SeaBIOS's
+	// qemu_debug_preinit probe accepts the port as present — otherwise
+	// it sets DebugOutputPort=0 and every dprintf becomes a no-op.
+	// 0xFF would have meant "no device", and that's what we returned
+	// for the longest time, eating SeaBIOS's entire boot log.
+	p.io.RegisterRead(0x402, 0x402, func(port uint16) uint32 { return 0xE9 })
 	p.io.RegisterWrite(0x402, 0x402, dbgWriter)
-	p.io.RegisterRead(0xE9, 0xE9, func(port uint16) uint32 { return 0xff })
+	p.io.RegisterRead(0xE9, 0xE9, func(port uint16) uint32 { return 0xE9 })
 	p.io.RegisterWrite(0xE9, 0xE9, dbgWriter)
 
 	// LAPIC MMIO at 0xFEE00000 (4 KB) and IOAPIC at 0xFEC00000 (4 KB).

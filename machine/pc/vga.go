@@ -75,6 +75,14 @@ type VGA struct {
 	// Sink for rendered framebuffer output. If nil, rendering is off.
 	renderSink io.Writer
 
+	// Sink for raw character writes to the text-mode framebuffer (every
+	// printable byte written to an even offset inside 0xB8000..0xBFFFF).
+	// Useful when a BIOS / kernel prints via direct framebuffer writes
+	// and never bothers to update the CRTC cursor (so renderSink, which
+	// fires on cursor update, never triggers). Off by default; set via
+	// TINYEMU_VGA_CHAR_LOG=<path> or =stderr.
+	charSink io.Writer
+
 	// Toggle for the input-status-1 "display-enable" bit (0x3DA bit 0).
 	// We flip it on each read so polling-for-retrace loops don't spin.
 	inputStatus1 uint8
@@ -99,10 +107,22 @@ func vgaRenderDefault() io.Writer {
 
 // NewVGA constructs a VGA device with default state. The render sink is
 // stderr if TINYEMU_X86_VGA_RENDER=1 is set, otherwise nil (silent).
+// The char sink (every framebuffer byte that's a printable ASCII char)
+// is opened from TINYEMU_VGA_CHAR_LOG: `=stderr` or a file path.
 func NewVGA() *VGA {
-	return &VGA{
-		renderSink: vgaRenderDefault(),
+	v := &VGA{renderSink: vgaRenderDefault()}
+	switch s := os.Getenv("TINYEMU_VGA_CHAR_LOG"); s {
+	case "":
+		// off
+	case "stderr":
+		v.charSink = os.Stderr
+	default:
+		if f, err := os.OpenFile(s, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644); err == nil {
+			v.charSink = f
+			fmt.Fprintf(os.Stderr, "[VGA] character writes tracing to %s\n", s)
+		}
 	}
+	return v
 }
 
 // SetRenderSink replaces the output sink. Pass nil to disable rendering.
@@ -251,17 +271,46 @@ func (v *VGA) readMem(offset uint32, sizeLog2 int) uint32 {
 	return out
 }
 
-// writeMem services a store to the framebuffer aperture.
+// writeMem services a store to the framebuffer aperture. When
+// charSink is set and the write lands inside the 0xB8000 text-mode
+// region, every printable byte at an even offset (the "character"
+// half of each char/attribute cell) is mirrored. CR (0x0D) and LF
+// (0x0A) are passed through verbatim; other control bytes are
+// rendered as `.` so binary writes don't corrupt the terminal.
 func (v *VGA) writeMem(offset uint32, val uint32, sizeLog2 int) {
 	v.mu.Lock()
-	defer v.mu.Unlock()
 	if offset >= VGAApertureSize {
+		v.mu.Unlock()
 		return
 	}
 	size := 1 << sizeLog2
 	for i := 0; i < size; i++ {
 		if int(offset)+i < len(v.aperture) {
 			v.aperture[int(offset)+i] = uint8(val >> (i * 8))
+		}
+	}
+	sink := v.charSink
+	v.mu.Unlock()
+	if sink == nil {
+		return
+	}
+	// Capture characters dropped into the text-mode window
+	// (0xB8000..0xBFFA0). Even offsets are the char; odd offsets the
+	// attribute. We log every printable char (and CR/LF) per write.
+	end := int(offset) + size
+	for i := int(offset); i < end; i++ {
+		if i < int(vgaTextOffset) || i >= int(vgaTextOffset)+vgaTextCols*vgaTextRows*2 {
+			continue
+		}
+		if (i-int(vgaTextOffset))&1 != 0 {
+			continue // attribute byte
+		}
+		b := v.aperture[i]
+		switch {
+		case b == '\r' || b == '\n':
+			_, _ = sink.Write([]byte{b})
+		case b >= 0x20 && b < 0x7F:
+			_, _ = sink.Write([]byte{b})
 		}
 	}
 }

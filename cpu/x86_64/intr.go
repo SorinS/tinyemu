@@ -19,6 +19,18 @@ import (
 // The full descriptor walk + IST/TSS lookup arrives in a later phase
 // once those features are needed for real kernel boot.
 func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
+	// Long-mode-only path. The 16-byte gate format, 64-bit RIP/RSP
+	// pushes, TSS.RSP0 stack switch — all are long-mode specifics. If
+	// we ever fire an interrupt while in real / pm16 / pm32 / compat32
+	// we'd silently corrupt the stack and the IDT lookup would
+	// misframe (16/32-bit IDT entries are 8 bytes, not 16). Panic loud
+	// rather than crash silent — a non-long-mode interrupt path needs
+	// its own implementation.
+	if c.mode != ModeLong64 {
+		return fmt.Errorf("deliverInterrupt: vec=%#x mode=%v not implemented "+
+			"(real / pm16 / pm32 / compat32 interrupt delivery uses an 8-byte IDT gate "+
+			"format and shorter pushes than long mode)", vec, c.mode)
+	}
 	idtBase := c.segBase[IDTR]
 	idtLimit := c.segLimit[IDTR]
 	gateAddr := idtBase + uint64(vec)*16
@@ -544,6 +556,14 @@ func (c *CPU) opRETF(operandSize uint8) error {
 // In 64-bit mode IRET always pops all five regardless of whether a
 // privilege change actually occurred — different from the 32-bit form.
 func (c *CPU) opIRETQ() error {
+	// Long-mode IRET pops 5×8 bytes (RIP, CS, RFLAGS, RSP, SS). Real
+	// and 32-bit modes pop 3×2 or 3×4 (IP/CS/FLAGS) and only switch
+	// stacks on CPL change. We panic in non-long-mode rather than
+	// silently mis-pop the stack.
+	if c.mode != ModeLong64 {
+		return fmt.Errorf("opIRETQ: mode=%v not implemented "+
+			"(real/pm16/pm32/compat32 IRET pops 3 stack slots, not 5)", c.mode)
+	}
 	newRIP := c.pop64()
 	newCS := uint16(c.pop64())
 	newFlags := c.pop64()
