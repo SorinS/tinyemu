@@ -460,6 +460,49 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	case op >= 0x58 && op <= 0x5F:
 		return c.opPOPReg(op-0x58, rex)
 
+	// ===== Segment-register PUSH/POP (16/32-bit modes only; #UD in long mode) =====
+	//
+	// Long mode reuses these encodings: 0x06/0x07/0x0E/0x16/0x17/0x1E/0x1F
+	// are all #UD in 64-bit code. In real / pm16 / pm32 / compat32 they're
+	// PUSH/POP of an implicit segment register. The pushed/popped value
+	// is the 16-bit selector, occupying a stack slot of the natural width
+	// (8 long never reaches here / 4 pm32 / 2 pm16). High bits of the
+	// stack slot are zero on PUSH, ignored on POP. Cannot POP CS — it's
+	// 0x0E only.
+	case (op == 0x06 || op == 0x07 || op == 0x0E ||
+		op == 0x16 || op == 0x17 || op == 0x1E || op == 0x1F) &&
+		c.mode != ModeLong64:
+		// PUSH/POP segment register. The 6 encodings here are #UD in
+		// long mode; gating on mode preserves the long-mode test that
+		// pins 0x06 as unimplemented while letting BIOS / real-mode
+		// code use them.
+		switch op {
+		case 0x06: // PUSH ES
+			c.pushStack(uint64(c.seg[ES]), c.stackSlotSize())
+		case 0x07: // POP ES
+			c.seg[ES] = uint16(c.popStack(c.stackSlotSize()))
+			if c.cr[0]&CR0_PE == 0 {
+				c.segBase[ES] = uint64(c.seg[ES]) << 4
+			}
+		case 0x0E: // PUSH CS (no POP CS — only this direction is valid)
+			c.pushStack(uint64(c.seg[CS]), c.stackSlotSize())
+		case 0x16: // PUSH SS
+			c.pushStack(uint64(c.seg[SS]), c.stackSlotSize())
+		case 0x17: // POP SS
+			c.seg[SS] = uint16(c.popStack(c.stackSlotSize()))
+			if c.cr[0]&CR0_PE == 0 {
+				c.segBase[SS] = uint64(c.seg[SS]) << 4
+			}
+		case 0x1E: // PUSH DS
+			c.pushStack(uint64(c.seg[DS]), c.stackSlotSize())
+		case 0x1F: // POP DS
+			c.seg[DS] = uint16(c.popStack(c.stackSlotSize()))
+			if c.cr[0]&CR0_PE == 0 {
+				c.segBase[DS] = uint64(c.seg[DS]) << 4
+			}
+		}
+		return nil
+
 	// ===== INC reg / DEC reg (16/32-bit modes only; REX in long mode) =====
 	//
 	// Reachable only when c.mode != ModeLong64 because the prefix-loop

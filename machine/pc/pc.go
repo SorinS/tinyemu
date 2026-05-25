@@ -205,14 +205,18 @@ func New(cfg Config) (*PC, error) {
 		return nil, fmt.Errorf("register VGA: %w", err)
 	}
 
-	// System Control Port B (0x61): bit 0 enables PIT channel 2 gate; bit 1
-	// is the speaker data line. Linux's quick_pit_calibrate masks this port,
-	// so we need it to read as 0 by default rather than 0xFF.
+	// System Control Port B (0x61). Bit roles:
+	//   0  PIT channel 2 gate enable (we accept writes, no PIT impact)
+	//   1  speaker data
+	//   4  refresh-cycle toggle (DMA refresh)
+	//   5  PIT channel 2 output (OUT2)
+	// SeaBIOS's CPU speed calibration polls bit 5 in a tight loop; Linux's
+	// quick_pit_calibrate masks the port and reads it as zero. We toggle
+	// BOTH bit 4 and bit 5 on each read so any polling loop terminates,
+	// regardless of which bit it watches.
 	var port61 uint8
 	p.io.RegisterRead(0x61, 0x61, func(port uint16) uint32 {
-		// Toggle the refresh bit (bit 4) on each read so software that
-		// polls it for a delay doesn't spin forever.
-		port61 ^= 0x10
+		port61 ^= 0x30
 		return uint32(port61)
 	})
 	p.io.RegisterWrite(0x61, 0x61, func(port uint16, val uint32) {
@@ -278,15 +282,19 @@ func New(cfg Config) (*PC, error) {
 	p.io.RegisterWrite(0xE9, 0xE9, dbgWriter)
 
 	// LAPIC MMIO at 0xFEE00000 (4 KB) and IOAPIC at 0xFEC00000 (4 KB).
-	// We don't model APICs, but modern kernels poke these regions during
-	// early CPU init even with `nolapic noapic` on the cmdline. Provide
-	// read-as-zero, write-ignored stubs so those accesses don't #PF.
+	// We don't model APICs, but modern kernels (and SeaBIOS) poke these
+	// regions during early CPU init even with `nolapic noapic` on the
+	// cmdline. Provide read-as-zero, write-ignored stubs accepting all
+	// access widths — passing flags=0 to RegisterDevice means "no sizes
+	// supported" which rejects every access and surfaces as a #PF
+	// (caused the SeaBIOS post-init wall at 0xFEE00030).
 	stubRead := func(opaque any, offset uint32, sizeLog2 int) uint32 { return 0 }
 	stubWrite := func(opaque any, offset uint32, val uint32, sizeLog2 int) {}
-	if _, err := p.memMap.RegisterDevice(0xFEE00000, 0x1000, nil, stubRead, stubWrite, 0); err != nil {
+	stubFlags := mem.DevIOSize8 | mem.DevIOSize16 | mem.DevIOSize32 | mem.DevIOSize64
+	if _, err := p.memMap.RegisterDevice(0xFEE00000, 0x1000, nil, stubRead, stubWrite, stubFlags); err != nil {
 		return nil, fmt.Errorf("register LAPIC stub: %w", err)
 	}
-	if _, err := p.memMap.RegisterDevice(0xFEC00000, 0x1000, nil, stubRead, stubWrite, 0); err != nil {
+	if _, err := p.memMap.RegisterDevice(0xFEC00000, 0x1000, nil, stubRead, stubWrite, stubFlags); err != nil {
 		return nil, fmt.Errorf("register IOAPIC stub: %w", err)
 	}
 
