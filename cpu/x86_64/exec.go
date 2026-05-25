@@ -374,20 +374,30 @@ func unimplemented(format string, args ...any) error {
 // distinguish "missing opcode" from "jumped into data". The helper
 // reads via the page tables; any fault during the dump is swallowed
 // so it can't mask the original error.
+//
+// In non-long-mode (real / pm16 / pm32 / compat32) we apply CS.base
+// when reading the surrounding bytes, otherwise the dump shows
+// garbage at the low-physical address (or all-zero from unmapped
+// memory) rather than the actual code bytes.
 func (c *CPU) unimplementedAt(format string, args ...any) error {
 	rip := c.rip
+	addrBase := uint64(0)
+	if c.mode != ModeLong64 && c.mode != ModeCompat32 {
+		addrBase = c.segBase[CS]
+	}
 	const window = 16
 	var pre, post [window]byte
 	for i := uint64(0); i < window; i++ {
 		func() {
 			defer func() { _ = recover() }()
 			if rip >= window {
-				pre[i] = c.readMem8(rip - window + i)
+				pre[i] = c.readMem8(addrBase + rip - window + i)
 			}
-			post[i] = c.readMem8(rip + i)
+			post[i] = c.readMem8(addrBase + rip + i)
 		}()
 	}
-	ctx := fmt.Sprintf(" [RIP=%#x pre=% x post=% x]", rip, pre[:], post[:])
+	ctx := fmt.Sprintf(" [mode=%v RIP=%#x CSbase=%#x pre=% x post=% x]",
+		c.mode, rip, c.segBase[CS], pre[:], post[:])
 	return fmt.Errorf("%w: "+format+"%s",
 		append([]any{ErrNotImplemented}, append(args, ctx)...)...)
 }

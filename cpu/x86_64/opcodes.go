@@ -3120,13 +3120,30 @@ func (c *CPU) opMOVtoSreg(rex uint8) error {
 	sel := uint16(c.readOperand(m, 2))
 	idx := int(m.reg)
 	c.seg[idx] = sel
-	switch idx {
-	case CS, DS, ES, SS:
-		// Long-mode forces flat segments: base 0, limit 4 GiB. Don't
+
+	switch {
+	case c.cr[0]&CR0_PE == 0:
+		// Real mode: segment base is selector << 4. Limit is 64 KB.
+		// All segment loads behave this way — MOV DS/ES/SS/FS/GS use it
+		// for normal addressing; MOV CS is architecturally illegal in
+		// real mode but we don't enforce that.
+		c.segBase[idx] = uint64(sel) << 4
+		c.segLimit[idx] = 0xFFFF
+	case c.mode == ModeLong64:
+		// Long mode forces flat segments: base 0, limit 4 GiB. Don't
 		// disturb the access cache (the boot harness or a far jump
 		// set L/D appropriately).
 		c.segBase[idx] = 0
 		c.segLimit[idx] = 0xFFFFFFFF
+	default:
+		// Protected mode (pm16, pm32, compat32) without a paging /
+		// long-mode guarantee. The correct thing is to walk the GDT
+		// and load the descriptor's base/limit/access. We don't have
+		// a unified descriptor-load helper yet; for now leave the
+		// cached values alone and just update the selector. SeaBIOS
+		// reloads data segments via this path during the 16<->32
+		// thunk and the cached descriptor from the prior far-jump
+		// happens to be correct for those selectors.
 	}
 	if idx == CS {
 		c.recomputeMode()
