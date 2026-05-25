@@ -531,6 +531,79 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// (8 long never reaches here / 4 pm32 / 2 pm16). High bits of the
 	// stack slot are zero on PUSH, ignored on POP. Cannot POP CS — it's
 	// 0x0E only.
+	case (op == 0x27 || op == 0x2F || op == 0x37 || op == 0x3F) && c.mode != ModeLong64:
+		// BCD adjust instructions. All set AF + CF based on a nibble
+		// check on AL, and conditionally adjust AL. #UD in long mode.
+		//   0x27 DAA — decimal adjust AL after addition
+		//   0x2F DAS — decimal adjust AL after subtraction
+		//   0x37 AAA — ASCII adjust AL after addition
+		//   0x3F AAS — ASCII adjust AL after subtraction
+		al := c.GetReg8(AL)
+		af := c.rflags&RFLAGS_AF != 0
+		cf := c.rflags&RFLAGS_CF != 0
+		switch op {
+		case 0x27: // DAA
+			oldAL := al
+			if (al&0x0F) > 9 || af {
+				al += 6
+				c.rflags |= RFLAGS_AF
+			} else {
+				c.rflags &^= RFLAGS_AF
+			}
+			if oldAL > 0x99 || cf {
+				al += 0x60
+				c.rflags |= RFLAGS_CF
+			} else {
+				c.rflags &^= RFLAGS_CF
+			}
+		case 0x2F: // DAS
+			oldAL := al
+			if (al&0x0F) > 9 || af {
+				al -= 6
+				c.rflags |= RFLAGS_AF
+			} else {
+				c.rflags &^= RFLAGS_AF
+			}
+			if oldAL > 0x99 || cf {
+				al -= 0x60
+				c.rflags |= RFLAGS_CF
+			} else {
+				c.rflags &^= RFLAGS_CF
+			}
+		case 0x37: // AAA
+			if (al&0x0F) > 9 || af {
+				al = (al + 6) & 0x0F
+				c.SetReg8(AH, c.GetReg8(AH)+1)
+				c.rflags |= RFLAGS_AF | RFLAGS_CF
+			} else {
+				al &= 0x0F
+				c.rflags &^= RFLAGS_AF | RFLAGS_CF
+			}
+		case 0x3F: // AAS
+			if (al&0x0F) > 9 || af {
+				al = (al - 6) & 0x0F
+				c.SetReg8(AH, c.GetReg8(AH)-1)
+				c.rflags |= RFLAGS_AF | RFLAGS_CF
+			} else {
+				al &= 0x0F
+				c.rflags &^= RFLAGS_AF | RFLAGS_CF
+			}
+		}
+		c.SetReg8(AL, al)
+		// SF/ZF/PF set from final AL per Intel SDM (for DAA/DAS at least;
+		// AAA/AAS set them "undefined" but real CPUs follow this pattern).
+		c.rflags &^= RFLAGS_SF | RFLAGS_ZF | RFLAGS_PF
+		if al == 0 {
+			c.rflags |= RFLAGS_ZF
+		}
+		if al&0x80 != 0 {
+			c.rflags |= RFLAGS_SF
+		}
+		if parity8(al) {
+			c.rflags |= RFLAGS_PF
+		}
+		return nil
+
 	case (op == 0x60 || op == 0x61) && c.mode != ModeLong64:
 		// PUSHA/POPA (16-bit) / PUSHAD/POPAD (32-bit). #UD in long
 		// mode. Push order: EAX, ECX, EDX, EBX, ESP-original, EBP,
@@ -2984,8 +3057,14 @@ func (c *CPU) opMOVImm(rex, operandSize uint8) error {
 		immBytes = 4
 	}
 	m := c.parseModRM64WithImm(rex, immBytes)
-	if m.reg != 0 {
-		return c.unimplementedAt("Group 11 /%d (only /0 = MOV)", m.reg)
+	// Group 11 /0 is the canonical MOV r/m, imm. Modern Intel CPUs raise
+	// #UD on /1..6 (and use /7 for TSX XBEGIN/XABORT), but pre-Pentium
+	// CPUs ignored the reg field — assemblers / linkers occasionally
+	// emit /1..6 forms that real BIOSes (SeaBIOS in some thunks) rely
+	// on. We treat /1..6 as MOV-with-reg-ignored; /7 is the only one
+	// that's genuinely a different instruction and stays unimplemented.
+	if m.reg == 7 {
+		return c.unimplementedAt("Group 11 /7 (XBEGIN/XABORT — TSX, not implemented)")
 	}
 	var v uint64
 	switch operandSize {

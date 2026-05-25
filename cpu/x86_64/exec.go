@@ -414,8 +414,8 @@ func (c *CPU) unimplementedAt(format string, args ...any) error {
 			post[i] = c.readMem8(addrBase + rip + i)
 		}()
 	}
-	ctx := fmt.Sprintf(" [mode=%v RIP=%#x CSbase=%#x pre=% x post=% x]",
-		c.mode, rip, c.segBase[CS], pre[:], post[:])
+	ctx := fmt.Sprintf(" [mode=%v RIP=%#x CSbase=%#x CSlim=%#x addrSize=%d pre=% x post=% x]",
+		c.mode, rip, c.segBase[CS], c.segLimit[CS], c.currentAddressSize, pre[:], post[:])
 	return fmt.Errorf("%w: "+format+"%s",
 		append([]any{ErrNotImplemented}, append(args, ctx)...)...)
 }

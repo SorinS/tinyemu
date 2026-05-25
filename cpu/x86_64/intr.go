@@ -528,10 +528,24 @@ func (c *CPU) opSYSRET(rex uint8) error {
 // holds as long as the kernel uses RETF to land in 64-bit code; if a
 // compat-mode target ever appears we'll need the descriptor walk.
 func (c *CPU) opRETF(operandSize uint8) error {
-	if operandSize != 8 {
-		// 32- and 16-bit far returns aren't typical in long-mode
-		// kernel code; surface explicitly until needed.
-		return unimplemented("RETF with operand size %d (expected 8)", operandSize)
+	// Real / pm16 / pm32 far return: pop (IP/EIP, CS) at stack-slot
+	// width, rebuild CS cache. CS.base = sel<<4 in real mode; in pm32
+	// we trust the descriptor cache from a prior far-jump. SeaBIOS
+	// uses RETF heavily in its 16/32 thunks.
+	if c.mode != ModeLong64 {
+		slotSize := c.stackSlotSize()
+		newRIP := c.popStack(slotSize)
+		newCS := uint16(c.popStack(slotSize))
+		c.rip = newRIP
+		c.seg[CS] = newCS
+		if c.cr[0]&CR0_PE == 0 {
+			c.segBase[CS] = uint64(newCS) << 4
+			c.segLimit[CS] = 0xFFFF
+			c.segAccess[CS] = 0x9A // P, S, code+ER (D=0 = 16-bit)
+		}
+		c.cpl = int(newCS & 3)
+		c.recomputeMode()
+		return nil
 	}
 	newRIP := c.pop64()
 	newCS := uint16(c.pop64())
