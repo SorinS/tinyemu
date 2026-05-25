@@ -837,15 +837,14 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		sel := c.fetch16()
 		// Real mode: CS.base is just sel<<4, no descriptor table is
-		// involved (and any GDTR base is meaningless). All the other
-		// segment-cache fields (limit, access, flags) stay the same —
-		// real mode permanently runs as 16-bit code with a 64 KB limit.
+		// involved (and any GDTR base is meaningless). The architectural
+		// rule is that real-mode segment loads only rebuild .base from
+		// sel<<4; .limit and .access are preserved from the cached
+		// descriptor. Preserves big-real-mode if a prior PE excursion
+		// extended CSlim.
 		if c.cr[0]&CR0_PE == 0 {
 			c.seg[CS] = sel
 			c.segBase[CS] = uint64(sel) << 4
-			c.segLimit[CS] = 0xFFFF
-			// access stays at its real-mode default; recomputeMode will
-			// pick ModeReal16 because PE=0.
 			c.recomputeMode()
 			c.rip = off
 			return nil
@@ -3202,12 +3201,16 @@ func (c *CPU) opMOVtoSreg(rex uint8) error {
 
 	switch {
 	case c.cr[0]&CR0_PE == 0:
-		// Real mode: segment base is selector << 4. Limit is 64 KB.
-		// All segment loads behave this way — MOV DS/ES/SS/FS/GS use it
-		// for normal addressing; MOV CS is architecturally illegal in
-		// real mode but we don't enforce that.
+		// Real mode: segment base = sel << 4. The architectural rule
+		// is that real-mode segment loads only update the SELECTOR and
+		// rebuild .base; .limit and .access flags are PRESERVED from
+		// whatever the prior protected-mode state cached. SeaBIOS uses
+		// exactly this to keep "big real mode" alive (CSlim = 4 GiB
+		// from a brief PE excursion, then exit to real mode with PE=0
+		// and run 16-bit code that can access > 1 MB). Resetting limit
+		// to 0xFFFF here breaks that — we'd see CSlim=0xFFFF in real
+		// mode and the next thunk that runs past 64 KB would crash.
 		c.segBase[idx] = uint64(sel) << 4
-		c.segLimit[idx] = 0xFFFF
 	case c.mode == ModeLong64:
 		// Long mode forces flat segments: base 0, limit 4 GiB. Don't
 		// disturb the access cache (the boot harness or a far jump

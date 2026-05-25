@@ -539,9 +539,9 @@ func (c *CPU) opRETF(operandSize uint8) error {
 		c.rip = newRIP
 		c.seg[CS] = newCS
 		if c.cr[0]&CR0_PE == 0 {
+			// Real mode: only base rebuilds; limit + access preserved
+			// to support big-real-mode (see opMOVtoSreg comment).
 			c.segBase[CS] = uint64(newCS) << 4
-			c.segLimit[CS] = 0xFFFF
-			c.segAccess[CS] = 0x9A // P, S, code+ER (D=0 = 16-bit)
 		}
 		c.cpl = int(newCS & 3)
 		c.recomputeMode()
@@ -642,10 +642,10 @@ func (c *CPU) opIRETlegacy() error {
 
 	c.seg[CS] = uint16(newCS)
 	if c.cr[0]&CR0_PE == 0 {
-		// Real mode: CS.base = sel<<4, limit always 0xFFFF, 16-bit.
+		// Real mode: CS.base = sel<<4 only. CS.limit and access stay
+		// at whatever the descriptor cache holds — preserving big-real-
+		// mode if a prior PE excursion set CSlim > 0xFFFF.
 		c.segBase[CS] = uint64(newCS) << 4
-		c.segLimit[CS] = 0xFFFF
-		c.segAccess[CS] = 0x9A // P=1, S=1, code, ER (D=0 → 16-bit)
 	} else {
 		// Protected mode: walk the GDT to load the new descriptor.
 		// (Real BIOSes occasionally IRET from pm32 to pm32 same-CPL —
