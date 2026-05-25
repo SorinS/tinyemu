@@ -80,22 +80,14 @@ func dumpRipRing(label string) {
 }
 
 func (c *CPU) Step() (err error) {
-	// Architectural IP width depends on mode + CS segment limit:
-	//   - Long / compat32 modes: RIP is 64-bit / 32-bit linear; no mask.
-	//   - Pure real / pm16 with the legacy 64-KB code segment: IP is
-	//     16-bit; high bits must NOT survive into the next instruction.
-	//   - "Big real mode" / "unreal mode" (CS.limit > 0xFFFF set during
-	//     a brief PE excursion): EIP may exceed 64 KB even with PE=0.
-	//     SeaBIOS uses this for its 16-bit thunks to access >1 MB.
-	// We mask only when CS.limit indicates the legacy 64-KB segment;
-	// big-real-mode passes through unchanged. (Real hardware enforces
-	// the limit with a #GP — we let it pass for simplicity.)
-	switch c.mode {
-	case ModeReal16, ModeProtected16:
-		if c.segLimit[CS] <= 0xFFFF {
-			c.rip &= 0xFFFF
-		}
-	case ModeProtected32:
+	// IP wrapping in real / pm16: tempting to mask to 0xFFFF here, but
+	// SeaBIOS routinely runs code that crosses the 64-KB boundary via
+	// segment-cached extended limits ("big real mode"). Real hardware
+	// would #GP on access beyond CS.limit; we don't model that and the
+	// guest depends on the leniency. Pm32 still masks because every
+	// pm32 boot we care about uses 32-bit linear addresses with a flat
+	// segment — high bits in c.rip are always stale.
+	if c.mode == ModeProtected32 {
 		c.rip &= 0xFFFFFFFF
 	}
 	origRIP := c.rip
