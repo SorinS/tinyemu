@@ -528,12 +528,13 @@ func (c *CPU) opSYSRET(rex uint8) error {
 // holds as long as the kernel uses RETF to land in 64-bit code; if a
 // compat-mode target ever appears we'll need the descriptor walk.
 func (c *CPU) opRETF(operandSize uint8) error {
-	// Real / pm16 / pm32 far return: pop (IP/EIP, CS) at stack-slot
-	// width, rebuild CS cache. CS.base = sel<<4 in real mode; in pm32
-	// we trust the descriptor cache from a prior far-jump. SeaBIOS
-	// uses RETF heavily in its 16/32 thunks.
+	// Per Intel SDM Vol 2A: RETF pops (IP/EIP, CS) at OPERAND SIZE, not
+	// stack-slot size. Real-mode default is 16-bit; 0x66 promotes to
+	// 32-bit. CS is always at the same width as the pushed offset (so
+	// CALL FAR + RETF stay balanced) — even though "CS" is only 16
+	// significant bits, the stack slot is full operand-size width.
 	if c.mode != ModeLong64 {
-		slotSize := c.stackSlotSize()
+		slotSize := int(operandSize)
 		newRIP := c.popStack(slotSize)
 		newCS := uint16(c.popStack(slotSize))
 		c.rip = newRIP
@@ -569,7 +570,7 @@ func (c *CPU) opRETF(operandSize uint8) error {
 // values from the current stack in the order RIP, CS, RFLAGS, RSP, SS.
 // In 64-bit mode IRET always pops all five regardless of whether a
 // privilege change actually occurred — different from the 32-bit form.
-func (c *CPU) opIRETQ() error {
+func (c *CPU) opIRETQ(operandSize uint8) error {
 	// Mode dispatch:
 	//   Long mode:    pop 5×8 bytes (RIP, CS, RFLAGS, RSP, SS).
 	//   Real / pm16:  pop 3×2 bytes (IP, CS, FLAGS).
@@ -578,7 +579,7 @@ func (c *CPU) opIRETQ() error {
 	// We split the long-mode path; the legacy 16/32-bit paths share a
 	// helper because the shape is the same modulo slot width.
 	if c.mode != ModeLong64 {
-		return c.opIRETlegacy()
+		return c.opIRETlegacy(operandSize)
 	}
 	newRIP := c.pop64()
 	newCS := uint16(c.pop64())
@@ -633,8 +634,15 @@ func (c *CPU) opIRETQ() error {
 // callbacks); we focus on the same-CPL paths here. CPL-changing IRET
 // in pm32 is a separate beast and would need its own implementation
 // when a guest exercises it.
-func (c *CPU) opIRETlegacy() error {
-	slotSize := c.stackSlotSize() // 2 in pm16/real, 4 in pm32
+func (c *CPU) opIRETlegacy(operandSize uint8) error {
+	// Per Intel SDM Vol 2A IRET pseudocode: the pop width is OPERAND
+	// SIZE — the 0x66 prefix promotes real-mode IRET to IRETD (3×4-byte
+	// pops) and demotes pm32 IRET to 16-bit (3×2-byte pops). Using the
+	// stack-segment D-bit here was wrong: SeaBIOS issues `66 cf` in real
+	// mode for its 32-bit pm32 thunks, and we'd only pop 6 bytes instead
+	// of 12, leaving 6 stale bytes that subsequent CALL/RET pairs read
+	// as garbage return addresses.
+	slotSize := int(operandSize)
 
 	newIP := c.popStack(slotSize)
 	newCS := c.popStack(slotSize) & 0xFFFF // only low 16 are the selector

@@ -803,7 +803,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		// 32-bit IRETD form (REX.W=0) is decoded but pops 32-bit values
 		// — not yet implemented because nothing in our test surface
 		// exercises it. Treat REX.W=0 as IRETQ for simplicity.
-		return c.opIRETQ()
+		return c.opIRETQ(operandSize)
 
 	case op == 0xE4: // IN AL, imm8
 		port := uint16(c.fetch8())
