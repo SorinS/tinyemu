@@ -27,9 +27,7 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 	// rather than crash silent — a non-long-mode interrupt path needs
 	// its own implementation.
 	if c.mode != ModeLong64 {
-		return fmt.Errorf("deliverInterrupt: vec=%#x mode=%v not implemented "+
-			"(real / pm16 / pm32 / compat32 interrupt delivery uses an 8-byte IDT gate "+
-			"format and shorter pushes than long mode)", vec, c.mode)
+		return c.deliverInterruptLegacy(vec, hasErr, errorCode)
 	}
 	idtBase := c.segBase[IDTR]
 	idtLimit := c.segLimit[IDTR]
@@ -317,6 +315,122 @@ func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
 // printing each entry value so a "present + reserved bit" fault can
 // be triaged to a specific level. Used from Step's deferred recover
 // when ex.Err.ErrorCode != 0 and intrTrace is on.
+// deliverInterruptLegacy handles real-mode / pm16 / pm32 interrupt
+// delivery. SeaBIOS depends on this for IRQ0 (timer), INT 13h (disk),
+// INT 10h (video), and the rest of the legacy BIOS callback world. Long
+// mode has its own path in deliverInterrupt.
+//
+// Real mode (CR0.PE=0):
+//   - IDT is an array of 256 × 4-byte gates at IDTR.base: [IP_lo16,
+//     CS_lo16].
+//   - Push FLAGS, CS, IP (3×2 bytes) onto the current stack.
+//   - Clear IF and TF; load CS:IP from the gate; CS.base = sel<<4.
+//   - Error-code pushes don't apply in real mode (the CPU doesn't
+//     generate them); hasErr is ignored.
+//
+// Protected mode (CR0.PE=1, not long):
+//   - IDT is an array of 8-byte gates.
+//     Gate format (Intel SDM Vol 3 §6.11): [offset_lo16, selector,
+//     reserved, type_attr, offset_hi16].
+//   - Same-CPL: push EFLAGS, CS, EIP (3×4 in pm32, 3×2 in pm16). If
+//     hasErr, push errorCode.
+//   - Cross-CPL stack switch via TSS is NOT modelled here — BIOS code
+//     runs CPL=0. CS descriptor walk is not modelled either; we keep
+//     the cached base/limit and just update the selector.
+func (c *CPU) deliverInterruptLegacy(vec uint8, hasErr bool, errorCode uint32) error {
+	if c.cr[0]&CR0_PE == 0 {
+		return c.deliverInterruptRealMode(vec)
+	}
+	return c.deliverInterruptProt(vec, hasErr, errorCode)
+}
+
+func (c *CPU) deliverInterruptRealMode(vec uint8) error {
+	idtBase := c.segBase[IDTR]
+	idtLimit := c.segLimit[IDTR]
+	gateAddr := idtBase + uint64(vec)*4
+	if uint64(vec)*4+4 > uint64(idtLimit)+1 {
+		return fmt.Errorf("real-mode interrupt: vector %d beyond IDT limit %#x", vec, idtLimit)
+	}
+	// Real mode: IDTR.base is a linear address, paging is off, no
+	// translation needed.
+	newIP := uint64(c.readMem16(gateAddr))
+	newCS := c.readMem16(gateAddr + 2)
+	if intrTrace {
+		fmt.Fprintf(os.Stderr, "[intr-rm] vec=%d IDT.base=%#x gate@%#x -> %#x:%#x\n",
+			vec, idtBase, gateAddr, newCS, newIP)
+	}
+	// Build a fresh FLAGS image to push: current flags with the high
+	// 16 stripped (real mode operates on the low 16-bit FLAGS only;
+	// IRET will pop 16 bits back).
+	flagsToPush := uint16(c.rflags)
+	c.pushStack(uint64(flagsToPush), 2)
+	c.pushStack(uint64(c.seg[CS]), 2)
+	c.pushStack(c.rip&0xFFFF, 2)
+	// Clear IF and TF after pushing the saved copy — the handler runs
+	// with interrupts off and single-step disabled. Per Intel SDM Vol 1
+	// §6.8.2 AC is also cleared.
+	c.rflags &^= RFLAGS_IF | RFLAGS_TF | RFLAGS_AC
+	c.seg[CS] = newCS
+	c.segBase[CS] = uint64(newCS) << 4
+	// CS.limit/access preserved (big-real-mode if previously set).
+	c.rip = newIP
+	return nil
+}
+
+func (c *CPU) deliverInterruptProt(vec uint8, hasErr bool, errorCode uint32) error {
+	idtBase := c.segBase[IDTR]
+	idtLimit := c.segLimit[IDTR]
+	gateAddr := idtBase + uint64(vec)*8
+	if uint64(vec)*8+8 > uint64(idtLimit)+1 {
+		return fmt.Errorf("prot-mode interrupt: vector %d beyond IDT limit %#x", vec, idtLimit)
+	}
+	gate := c.readMem64(gateAddr)
+	offsetLo := uint16(gate)
+	selector := uint16(gate >> 16)
+	typeAttr := uint8(gate >> 40)
+	offsetHi := uint16(gate >> 48)
+	if typeAttr&0x80 == 0 {
+		return fmt.Errorf("prot-mode interrupt: gate %d not present (typeAttr=%#x)", vec, typeAttr)
+	}
+	gateType := typeAttr & 0xF
+	newRIP := uint64(offsetLo) | (uint64(offsetHi) << 16)
+	if intrTrace {
+		fmt.Fprintf(os.Stderr, "[intr-prot] vec=%d gate@%#x type=%#x -> %#x:%#x\n",
+			vec, gateAddr, gateType, selector, newRIP)
+	}
+	// Stack-slot width: pm32 pushes 4, pm16 pushes 2. Same-CPL only —
+	// no SS:ESP load from TSS modelled.
+	slotSize := 4
+	if c.mode == ModeProtected16 {
+		slotSize = 2
+	}
+	flagsToPush := c.rflags
+	if slotSize == 2 {
+		flagsToPush &= 0xFFFF
+	} else {
+		flagsToPush &= 0xFFFFFFFF
+	}
+	c.pushStack(flagsToPush, slotSize)
+	c.pushStack(uint64(c.seg[CS]), slotSize)
+	c.pushStack(c.rip, slotSize)
+	if hasErr {
+		c.pushStack(uint64(errorCode), slotSize)
+	}
+	// Per Intel SDM: clear IF only for interrupt-gates (type 0xE/0x6),
+	// not trap-gates (0xF/0x7). TF cleared either way.
+	c.rflags &^= RFLAGS_TF
+	if gateType == 0xE || gateType == 0x6 {
+		c.rflags &^= RFLAGS_IF
+	}
+	c.seg[CS] = selector
+	// Don't walk the GDT: trust the existing cached base/limit. For
+	// SeaBIOS in pm32 the gates point back into the same flat segment
+	// the BIOS uses, so the cache is fine. Refine when we hit a
+	// kernel-style cross-segment gate.
+	c.rip = newRIP
+	return nil
+}
+
 func (c *CPU) dumpWalk(linAddr uint64) {
 	cr3 := c.cr[3] & 0xFFFFFFFFF000
 	pml4Idx := (linAddr >> 39) & 0x1FF

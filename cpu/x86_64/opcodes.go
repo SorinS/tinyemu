@@ -518,9 +518,9 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// ===== Stack =====
 
 	case op >= 0x50 && op <= 0x57:
-		return c.opPUSHReg(op-0x50, rex)
+		return c.opPUSHReg(op-0x50, rex, operandSize)
 	case op >= 0x58 && op <= 0x5F:
-		return c.opPOPReg(op-0x58, rex)
+		return c.opPOPReg(op-0x58, rex, operandSize)
 
 	// ===== Segment-register PUSH/POP (16/32-bit modes only; #UD in long mode) =====
 	//
@@ -684,27 +684,33 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		// long mode; gating on mode preserves the long-mode test that
 		// pins 0x06 as unimplemented while letting BIOS / real-mode
 		// code use them.
+		// PUSH/POP segment use operand size; segment selector is 16 bits
+		// but the slot consumed/produced is full operand-size width
+		// (zero-extended on push). Using stackSlotSize() in real-mode
+		// 0x66-prefixed code silently mis-sized the slot — same bug class
+		// as the PUSH r/m fix in Group 5 /6.
+		size := c.pushPopOperandSize(operandSize)
 		switch op {
 		case 0x06: // PUSH ES
-			c.pushStack(uint64(c.seg[ES]), c.stackSlotSize())
+			c.pushStack(uint64(c.seg[ES]), size)
 		case 0x07: // POP ES
-			c.seg[ES] = uint16(c.popStack(c.stackSlotSize()))
+			c.seg[ES] = uint16(c.popStack(size))
 			if c.cr[0]&CR0_PE == 0 {
 				c.segBase[ES] = uint64(c.seg[ES]) << 4
 			}
 		case 0x0E: // PUSH CS (no POP CS — only this direction is valid)
-			c.pushStack(uint64(c.seg[CS]), c.stackSlotSize())
+			c.pushStack(uint64(c.seg[CS]), size)
 		case 0x16: // PUSH SS
-			c.pushStack(uint64(c.seg[SS]), c.stackSlotSize())
+			c.pushStack(uint64(c.seg[SS]), size)
 		case 0x17: // POP SS
-			c.seg[SS] = uint16(c.popStack(c.stackSlotSize()))
+			c.seg[SS] = uint16(c.popStack(size))
 			if c.cr[0]&CR0_PE == 0 {
 				c.segBase[SS] = uint64(c.seg[SS]) << 4
 			}
 		case 0x1E: // PUSH DS
-			c.pushStack(uint64(c.seg[DS]), c.stackSlotSize())
+			c.pushStack(uint64(c.seg[DS]), size)
 		case 0x1F: // POP DS
-			c.seg[DS] = uint16(c.popStack(c.stackSlotSize()))
+			c.seg[DS] = uint16(c.popStack(size))
 			if c.cr[0]&CR0_PE == 0 {
 				c.segBase[DS] = uint64(c.seg[DS]) << 4
 			}
@@ -738,24 +744,22 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return nil
 
 	case op == 0x68:
-		// PUSH imm32 (or imm16 with 0x66) sign-extended to operand
-		// size. The width of the stack slot consumed follows the CPU
-		// mode (8 long / 4 pm32 / 2 pm16) — using push64 unconditionally
-		// was the next stack-imbalance bug after RET, dropping 4 spare
-		// bytes onto a pm32 stack on every PUSH-imm.
+		// PUSH imm32 (or imm16 with 0x66) sign-extended to operand size
+		// and pushed at the corresponding width — see pushPopOperandSize
+		// for the long-mode promotion (no 32-bit PUSH form in long mode).
 		var v int64
 		if operandSize == 2 {
 			v = int64(int16(c.fetch16()))
 		} else {
 			v = int64(int32(c.fetch32()))
 		}
-		c.pushStack(uint64(v), c.stackSlotSize())
+		c.pushStack(uint64(v), c.pushPopOperandSize(operandSize))
 		return nil
 
 	case op == 0x6A:
 		// PUSH imm8 sign-extended.
 		v := int64(int8(c.fetch8()))
-		c.pushStack(uint64(v), c.stackSlotSize())
+		c.pushStack(uint64(v), c.pushPopOperandSize(operandSize))
 		return nil
 
 	// ===== Control flow =====
@@ -3124,10 +3128,12 @@ func (c *CPU) opGroup5(rex, operandSize uint8) error {
 		target := c.readOperand(m, size)
 		c.rip = target
 		return nil
-	case 6: // PUSH r/m — pushes operandSize bytes onto a stack of
-		// stackSlotSize width. They're the same in practice unless a
-		// 0x66 prefix shrinks the operand.
-		c.pushStack(c.readOperand(m, operandSize), c.stackSlotSize())
+	case 6: // PUSH r/m — width follows operand size (see
+		// pushPopOperandSize). Using stackSlotSize() here silently
+		// dropped the 0x66 promotion in real mode, half-pushing the
+		// value SeaBIOS later iret'd through.
+		size := c.pushPopOperandSize(operandSize)
+		c.pushStack(c.readOperand(m, uint8(size)), size)
 		return nil
 	}
 	return c.unimplementedAt("Group 5 /%d", m.reg)
@@ -3421,21 +3427,21 @@ func (c *CPU) ioWrite32(port uint16, v uint32) {
 	}
 }
 
-func (c *CPU) opPUSHReg(rd, rex uint8) error {
+func (c *CPU) opPUSHReg(rd, rex, operandSize uint8) error {
 	idx := uint8(rd)
 	if rex&rexB != 0 {
 		idx |= 0x8
 	}
-	c.pushStack(c.reg64[idx], c.stackSlotSize())
+	c.pushStack(c.reg64[idx], c.pushPopOperandSize(operandSize))
 	return nil
 }
 
-func (c *CPU) opPOPReg(rd, rex uint8) error {
+func (c *CPU) opPOPReg(rd, rex, operandSize uint8) error {
 	idx := uint8(rd)
 	if rex&rexB != 0 {
 		idx |= 0x8
 	}
-	size := c.stackSlotSize()
+	size := c.pushPopOperandSize(operandSize)
 	v := c.popStack(size)
 	switch size {
 	case 2:
@@ -3620,6 +3626,32 @@ func (c *CPU) stackSlotSize() int {
 		return 2
 	}
 	return 8
+}
+
+// pushPopOperandSize converts the generic per-instruction operand size
+// into the width that PUSH/POP/PUSHF/POPF and friends should actually
+// transfer to/from the stack. Per Intel SDM Vol 2A:
+//
+//   - In legacy modes (real/pm16/pm32) the push/pop width follows the
+//     instruction's operand size: default 2 in 16-bit modes, default 4
+//     in pm32, and a 0x66 prefix swaps them.
+//   - In long mode there is NO 32-bit form for PUSH/POP — the default
+//     is 64-bit, and the 0x66 prefix gives 16-bit. A decoder
+//     operandSize of 4 in long mode therefore means "we just defaulted
+//     to 32 but PUSH/POP have no such form" and must be promoted to 8.
+//     REX.W (operandSize=8) and 0x66 (operandSize=2) flow through
+//     unchanged.
+//
+// Using stackSlotSize() instead of this helper was the cause of a
+// SeaBIOS-on-x86_64 corruption: `pushl BREGS_code(%eax)` in real-mode
+// .code16 (with the 0x66 prefix that promotes the push to 32-bit)
+// pushed only 2 bytes, so the iretw that followed read CS from the
+// wrong half of the stack and landed in zero-memory.
+func (c *CPU) pushPopOperandSize(operandSize uint8) int {
+	if c.mode == ModeLong64 && operandSize == 4 {
+		return 8
+	}
+	return int(operandSize)
 }
 
 // pushStack pushes `size` bytes of v onto the stack and decrements the

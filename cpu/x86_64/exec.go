@@ -366,6 +366,34 @@ func (c *CPU) Run(maxCycles int) error {
 				c.cycles, c.mode, c.seg[CS], c.segBase[CS], c.rip,
 				c.segBase[CS]+c.rip)
 		}
+		// One-shot register dump at a cycle picked by TINYEMU_X64_DUMPCYCLE.
+		// Also dumps bregs near [DS:EAX] so we can correlate values.
+		if dumpCycle > 0 && c.cycles == dumpCycle {
+			lin := c.segBase[DS] + uint64(uint32(c.reg64[RAX]))
+			var b [0x28]byte
+			for i := 0; i < len(b); i++ {
+				func() {
+					defer func() { _ = recover() }()
+					b[i] = c.readMem8(lin + uint64(i))
+				}()
+			}
+			fmt.Fprintf(os.Stderr,
+				"[dump] cycle=%d EAX=%#x ESP=%#x DS=%#x:%#x SS=%#x:%#x bregs@%#x={%s}\n",
+				c.cycles, uint32(c.reg64[RAX]),
+				uint32(c.reg64[RSP]), c.seg[DS], c.segBase[DS],
+				c.seg[SS], c.segBase[SS], lin, hexDump(b[:]))
+			// Also dump top-of-stack 16 bytes — that's where the iretw
+			// frame lives by the time IRET is reached.
+			slin := c.segBase[SS] + uint64(uint32(c.reg64[RSP]))
+			var st [16]byte
+			for i := 0; i < len(st); i++ {
+				func() {
+					defer func() { _ = recover() }()
+					st[i] = c.readMem8(slin + uint64(i))
+				}()
+			}
+			fmt.Fprintf(os.Stderr, "[dump] stack@%#x={%s}\n", slin, hexDump(st[:]))
+		}
 		if err := c.Step(); err != nil {
 			return err
 		}
@@ -417,6 +445,42 @@ func (c *CPU) unimplementedAt(format string, args ...any) error {
 // instruction's RIP + opcode bytes to stderr. Extremely verbose for
 // a kernel boot — use to bisect "where did we jump wrong" failures.
 var stepTrace = os.Getenv("TINYEMU_X64_TRACE") == "1"
+
+// hexDump renders a slice as space-separated 2-digit hex (no 0x prefix,
+// no trailing space). Used by the one-shot dump trace.
+func hexDump(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	const hex = "0123456789abcdef"
+	out := make([]byte, 0, 3*len(b)-1)
+	for i, x := range b {
+		if i > 0 {
+			out = append(out, ' ')
+		}
+		out = append(out, hex[x>>4], hex[x&0xf])
+	}
+	return string(out)
+}
+
+// dumpCycle, set by TINYEMU_X64_DUMPCYCLE=N, triggers a one-shot
+// register/segment dump immediately BEFORE Step() at cycle N. Used to
+// snapshot EAX (the bregs pointer) right before a problematic PUSH so a
+// trace can be matched against the bregs struct in memory.
+var dumpCycle uint64 = func() uint64 {
+	s := os.Getenv("TINYEMU_X64_DUMPCYCLE")
+	if s == "" {
+		return 0
+	}
+	var v uint64
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			break
+		}
+		v = v*10 + uint64(ch-'0')
+	}
+	return v
+}()
 
 // ripSampleEvery is set by TINYEMU_X64_RIPSAMPLE=N. If non-zero, every
 // N-th cycle prints RIP — useful for finding where a hung kernel is
