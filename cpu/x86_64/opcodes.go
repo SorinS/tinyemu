@@ -641,6 +641,77 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
+	case (op == 0xD4 || op == 0xD5) && c.mode != ModeLong64:
+		// AAM (D4 ib) / AAD (D5 ib) — ASCII Adjust AX after Multiply /
+		// before Divide. #UD in long mode. Both take an explicit imm8
+		// base; the legacy assembler `aam` / `aad` mnemonic emits the
+		// default 0x0A but the instruction encoding ALWAYS includes the
+		// immediate byte.
+		//   AAM: tempAL = AL; AH = tempAL / imm8; AL = tempAL mod imm8
+		//   AAD: tempAL = AL + (AH * imm8); AL = tempAL & 0xFF; AH = 0
+		// AAM with imm8=0 is #DE (divide error). SF/ZF/PF set from AL;
+		// OF/AF/CF undefined (we leave them per the SDM "undefined" note).
+		base := c.fetch8()
+		if op == 0xD4 {
+			if base == 0 {
+				return c.deliverInterrupt(0, false, 0)
+			}
+			al := c.GetReg8(AL)
+			c.SetReg8(AH, al/base)
+			c.SetReg8(AL, al%base)
+		} else {
+			tmp := uint16(c.GetReg8(AL)) + uint16(c.GetReg8(AH))*uint16(base)
+			c.SetReg8(AL, uint8(tmp))
+			c.SetReg8(AH, 0)
+		}
+		al := c.GetReg8(AL)
+		c.rflags &^= RFLAGS_SF | RFLAGS_ZF | RFLAGS_PF
+		if al == 0 {
+			c.rflags |= RFLAGS_ZF
+		}
+		if al&0x80 != 0 {
+			c.rflags |= RFLAGS_SF
+		}
+		if parity8(al) {
+			c.rflags |= RFLAGS_PF
+		}
+		return nil
+
+	case op == 0xD6 && c.mode != ModeLong64:
+		// SALC — undocumented "Set AL to -CF". Listed in many opcode
+		// references (a.k.a. SETALC). Old SeaBIOS uses it for terse
+		// flag-to-byte conversions. AL = CF ? 0xFF : 0x00. Flags
+		// unchanged. #UD in long mode.
+		if c.rflags&RFLAGS_CF != 0 {
+			c.SetReg8(AL, 0xFF)
+		} else {
+			c.SetReg8(AL, 0x00)
+		}
+		return nil
+
+	case op == 0xD7:
+		// XLAT / XLATB — AL = [DS:eBX + zero_extended(AL)]. Address
+		// width follows currentAddressSize; segment override allowed.
+		// In long mode the base is RBX (full 64-bit).
+		seg := DS
+		if segOverride >= 0 {
+			seg = segOverride
+		}
+		var base uint64
+		switch c.currentAddressSize {
+		case 2:
+			base = uint64(c.GetReg16(BX))
+		case 4:
+			base = uint64(uint32(c.reg64[RBX]))
+		case 8:
+			base = c.reg64[RBX]
+		default:
+			base = c.reg64[RBX]
+		}
+		addr := c.segBase[seg] + base + uint64(c.GetReg8(AL))
+		c.SetReg8(AL, c.readMem8(addr))
+		return nil
+
 	case (op == 0x60 || op == 0x61) && c.mode != ModeLong64:
 		// PUSHA/POPA (16-bit) / PUSHAD/POPAD (32-bit). #UD in long
 		// mode. Push order: EAX, ECX, EDX, EBX, ESP-original, EBP,
@@ -801,6 +872,14 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		// INT imm8.
 		vec := c.fetch8()
 		return c.deliverInterrupt(vec, false, 0)
+
+	case op == 0xCE && c.mode != ModeLong64:
+		// INTO — overflow trap. Delivers vector 4 if OF=1, else NOP. #UD
+		// in long mode (we let it fall through to unimplementedAt).
+		if c.rflags&RFLAGS_OF != 0 {
+			return c.deliverInterrupt(4, false, 0)
+		}
+		return nil
 
 	case op == 0xCF:
 		// IRET. In long mode the 64-bit form requires REX.W=1; the
@@ -1067,6 +1146,96 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return c.handleX87(op, rex)
 
 	// ===== Flag manipulation =====
+
+	case op == 0xC8 && c.mode != ModeLong64:
+		// ENTER imm16, imm8 — create a stack frame for a procedure.
+		//   imm16 = local variable size (bytes)
+		//   imm8  = nesting level (low 5 bits). Common usage is level=0.
+		// Pseudo-code (Intel SDM): push RBP; for level-1 frames copy
+		// display pointers from caller's frame; RBP=RSP; RSP-=imm16.
+		// SeaBIOS uses level=0 ENTER for C function prologs.
+		size := c.pushPopOperandSize(operandSize)
+		alloc := uint64(c.fetch16())
+		level := uint8(c.fetch8()) & 0x1F
+		// Push current RBP at operand-size width.
+		c.pushStack(c.reg64[RBP], size)
+		frameTemp := c.reg64[RSP]
+		if level > 0 {
+			// Display copy. Each level pushes a pointer copied from the
+			// caller's frame chain. The stride is the operand size.
+			stride := uint64(size)
+			for i := uint8(1); i < level; i++ {
+				c.reg64[RBP] -= stride
+				v := uint64(0)
+				switch size {
+				case 2:
+					v = uint64(c.readMem16(c.segBase[SS] + (c.reg64[RBP] & 0xFFFF)))
+				case 4:
+					v = uint64(c.readMem32(c.segBase[SS] + uint64(uint32(c.reg64[RBP]))))
+				case 8:
+					v = c.readMem64(c.segBase[SS] + c.reg64[RBP])
+				}
+				c.pushStack(v, size)
+			}
+			c.pushStack(frameTemp, size)
+		}
+		// RBP = frame_temp; RSP -= alloc. Width follows operand size.
+		switch size {
+		case 2:
+			c.reg64[RBP] = (c.reg64[RBP] & ^uint64(0xFFFF)) | (frameTemp & 0xFFFF)
+			c.reg64[RSP] = (c.reg64[RSP] & ^uint64(0xFFFF)) |
+				(uint64(uint16(c.reg64[RSP])-uint16(alloc)) & 0xFFFF)
+		case 4:
+			c.reg64[RBP] = frameTemp & 0xFFFFFFFF
+			c.reg64[RSP] = uint64(uint32(c.reg64[RSP]) - uint32(alloc))
+		case 8:
+			c.reg64[RBP] = frameTemp
+			c.reg64[RSP] -= alloc
+		}
+		return nil
+
+	case (op == 0xC4 || op == 0xC5) && c.mode != ModeLong64:
+		// LES r16/32, m16:16/32 (0xC4) / LDS (0xC5). #UD in long mode
+		// (the encoding is repurposed as VEX prefix). Loads a 16-bit
+		// segment selector + 16/32-bit offset from memory into ES/DS
+		// (resp.) and the destination GPR.
+		m := c.parseModRM64(rex)
+		if m.isReg {
+			return c.unimplementedAt("LES/LDS with register operand")
+		}
+		seg := m.defaultSeg
+		if c.currentSegOverride >= 0 {
+			seg = c.currentSegOverride
+		}
+		ea := c.segBase[seg] + m.ea
+		// Offset: operand-size (16 or 32). Selector: 16 bits at ea+size.
+		var off uint64
+		switch operandSize {
+		case 2:
+			off = uint64(c.readMem16(ea))
+		default:
+			off = uint64(c.readMem32(ea))
+		}
+		sel := c.readMem16(ea + uint64(operandSize))
+		dstSeg := DS
+		if op == 0xC4 {
+			dstSeg = ES
+		}
+		c.seg[dstSeg] = sel
+		if c.cr[0]&CR0_PE == 0 {
+			c.segBase[dstSeg] = uint64(sel) << 4
+		}
+		c.writeReg(m.reg, off, operandSize)
+		return nil
+
+	case op == 0xF1:
+		// INT1 / ICEBP — vectors through gate 1 (#DB). Rare in user
+		// code but SeaBIOS occasionally lands here when stale data is
+		// decoded as code. Delivering vector 1 is the architectural
+		// behaviour; if our IDT routes vec 1 to a real handler we'll
+		// trip it, but in the legitimate ICEBP case the OS would
+		// install a debug handler.
+		return c.deliverInterrupt(1, false, 0)
 
 	case op == 0xC9: // LEAVE — restore RBP, pop saved RBP
 		// LEAVE := mov rsp, rbp ; pop rbp. The pop is at stack-slot
@@ -1418,6 +1587,37 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int, repPrefix uint8
 			idx |= 0x8
 		}
 		c.reg64[idx] = bswap(c.reg64[idx], operandSize)
+		return nil
+
+	case op2 == 0xB2:
+		// LSS r, m16:16/32 — load SS + GPR. Sibling of LES/LDS (0xC4/
+		// 0xC5) but available in long mode too (encoding doesn't
+		// collide with VEX). SeaBIOS uses LSS in some pm32 transition
+		// thunks to atomically swap SS and ESP.
+		m := c.parseModRM64(rex)
+		if m.isReg {
+			return c.unimplementedAt("LSS with register operand")
+		}
+		seg := m.defaultSeg
+		if c.currentSegOverride >= 0 {
+			seg = c.currentSegOverride
+		}
+		ea := c.segBase[seg] + m.ea
+		var off uint64
+		switch operandSize {
+		case 2:
+			off = uint64(c.readMem16(ea))
+		case 4:
+			off = uint64(c.readMem32(ea))
+		default:
+			off = c.readMem64(ea)
+		}
+		newSS := c.readMem16(ea + uint64(operandSize))
+		c.seg[SS] = newSS
+		if c.cr[0]&CR0_PE == 0 {
+			c.segBase[SS] = uint64(newSS) << 4
+		}
+		c.writeReg(m.reg, off, operandSize)
 		return nil
 
 	case op2 == 0xB6:
@@ -3123,10 +3323,64 @@ func (c *CPU) opGroup5(rex, operandSize uint8) error {
 		c.pushStack(c.rip, int(size))
 		c.rip = target
 		return nil
+	case 3: // CALL FAR m16:16/32/64 (intersegment indirect through memory)
+		if m.isReg {
+			return c.unimplementedAt("Group 5 /3 with register operand (CALLF only valid m16:16/32)")
+		}
+		seg := m.defaultSeg
+		if c.currentSegOverride >= 0 {
+			seg = c.currentSegOverride
+		}
+		ea := c.segBase[seg] + m.ea
+		var newRIP uint64
+		switch operandSize {
+		case 2:
+			newRIP = uint64(c.readMem16(ea))
+		case 4:
+			newRIP = uint64(c.readMem32(ea))
+		default:
+			newRIP = c.readMem64(ea)
+		}
+		newCS := c.readMem16(ea + uint64(operandSize))
+		// Push old CS + RIP at operand-size width to match RETF.
+		size := c.pushPopOperandSize(operandSize)
+		c.pushStack(uint64(c.seg[CS]), size)
+		c.pushStack(c.rip, size)
+		c.seg[CS] = newCS
+		if c.cr[0]&CR0_PE == 0 {
+			c.segBase[CS] = uint64(newCS) << 4
+		}
+		c.rip = newRIP
+		return nil
 	case 4: // JMP r/m (near, absolute indirect)
 		size := uint8(c.stackSlotSize())
 		target := c.readOperand(m, size)
 		c.rip = target
+		return nil
+	case 5: // JMP FAR m16:16/32/64 (intersegment indirect through memory)
+		if m.isReg {
+			return c.unimplementedAt("Group 5 /5 with register operand (JMPF only valid m16:16/32)")
+		}
+		seg := m.defaultSeg
+		if c.currentSegOverride >= 0 {
+			seg = c.currentSegOverride
+		}
+		ea := c.segBase[seg] + m.ea
+		var newRIP uint64
+		switch operandSize {
+		case 2:
+			newRIP = uint64(c.readMem16(ea))
+		case 4:
+			newRIP = uint64(c.readMem32(ea))
+		default:
+			newRIP = c.readMem64(ea)
+		}
+		newCS := c.readMem16(ea + uint64(operandSize))
+		c.seg[CS] = newCS
+		if c.cr[0]&CR0_PE == 0 {
+			c.segBase[CS] = uint64(newCS) << 4
+		}
+		c.rip = newRIP
 		return nil
 	case 6: // PUSH r/m — width follows operand size (see
 		// pushPopOperandSize). Using stackSlotSize() here silently
