@@ -5,7 +5,6 @@ import (
 	"net"
 	"os"
 	"strings"
-	"syscall"
 )
 
 // DNS address caching state
@@ -13,7 +12,6 @@ import (
 var (
 	dnsAddr     net.IP
 	dnsAddrTime uint32
-	dnsAddrStat syscall.Stat_t
 )
 
 // getDnsAddr returns the system's configured DNS server address.
@@ -31,22 +29,13 @@ func getDnsAddr() (net.IP, bool) {
 			return dnsAddr, true
 		}
 
-		// Check if /etc/resolv.conf has changed
-		oldStat := dnsAddrStat
-		var newStat syscall.Stat_t
-		if err := syscall.Stat("/etc/resolv.conf", &newStat); err != nil {
-			return nil, false
-		}
-
-		// If file unchanged, return cached
-		if newStat.Dev == oldStat.Dev &&
-			newStat.Ino == oldStat.Ino &&
-			newStat.Size == oldStat.Size &&
-			statMtimSec(&newStat) == statMtimSec(&oldStat) {
+		// Check if /etc/resolv.conf has changed. On Windows there is no
+		// /etc/resolv.conf and dnsStatUnchanged always returns false, so
+		// we re-parse on every call past the 1s TTL — same outcome as
+		// "stat said the file changed".
+		if dnsStatUnchanged() {
 			return dnsAddr, true
 		}
-
-		dnsAddrStat = newStat
 	}
 
 	// Parse /etc/resolv.conf
@@ -59,7 +48,7 @@ func getDnsAddr() (net.IP, bool) {
 
 	// Stat the file for future cache validation
 	// Reference: tinyemu-2019-12-21/slirp/slirp.c:117
-	if err := syscall.Stat("/etc/resolv.conf", &dnsAddrStat); err != nil {
+	if err := dnsStatSnapshot(); err != nil {
 		return nil, false
 	}
 

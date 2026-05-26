@@ -1670,14 +1670,14 @@ func (s *Slirp) tcpNewTCPCB(so *Socket) *TCPCB {
 // Returns 0 on success or EINPROGRESS, -1 on error (with errno set via returned error).
 // Reference: tinyemu-2019-12-21/slirp/tcp_subr.c:320-366
 func (s *Slirp) tcpFConnect(so *Socket) (int, error) {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	fd, err := sockSocketTCP()
 	if err != nil {
 		return -1, err
 	}
 
-	syscall.SetNonblock(fd, true)
-	syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
-	syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_OOBINLINE, 1)
+	sockSetNonblock(fd)
+	sockSetsockoptInt(fd, sockSOLSocket, sockSOReuseAddr, 1)
+	sockSetsockoptInt(fd, sockSOLSocket, sockSO_OOBINLINE, 1)
 
 	var destIP net.IP
 	vnetMask := ipToUint32(s.VNetworkMask)
@@ -1701,11 +1701,9 @@ func (s *Slirp) tcpFConnect(so *Socket) (int, error) {
 		destIP = so.SoFAddr
 	}
 
-	var sa syscall.SockaddrInet4
-	copy(sa.Addr[:], destIP.To4())
-	sa.Port = int(so.SoFPort)
-
-	err = syscall.Connect(fd, &sa)
+	var addr4 [4]byte
+	copy(addr4[:], destIP.To4())
+	err = sockConnectInet4(fd, addr4, int(so.SoFPort))
 	so.S = fd
 	soIsFConnecting(so)
 

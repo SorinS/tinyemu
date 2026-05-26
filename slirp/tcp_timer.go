@@ -1,9 +1,5 @@
 package slirp
 
-import (
-	"syscall"
-)
-
 // TCP timer definitions and functions.
 // Reference: tinyemu-2019-12-21/slirp/tcp_timer.h
 // Reference: tinyemu-2019-12-21/slirp/tcp_timer.c
@@ -245,8 +241,7 @@ func (tp *TCPCB) TCPClose() *TCPCB {
 
 	// Close the socket fd
 	if so.S >= 0 {
-		// In Go, we use syscall.Close
-		syscall.Close(so.S)
+		sockClose(so.S)
 		so.S = -1
 	}
 

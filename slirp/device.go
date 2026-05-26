@@ -3,8 +3,6 @@ package slirp
 import (
 	"net"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/jtolio/tinyemu-go/virtio"
 )
 
@@ -292,12 +290,7 @@ func (s *Slirp) processTCPSockets() {
 		// coincide with normal recv.
 		hasOOB := false
 		if so.S >= 0 {
-			pollFds := []unix.PollFd{{Fd: int32(so.S), Events: unix.POLLPRI}}
-			n, _ := unix.Poll(pollFds, 0) // timeout=0 for non-blocking check
-			rev := pollFds[0].Revents
-			if n > 0 && (rev&unix.POLLPRI) != 0 && (rev&(unix.POLLIN|unix.POLLHUP)) == 0 {
-				hasOOB = true
-			}
+			hasOOB = pollSocketOOB(so.S)
 		}
 
 		// Try to read from socket if we can receive and have buffer space
@@ -343,22 +336,18 @@ func (s *Slirp) handleConnectingSocket(so *Socket) {
 	// In C, select() is used with the write fd_set to detect this.
 	// A non-blocking connect socket becomes writable when the connection completes.
 	// Reference: tinyemu-2019-12-21/slirp/slirp.c:315-320 (slirp_select_fill adds connecting sockets to write set)
-	pollFds := []unix.PollFd{{Fd: int32(so.S), Events: unix.POLLOUT}}
-	n, err := unix.Poll(pollFds, 0) // timeout=0 for non-blocking check
-	if err != nil || n <= 0 {
+	state := pollSocketWritable(so.S)
+	switch state {
+	case sockPollPending:
 		// Not yet writable, connection still in progress
 		return
-	}
-	if (pollFds[0].Revents & (unix.POLLERR | unix.POLLHUP)) != 0 {
+	case sockPollFailed:
 		// Connection failed
 		so.SoState &= SSPersistentMask
 		so.SoState |= SSNoFDRef
 		return
 	}
-	if (pollFds[0].Revents & unix.POLLOUT) == 0 {
-		// Not writable yet
-		return
-	}
+	// state == sockPollWritable falls through.
 
 	// Socket is writable - verify connection completed with a zero-byte send
 	// Reference: tinyemu-2019-12-21/slirp/slirp.c:438

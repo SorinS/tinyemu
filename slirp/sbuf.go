@@ -259,7 +259,7 @@ func (s *Slirp) slirpSend(so *Socket, data []byte, flags int) int {
 	if len(data) == 0 {
 		// Use send() with empty buffer to probe connection status
 		// A successful 0-byte send indicates the socket is connected
-		err := syscall.Sendto(so.S, []byte{}, 0, nil)
+		err := sockSendto(so.S, []byte{}, 0)
 		if err != nil {
 			if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK ||
 				err == syscall.EINPROGRESS || err == syscall.ENOTCONN {
@@ -273,7 +273,7 @@ func (s *Slirp) slirpSend(so *Socket, data []byte, flags int) int {
 	// Use syscall.Write for plain send (equivalent to send() without flags)
 	// For TCP sockets, write() and send() with flags=0 are equivalent
 	// Reference: tinyemu-2019-12-21/slirp/slirp.c:781
-	n, err := syscall.Write(so.S, data)
+	n, err := sockWrite(so.S, data)
 	if err != nil {
 		// Check for would-block conditions
 		if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
@@ -294,7 +294,7 @@ func (s *Slirp) slirpSendOOB(so *Socket, data []byte) int {
 
 	// Use syscall.Sendto with MSG_OOB flag for out-of-band data
 	// Reference: tinyemu-2019-12-21/slirp/socket.c:297
-	err := syscall.Sendto(so.S, data, syscall.MSG_OOB, nil)
+	err := sockSendto(so.S, data, sockMSG_OOB)
 	if err != nil {
 		// Check for would-block conditions
 		if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {

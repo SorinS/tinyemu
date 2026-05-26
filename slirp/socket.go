@@ -248,7 +248,7 @@ func (so *Socket) SoRead() int {
 	// In Go we don't have readv, so we read into the first buffer
 	// and then the second if needed (like the !HAVE_READV path in C)
 	if so.S >= 0 {
-		nn, err = syscall.Read(so.S, iov[0])
+		nn, err = sockRead(so.S, iov[0])
 	} else {
 		nn = -1
 		err = syscall.EBADF
@@ -266,7 +266,7 @@ func (so *Socket) SoRead() int {
 	// If there's a second buffer and we read all of the first, try reading more
 	// Reference: tinyemu-2019-12-21/slirp/socket.c:186-191
 	if nv == 2 && nn == len(iov[0]) && iov[1] != nil {
-		ret, _ := syscall.Read(so.S, iov[1])
+		ret, _ := sockRead(so.S, iov[1])
 		if ret > 0 {
 			nn += ret
 		}
@@ -400,7 +400,7 @@ func (so *Socket) SoSendOOB() int {
 func (so *Socket) soFCantRcvMore() {
 	if (so.SoState & SSNoFDRef) == 0 {
 		if so.S >= 0 {
-			syscall.Shutdown(so.S, syscall.SHUT_RD)
+			sockShutdownRead(so.S)
 		}
 	}
 	so.SoState &^= SSIsFConnecting
@@ -417,7 +417,7 @@ func (so *Socket) soFCantRcvMore() {
 func (so *Socket) soFCantSendMore() {
 	if (so.SoState & SSNoFDRef) == 0 {
 		if so.S >= 0 {
-			syscall.Shutdown(so.S, syscall.SHUT_WR)
+			sockShutdownWrite(so.S)
 		}
 	}
 	so.SoState &^= SSIsFConnecting
