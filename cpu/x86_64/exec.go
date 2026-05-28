@@ -80,15 +80,27 @@ func dumpRipRing(label string) {
 }
 
 func (c *CPU) Step() (err error) {
-	// IP wrapping in real / pm16: tempting to mask to 0xFFFF here, but
-	// SeaBIOS routinely runs code that crosses the 64-KB boundary via
-	// segment-cached extended limits ("big real mode"). Real hardware
-	// would #GP on access beyond CS.limit; we don't model that and the
-	// guest depends on the leniency. Pm32 still masks because every
-	// pm32 boot we care about uses 32-bit linear addresses with a flat
-	// segment — high bits in c.rip are always stale.
-	if c.mode == ModeProtected32 {
+	// IP wrapping. Per Intel SDM, real-mode code fetch uses a 16-bit IP:
+	// after an instruction at offset 0xFFFF, IP wraps back to 0x0000 of
+	// the SAME segment rather than spilling into the next linear page.
+	// We key the wrap on CS.D, not just CR0.PE, because SeaBIOS runs two
+	// distinct flavors of real-mode code:
+	//   - True 16-bit segments (CS.D=0): wrap to 0xFFFF. Without this, a
+	//     function that runs off the end of the F-segment (lin 0xFFFFF)
+	//     keeps fetching into unmapped RAM at 0x100000+ and the CPU walks
+	//     zero-bytes forever. Real silicon would have wrapped.
+	//   - "Big real mode" / unreal 32-bit code segments (CS.D=1, limit
+	//     0xFFFFFFFF): these legitimately execute across the 64-KB
+	//     boundary with a 32-bit IP. Masking them was the earlier
+	//     over-correction (commit 2415810) that broke SeaBIOS's
+	//     transition32 thunks — so we leave CS.D=1 alone.
+	// Pm32 masks to 32 bits because every pm32 boot uses a flat segment
+	// and high bits of c.rip are stale.
+	switch {
+	case c.mode == ModeProtected32:
 		c.rip &= 0xFFFFFFFF
+	case c.mode == ModeReal16 && c.segAccess[CS]&csDBit == 0:
+		c.rip &= 0xFFFF
 	}
 	origRIP := c.rip
 	recordRIP(origRIP)

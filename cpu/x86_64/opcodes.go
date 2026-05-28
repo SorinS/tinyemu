@@ -303,22 +303,31 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return c.opXCHGRM(rex, operandSize)
 
 	case op == 0x8F:
-		// POP r/m. ModR/M.reg must be 0; the rest are reserved. Slot
-		// width follows the CPU mode (8 long / 4 pm32 / 2 pm16).
+		// POP r/m. ModR/M.reg must be 0; the rest are reserved. Width
+		// follows OPERAND SIZE (see pushPopOperandSize), not stack-slot
+		// size: SeaBIOS's irqentry_extrastack uses `66 8F` (popl to
+		// memory) in real mode, which must move 4 bytes. Using
+		// stackSlotSize() popped only 2, misaligning the stack by 2 and
+		// corrupting the very next `popl %ecx` (the IRQ handler pointer).
 		m := c.parseModRM64(rex)
 		if m.reg != 0 {
 			return unimplemented("0x8F /%d (reserved)", m.reg)
 		}
-		size := uint8(c.stackSlotSize())
+		size := uint8(c.pushPopOperandSize(operandSize))
 		v := c.popStack(int(size))
 		c.writeOperand(m, v, size)
 		return nil
 
 	case op == 0xC2:
-		// RET imm16 — pops return then pops imm16 bytes off stack.
-		// Both the return-pop and the cleanup use stack-slot semantics.
+		// RET imm16 — pops return at OPERAND SIZE (same rule as 0xC3),
+		// then frees imm16 bytes of stack arguments. Using stackSlotSize
+		// for the return pop would drop the 0x66 promotion in real mode.
 		imm := uint64(c.fetch16())
-		c.rip = c.popStack(c.stackSlotSize())
+		retSize := int(operandSize)
+		if c.mode == ModeLong64 && operandSize == 4 {
+			retSize = 8
+		}
+		c.rip = c.popStack(retSize)
 		c.SetReg64(RSP, c.GetReg64(RSP)+imm)
 		return nil
 
@@ -717,8 +726,9 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		// mode. Push order: EAX, ECX, EDX, EBX, ESP-original, EBP,
 		// ESI, EDI. POPA mirror: EDI first, then ESI..EAX, but the
 		// pushed ESP slot is DROPPED (not loaded back into ESP, per
-		// Intel SDM). Width follows stack-slot size (4 pm32 / 2 pm16).
-		size := c.stackSlotSize()
+		// Intel SDM). Width follows operand size: PUSHA/POPA (2) vs
+		// PUSHAD/POPAD (4), flipped by the 0x66 prefix. #UD in long mode.
+		size := c.pushPopOperandSize(operandSize)
 		if op == 0x60 {
 			origSP := c.reg64[RSP]
 			c.pushStack(c.reg64[RAX], size)
@@ -964,7 +974,9 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 			off = uint64(c.fetch32())
 		}
 		sel := c.fetch16()
-		size := c.stackSlotSize()
+		// CALL FAR pushes CS + return offset at operand-size width so a
+		// matching RETF (also operand-size now) stays balanced.
+		size := c.pushPopOperandSize(operandSize)
 		c.pushStack(uint64(c.seg[CS]), size)
 		c.pushStack(c.rip, size)
 		// Reload CS in real mode (sel<<4 base, preserve cached limit/access)
@@ -1238,10 +1250,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return c.deliverInterrupt(1, false, 0)
 
 	case op == 0xC9: // LEAVE — restore RBP, pop saved RBP
-		// LEAVE := mov rsp, rbp ; pop rbp. The pop is at stack-slot
-		// width — 8 in long mode, 4 in pm32, 2 in pm16. The MOV
-		// RSP, RBP copies the full mode-appropriate register width.
-		size := c.stackSlotSize()
+		// LEAVE := mov rsp, rbp ; pop rbp. Per Intel SDM the width is the
+		// operand-size attribute (16/32/64), so 0x66 flips it. The MOV
+		// RSP, RBP and the pop both use that width.
+		size := c.pushPopOperandSize(operandSize)
 		switch size {
 		case 8:
 			c.SetReg64(RSP, c.GetReg64(RBP))
@@ -1277,20 +1289,15 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.writeReg(RDX, hi, operandSize)
 		return nil
 
-	case op == 0x9C: // PUSHF / PUSHFD / PUSHFQ — width is stack-slot
-		// size (8 long / 4 pm32 / 2 pm16). The 0x66 prefix forces
-		// 16 bits in long mode (PUSHFW); otherwise leave it alone.
-		size := c.stackSlotSize()
-		if operandSize == 2 {
-			size = 2
-		}
+	case op == 0x9C: // PUSHF / PUSHFD / PUSHFQ — width follows operand
+		// size (pushPopOperandSize): real/pm16 default 2 (0x66→4), pm32
+		// default 4 (0x66→2), long default 8 / PUSHFQ (0x66→2, no 4-byte
+		// form). stackSlotSize() dropped the 0x66 promotion in real mode.
+		size := c.pushPopOperandSize(operandSize)
 		c.pushStack(c.rflags, size)
 		return nil
 	case op == 0x9D: // POPF / POPFD / POPFQ — symmetric to PUSHF.
-		size := c.stackSlotSize()
-		if operandSize == 2 {
-			size = 2
-		}
+		size := c.pushPopOperandSize(operandSize)
 		v := c.popStack(size)
 		// Filter reserved bits via ValidFlagMask; bit 1 always reads 1
 		// per SDM. CPL=0 can change everything except VM/RF (RF gets
@@ -3314,11 +3321,10 @@ func (c *CPU) opGroup5(rex, operandSize uint8) error {
 		c.rflags = (c.rflags &^ RFLAGS_CF) | oldCF
 		return nil
 	case 2: // CALL r/m (near, absolute indirect)
-		// Width of the target (and the pushed return address) matches
-		// the natural stack-slot size for the current mode: 8 in long
-		// mode, 4 in pm32, 2 in pm16. Long mode forces 64-bit
-		// regardless of an operand-size prefix.
-		size := uint8(c.stackSlotSize())
+		// Target and pushed return address width follow operand size
+		// (pushPopOperandSize): long mode defaults to 64-bit (no 32-bit
+		// near form), legacy modes 2/4 flipped by 0x66.
+		size := uint8(c.pushPopOperandSize(operandSize))
 		target := c.readOperand(m, size)
 		c.pushStack(c.rip, int(size))
 		c.rip = target
@@ -3352,8 +3358,9 @@ func (c *CPU) opGroup5(rex, operandSize uint8) error {
 		}
 		c.rip = newRIP
 		return nil
-	case 4: // JMP r/m (near, absolute indirect)
-		size := uint8(c.stackSlotSize())
+	case 4: // JMP r/m (near, absolute indirect) — target width follows
+		// operand size (64-bit default in long mode).
+		size := uint8(c.pushPopOperandSize(operandSize))
 		target := c.readOperand(m, size)
 		c.rip = target
 		return nil
