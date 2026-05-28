@@ -47,6 +47,22 @@ type PCIDevice struct {
 	// Devices needing custom behaviour (status clear-on-write bits) install
 	// this callback. BAR sizing is handled centrally via barMasks.
 	onWrite func(d *PCIDevice, off uint32, val uint32, size int)
+
+	// onBARChange is invoked after a BAR's stored base address actually
+	// changes (post-mask, ignoring the all-ones sizing probe). It lets a
+	// device relocate its decoded I/O / MMIO region when firmware (e.g.
+	// SeaBIOS) reassigns BARs during its own PCI enumeration — Linux
+	// reuses the firmware-assigned bases, but SeaBIOS recomputes them
+	// from scratch and moved our virtio-blk I/O BAR out from under the
+	// statically-registered port handlers. idx is the BAR index (0..5),
+	// newBase is the masked base, isIO true for I/O-space BARs.
+	onBARChange func(idx int, newBase uint32, isIO bool)
+}
+
+// SetBARChangeHandler installs the BAR-relocation callback. See
+// onBARChange.
+func (d *PCIDevice) SetBARChangeHandler(fn func(idx int, newBase uint32, isIO bool)) {
+	d.onBARChange = fn
 }
 
 // Name returns the human-readable identifier set at construction time.
@@ -326,6 +342,7 @@ func writeBAR(d *PCIDevice, off uint32, val uint32, size int) {
 		uint32(d.config[barOff+1])<<8 |
 		uint32(d.config[barOff+2])<<16 |
 		uint32(d.config[barOff+3])<<24
+	prev := cur            // base before this write, for change detection
 	typeBits := cur & 0x1 // bit 0 = I/O indicator (memory leaves it 0)
 	switch size {
 	case 1:
@@ -342,6 +359,21 @@ func writeBAR(d *PCIDevice, off uint32, val uint32, size int) {
 	d.config[barOff+1] = uint8(cur >> 8)
 	d.config[barOff+2] = uint8(cur >> 16)
 	d.config[barOff+3] = uint8(cur >> 24)
+
+	// Notify the device if its decoded base actually moved. We skip the
+	// all-ones sizing probe (firmware writes 0xFFFFFFFF then reads back
+	// the mask): after masking that leaves the high bits set, which for
+	// an I/O BAR is an impossible base (I/O space is only 16 bits), so we
+	// gate on isIO && base <= 0xFFFF.
+	if d.onBARChange != nil {
+		isIO := typeBits&0x1 != 0
+		newBase := cur & mask
+		changed := newBase != (prev & mask)
+		validIO := isIO && newBase <= 0xFFFF
+		if changed && validIO {
+			d.onBARChange(idx, newBase, isIO)
+		}
+	}
 }
 
 func applyWrite(d *PCIDevice, off uint32, val uint32, size int) {

@@ -497,27 +497,46 @@ func (p *PC) AttachVirtioBlock(bd devices.BlockDevice) error {
 
 	// Register the I/O BAR ports. Each access is forwarded to the
 	// transport, which translates legacy register offsets to Device
-	// state.
-	end := ioBase + uint16(transport.IOSize()) - 1
+	// state. registerVirtioIOPorts (re)installs the handlers for a given
+	// base and is reused by the BAR-relocation callback below — closures
+	// capture `base` so the offset math follows the BAR when firmware
+	// moves it. SeaBIOS reassigns BARs during its own PCI enumeration
+	// (Linux keeps the firmware-set bases), so without relocation our
+	// statically-registered ports were left stranded at the old address
+	// and every virtio access read back 0xFFFF.
 	t := transport // capture for closures
-	p.io.RegisterRead(ioBase, end, func(port uint16) uint32 {
-		return t.IORead(port-ioBase, 1)
-	})
-	p.io.RegisterWrite(ioBase, end, func(port uint16, val uint32) {
-		t.IOWrite(port-ioBase, val, 1)
-	})
-	p.io.RegisterRead16(ioBase, end-1, func(port uint16) uint32 {
-		return t.IORead(port-ioBase, 2)
-	})
-	p.io.RegisterWrite16(ioBase, end-1, func(port uint16, val uint32) {
-		t.IOWrite(port-ioBase, val, 2)
-	})
-	p.io.RegisterRead32(ioBase, end-3, func(port uint16) uint32 {
-		return t.IORead(port-ioBase, 4)
-	})
-	p.io.RegisterWrite32(ioBase, end-3, func(port uint16, val uint32) {
-		t.IOWrite(port-ioBase, val, 4)
-	})
+	ioSize := uint16(transport.IOSize())
+	registerVirtioIOPorts := func(base uint16) {
+		end := base + ioSize - 1
+		p.io.RegisterRead(base, end, func(port uint16) uint32 {
+			return t.IORead(port-base, 1)
+		})
+		p.io.RegisterWrite(base, end, func(port uint16, val uint32) {
+			t.IOWrite(port-base, val, 1)
+		})
+		p.io.RegisterRead16(base, end-1, func(port uint16) uint32 {
+			return t.IORead(port-base, 2)
+		})
+		p.io.RegisterWrite16(base, end-1, func(port uint16, val uint32) {
+			t.IOWrite(port-base, val, 2)
+		})
+		p.io.RegisterRead32(base, end-3, func(port uint16) uint32 {
+			return t.IORead(port-base, 4)
+		})
+		p.io.RegisterWrite32(base, end-3, func(port uint16, val uint32) {
+			t.IOWrite(port-base, val, 4)
+		})
+	}
+	clearVirtioIOPorts := func(base uint16) {
+		end := base + ioSize - 1
+		p.io.RegisterRead(base, end, nil)
+		p.io.RegisterWrite(base, end, nil)
+		p.io.RegisterRead16(base, end-1, nil)
+		p.io.RegisterWrite16(base, end-1, nil)
+		p.io.RegisterRead32(base, end-3, nil)
+		p.io.RegisterWrite32(base, end-3, nil)
+	}
+	registerVirtioIOPorts(ioBase)
 
 	// PCI device — vendor 0x1AF4 (Red Hat), device 0x1001 (virtio-blk
 	// legacy/transitional), subsystem device 0x0002 (block), class
@@ -525,6 +544,20 @@ func (p *PC) AttachVirtioBlock(bd devices.BlockDevice) error {
 	pciDev := NewPCIDevice("virtio-blk", 0x1AF4, 0x1001, 0x010000, 0x00)
 	pciDev.SetIRQLine(virtioBlkPCIIRQ, 0x01) // INT A
 	pciDev.SetIOBAR(0, uint32(ioBase), 64)   // 64-byte I/O BAR
+	// Follow BAR0 if firmware relocates the I/O region.
+	curBase := ioBase
+	pciDev.SetBARChangeHandler(func(idx int, newBase uint32, isIO bool) {
+		if idx != 0 || !isIO {
+			return
+		}
+		nb := uint16(newBase)
+		if nb == curBase {
+			return
+		}
+		clearVirtioIOPorts(curBase)
+		registerVirtioIOPorts(nb)
+		curBase = nb
+	})
 	// Subsystem vendor/device per virtio spec §4.1.2.1: subsys-vendor
 	// is don't-care for transitional, subsys-id selects the device type.
 	pciDev.setU16(0x2C, 0x1AF4)
