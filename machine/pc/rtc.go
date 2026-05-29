@@ -39,6 +39,15 @@ func NewCMOSRTC(memSizeKB uint32) *CMOSRTC {
 	return c
 }
 
+// SetFloppyType records that drive A holds a 1.44 MB floppy. CMOS 0x10's
+// high nibble is the drive-A type (4 = 1.44 MB); the equipment byte
+// 0x14 bit 0 = "floppy present" and bits 6-7 = (count-1). SeaBIOS reads
+// these to decide whether to probe the FDC.
+func (c *CMOSRTC) SetFloppyType144() {
+	c.ram[0x10] = 0x40           // drive A = 1.44 MB, drive B = none
+	c.ram[0x14] = (c.ram[0x14] & 0x3E) | 0x01 // floppy present, 1 drive
+}
+
 // Register registers the CMOS I/O ports.
 func (c *CMOSRTC) Register(io *IOPortDispatcher) {
 	io.RegisterRead(0x70, 0x70, func(port uint16) uint32 {

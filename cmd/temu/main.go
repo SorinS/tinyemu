@@ -79,12 +79,15 @@ var (
 	driveFiles  stringSlice
 	cdromFiles  stringSlice
 	p9Shares    stringSlice
+
+	fdaFile string
 )
 
 func init() {
 	// Register repeatable flags
 	flag.Var(&driveFiles, "drive", "block device image file (can be repeated)")
 	flag.Var(&cdromFiles, "cdrom", "ISO image attached as an ATAPI CD-ROM (PC only)")
+	flag.StringVar(&fdaFile, "fda", "", "floppy image attached as drive A (PC only; 1.44 MB)")
 	flag.Var(&p9Shares, "9p", "9P share as path:tag (e.g., /home/user:host, can be repeated)")
 }
 
@@ -254,6 +257,23 @@ func run() int {
 			fmt.Fprintf(os.Stderr, "Error attaching CD-ROM %s: %v\n", path, err)
 			return 1
 		}
+	}
+
+	// Floppy (-fda). PC-only: presented to SeaBIOS as drive A via the
+	// FDC so floppy-only images (e.g. MenuetOS) that read the rest of
+	// the OS from drive 0x00 can boot.
+	if fdaFile != "" {
+		pcBoard, ok := m.(*pc.PC)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "-fda is not supported on this machine type (%s)\n", *machineType)
+			return 1
+		}
+		img, err := os.ReadFile(fdaFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading floppy image %s: %v\n", fdaFile, err)
+			return 1
+		}
+		pcBoard.AttachFloppy(img)
 	}
 
 	// Open filesystems (9P)

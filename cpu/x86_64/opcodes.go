@@ -1382,6 +1382,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		return c.opStringMOVS(rex, 1, repPrefix)
 	case op == 0xA5:
 		return c.opStringMOVS(rex, operandSize, repPrefix)
+	case op == 0xA6:
+		return c.opStringCMPS(rex, 1, repPrefix)
+	case op == 0xA7:
+		return c.opStringCMPS(rex, operandSize, repPrefix)
 	case op == 0xAA:
 		return c.opStringSTOS(rex, 1, repPrefix)
 	case op == 0xAB:

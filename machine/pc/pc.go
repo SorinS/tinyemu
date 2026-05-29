@@ -61,6 +61,7 @@ type PC struct {
 	pic        *PIC8259
 	pit        *PIT8254
 	rtc        *CMOSRTC
+	fdc        *FDC
 	uart       *UART16550
 	kbd        *Keyboard8042
 	ata        *ATAController
@@ -469,6 +470,18 @@ const virtioNetPCIIOBase = 0xC200
 
 // virtioNetPCIIRQ is the legacy IRQ line for virtio-net-pci INTx.
 const virtioNetPCIIRQ = 10
+
+// AttachFloppy presents `image` as a 1.44 MB floppy in drive A, wiring
+// an FDC (ports 0x3F0-0x3F7) + slave DMA + IRQ6 and flagging the CMOS so
+// SeaBIOS probes and boots it (DL=0x00). Used to boot floppy-only images
+// like MenuetOS, whose boot sector reads the rest of the OS from drive 0.
+func (p *PC) AttachFloppy(image []byte) {
+	p.fdc = NewFDC(image, p.pic, p.memMap)
+	p.fdc.Register(p.io)
+	if p.rtc != nil {
+		p.rtc.SetFloppyType144()
+	}
+}
 
 // AttachVirtioBlock attaches a BlockDevice as a virtio-blk-pci device.
 // The kernel sees it as /dev/vda. This bypasses libata entirely and is

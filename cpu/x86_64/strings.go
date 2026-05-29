@@ -131,6 +131,56 @@ func (c *CPU) opStringLODS(rex, size, repPrefix uint8) error {
 	return nil
 }
 
+// opStringCMPS — CMPSB/CMPSW/CMPSD/CMPSQ. Compares [RSI] with [RDI],
+// setting the arithmetic flags from ([RSI] - [RDI]), and advances both
+// index registers. With REPE (repPrefix=1) continues while ZF=1 (equal)
+// and RCX!=0; with REPNE (=2) continues while ZF=0. MenuetOS's boot
+// sector uses `repe cmpsb` (CX=11) to match 8.3 FAT names. Like the
+// other string ops this uses the raw index registers as linear
+// addresses — correct for the flat / DS=ES=0 cases we run.
+func (c *CPU) opStringCMPS(rex, size, repPrefix uint8) error {
+	_ = rex
+	delta := c.stringDelta(size)
+	readAt := func(addr uint64) uint64 {
+		switch size {
+		case 8:
+			return c.readMem64(addr)
+		case 4:
+			return uint64(c.readMem32(addr))
+		case 2:
+			return uint64(c.readMem16(addr))
+		default:
+			return uint64(c.readMem8(addr))
+		}
+	}
+	step := func() bool {
+		src := c.GetReg64(RSI)
+		dst := c.GetReg64(RDI)
+		a := readAt(src)
+		b := readAt(dst)
+		_, fl := sub(a, b, size)
+		c.setArithFlags(fl)
+		c.SetReg64(RSI, uint64(int64(src)+delta))
+		c.SetReg64(RDI, uint64(int64(dst)+delta))
+		return fl.zf
+	}
+	if repPrefix == 0 {
+		step()
+		return nil
+	}
+	for c.GetReg64(RCX) != 0 {
+		zf := step()
+		c.SetReg64(RCX, c.GetReg64(RCX)-1)
+		if repPrefix == 1 && !zf {
+			return nil
+		}
+		if repPrefix == 2 && zf {
+			return nil
+		}
+	}
+	return nil
+}
+
 // opStringSCAS — compare [RDI] vs RAX and advance. With REPE (=1)
 // continues while ZF=1; with REPNE (=2) continues while ZF=0. Each
 // iteration sets the arithmetic flags so the early-exit test is
