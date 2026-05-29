@@ -19,6 +19,15 @@ type pitChannel struct {
 	halfByte    bool  // write-side LSB/MSB state
 	halfValue   uint8 // pending LSB on writes
 	readMSBNext bool  // read-side LSB/MSB state for accessMode 3
+	// active is true once the channel has been programmed with a reload
+	// value (or pre-programmed at construction). Inactive channels are
+	// inert — they don't count down or fire IRQ0. This distinguishes a
+	// never-touched channel from one legitimately programmed with reload
+	// 0, which in 8254 semantics means 65536 (NOT "off"). SeaBIOS
+	// programs channel 0 with divisor 0 for the standard ~18.2 Hz tick;
+	// treating that as "off" silenced the timer and hung the boot-menu
+	// wait, which counts IRQ0 ticks for its timeout.
+	active bool
 }
 
 // NewPIT8254 creates a new PIT. Channel 0 is pre-programmed at the BIOS-typical
@@ -30,6 +39,7 @@ func NewPIT8254(pic *PIC8259) *PIT8254 {
 	p.channels[0].count = 0xFFFF
 	p.channels[0].accessMode = 3 // LSB then MSB
 	p.channels[0].mode = 2       // rate generator
+	p.channels[0].active = true
 	return p
 }
 
@@ -125,9 +135,11 @@ func (p *PIT8254) writeChannel(ch uint8, val uint8) {
 	case 1: // LSB only
 		c.reload = uint16(val)
 		c.count = c.reload
+		c.active = true
 	case 2: // MSB only
 		c.reload = uint16(val) << 8
 		c.count = c.reload
+		c.active = true
 	case 3: // LSB then MSB
 		if !c.halfByte {
 			c.halfValue = val
@@ -136,6 +148,7 @@ func (p *PIT8254) writeChannel(ch uint8, val uint8) {
 			c.reload = uint16(c.halfValue) | (uint16(val) << 8)
 			c.count = c.reload
 			c.halfByte = false
+			c.active = true
 		}
 	}
 }
@@ -190,32 +203,38 @@ func (p *PIT8254) tickLocked(cycleDelta uint64) {
 	}
 	for i := range p.channels {
 		c := &p.channels[i]
-		if c.reload == 0 && c.count == 0 {
+		if !c.active {
 			continue
+		}
+		// 8254: a reload/count of 0 means 65536, not "off". Use 32-bit
+		// effective values so the modular arithmetic below is exact.
+		effReload := uint32(c.reload)
+		if effReload == 0 {
+			effReload = 65536
 		}
 		count := uint32(c.count)
 		if count == 0 {
-			if c.reload == 0 {
-				continue
-			}
-			count = uint32(c.reload)
+			count = effReload
 		}
-		if steps >= count {
-			if c.reload == 0 {
-				// One-shot mode: counter halts at zero.
-				c.count = 0
-				if i == 0 {
-					p.pic.RaiseIRQ(0)
-				}
-				continue
-			}
-			count = uint32(c.reload) - ((steps - count) % uint32(c.reload))
-			c.count = uint16(count)
+		if steps < count {
+			c.count = uint16(count - steps) // 0 here legitimately encodes 65536
+			continue
+		}
+		// Rollover.
+		if c.mode == 0 || c.mode == 4 {
+			// One-shot / software-triggered strobe: fire once and halt.
+			c.count = 0
+			c.active = false
 			if i == 0 {
 				p.pic.RaiseIRQ(0)
 			}
 			continue
 		}
-		c.count = uint16(count - steps)
+		// Periodic (rate generator / square wave): reload and keep going.
+		rem := (steps - count) % effReload
+		c.count = uint16(effReload - rem) // wraps to 0 when effReload==65536 && rem==0
+		if i == 0 {
+			p.pic.RaiseIRQ(0)
+		}
 	}
 }
