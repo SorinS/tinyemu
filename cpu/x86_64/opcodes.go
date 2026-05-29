@@ -1006,13 +1006,17 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 
 	case op == 0xEA:
 		// JMP FAR PTR16:32 / FAR PTR16:16 — direct intersegment jump.
-		// Invalid in long mode (the opcode was reassigned); valid in
-		// real, 16-bit protected, and 32-bit protected mode. SeaBIOS
-		// uses this for its first jump out of the reset vector (real
-		// mode); PVH-style i386→x86_64 bootstraps use it to reload CS
-		// after their own GDT goes live.
-		if c.efer&EFER_LMA != 0 {
-			return unimplemented("0xEA JMP FAR is invalid in long mode")
+		// Invalid only when actually executing in 64-bit mode (CS.L=1);
+		// valid in real, 16-bit protected, 32-bit protected, AND
+		// compatibility mode (EFER.LMA=1 but CS.L=0). The compat case is
+		// load-bearing: Linux's startup_32 sets CR0.PG (→ EFER.LMA=1)
+		// then `ljmp $__KERNEL_CS, $startup_64` — a 0xEA executed with
+		// LMA=1 but CS.L still 0 — and THAT jump is what loads the
+		// 64-bit CS and enters long mode. Gating on EFER.LMA (instead of
+		// the actual mode) wrongly #UD'd that ljmp and broke every
+		// x86_64 Linux boot.
+		if c.mode == ModeLong64 {
+			return unimplemented("0xEA JMP FAR is invalid in 64-bit mode")
 		}
 		var off uint64
 		if operandSize == 2 {
