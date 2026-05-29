@@ -356,8 +356,8 @@ func (c *CPU) deliverInterruptRealMode(vec uint8) error {
 	newIP := uint64(c.readMem16(gateAddr))
 	newCS := c.readMem16(gateAddr + 2)
 	if intrTrace {
-		fmt.Fprintf(os.Stderr, "[intr-rm] vec=%d IDT.base=%#x gate@%#x -> %#x:%#x\n",
-			vec, idtBase, gateAddr, newCS, newIP)
+		fmt.Fprintf(os.Stderr, "[intr-rm] cycle=%d vec=%d IDT.base=%#x gate@%#x -> %#x:%#x\n",
+			c.cycles, vec, idtBase, gateAddr, newCS, newIP)
 	}
 	// Build a fresh FLAGS image to push: current flags with the high
 	// 16 stripped (real mode operates on the low 16-bit FLAGS only;
