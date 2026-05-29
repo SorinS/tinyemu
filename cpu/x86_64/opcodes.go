@@ -3575,19 +3575,59 @@ func (c *CPU) opMOVtoSreg(rex uint8) error {
 		c.segBase[idx] = 0
 		c.segLimit[idx] = 0xFFFFFFFF
 	default:
-		// Protected mode (pm16, pm32, compat32) without a paging /
-		// long-mode guarantee. The correct thing is to walk the GDT
-		// and load the descriptor's base/limit/access. We don't have
-		// a unified descriptor-load helper yet; for now leave the
-		// cached values alone and just update the selector. SeaBIOS
-		// reloads data segments via this path during the 16<->32
-		// thunk and the cached descriptor from the prior far-jump
-		// happens to be correct for those selectors.
+		// Protected mode (pm16, pm32, compat32): walk the GDT/LDT and
+		// load the descriptor's base/limit/access into the cache. This
+		// is mandatory — keeping the stale cached base "because the prior
+		// far-jump set it" silently breaks any thunk that reloads a data
+		// segment to a DIFFERENT base. SeaBIOS's call32 (16->32) does
+		// exactly that: a 16-bit INT handler running on the zonelow
+		// stack (DS base 0xda800) transitions to 32-bit and reloads DS
+		// with the flat data selector. Without the descriptor walk DS
+		// kept base 0xda800, so every "flat" pointer in process_op_32
+		// (the op struct, op->drive_fl) resolved 0xda800 bytes high and
+		// read zeros — the virtio disk read silently found a NULL drive.
+		c.loadProtSegment(idx, sel)
 	}
 	if idx == CS {
 		c.recomputeMode()
 	}
 	return nil
+}
+
+// loadProtSegment loads a protected-mode segment descriptor from the
+// GDT (or LDT) into the cached base/limit/access for segment register
+// idx. A null selector (index 0) leaves a zero base so stale state from
+// a prior mode can't leak through. We don't enforce present/DPL/type
+// checks — the guests we run (SeaBIOS, Linux) only load valid
+// descriptors here, and faulting would just add complexity we'd have to
+// model the #GP path for.
+func (c *CPU) loadProtSegment(idx int, sel uint16) {
+	if sel&0xFFFC == 0 {
+		// Null selector: data-segment loads of null are legal; accesses
+		// would #GP, but we just zero the base so nothing inherits a
+		// stale non-zero base.
+		c.segBase[idx] = 0
+		c.segLimit[idx] = 0
+		return
+	}
+	tableBase := c.segBase[GDTR]
+	if sel&0x4 != 0 {
+		tableBase = c.segBase[LDTR]
+	}
+	descAddr := tableBase + uint64(sel&0xFFF8)
+	desc := c.readMem64(descAddr)
+
+	base := ((desc >> 16) & 0xFFFFFF) | (((desc >> 56) & 0xFF) << 24)
+	limit := (desc & 0xFFFF) | (((desc >> 48) & 0xF) << 16)
+	flags := (desc >> 52) & 0xF // AVL, L, D/B, G (bits 0..3 of the nibble)
+	if flags&0x8 != 0 {         // G (granularity): limit counts 4-KiB pages
+		limit = (limit << 12) | 0xFFF
+	}
+	access := (desc >> 40) & 0xFF
+
+	c.segBase[idx] = base
+	c.segLimit[idx] = uint32(limit)
+	c.segAccess[idx] = uint32(access) | (uint32(flags) << 8)
 }
 
 // opMOVfromSreg implements 0x8C — store a segment-register selector

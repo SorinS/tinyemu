@@ -104,17 +104,18 @@ func (c *CPU) Step() (err error) {
 	}
 	origRIP := c.rip
 	recordRIP(origRIP)
-	if stepTrace || (ripTraceLo < ripTraceHi && origRIP >= ripTraceLo && origRIP < ripTraceHi) {
+	traceCycleWindow := traceCycleLo < traceCycleHi && c.cycles >= traceCycleLo && c.cycles < traceCycleHi
+	if stepTrace || traceCycleWindow || (ripTraceLo < ripTraceHi && origRIP >= ripTraceLo && origRIP < ripTraceHi) {
 		var bytes [8]byte
 		for i := uint64(0); i < 8; i++ {
 			func() {
 				defer func() { _ = recover() }()
-				bytes[i] = c.readMem8(origRIP + i)
+				bytes[i] = c.readMem8(c.segBase[CS] + origRIP + i)
 			}()
 		}
-		fmt.Fprintf(os.Stderr, "[step] RIP=%#x bytes=% x RAX=%#x RBX=%#x RCX=%#x RDX=%#x RSI=%#x RDI=%#x R12=%#x R13=%#x R14=%#x R15=%#x\n",
-			origRIP, bytes[:], c.reg64[RAX], c.reg64[RBX], c.reg64[RCX], c.reg64[RDX],
-			c.reg64[RSI], c.reg64[RDI], c.reg64[R12], c.reg64[R13], c.reg64[R14], c.reg64[R15])
+		fmt.Fprintf(os.Stderr, "[step] cyc=%d mode=%v RIP=%#x lin=%#x bytes=% x RAX=%#x RBX=%#x RCX=%#x RDX=%#x RBP=%#x RSP=%#x RSI=%#x RDI=%#x\n",
+			c.cycles, c.mode, origRIP, c.segBase[CS]+origRIP, bytes[:], c.reg64[RAX], c.reg64[RBX], c.reg64[RCX], c.reg64[RDX],
+			c.reg64[RBP], c.reg64[RSP], c.reg64[RSI], c.reg64[RDI])
 	}
 	if stringWatchRIP != 0 && origRIP == stringWatchRIP {
 		rdi := c.GetReg64(RDI)
@@ -457,6 +458,38 @@ func (c *CPU) unimplementedAt(format string, args ...any) error {
 // instruction's RIP + opcode bytes to stderr. Extremely verbose for
 // a kernel boot — use to bisect "where did we jump wrong" failures.
 var stepTrace = os.Getenv("TINYEMU_X64_TRACE") == "1"
+
+// traceCycleLo/Hi, set by TINYEMU_X64_TRACE_CYCLES=<lo>-<hi> (decimal),
+// enable a full instruction trace for cycles in [lo, hi). Used to dump
+// the exact instruction stream of one specific event (e.g. a single
+// INT 13h disk read) without drowning in a whole-boot trace.
+var traceCycleLo, traceCycleHi uint64 = func() (uint64, uint64) {
+	s := os.Getenv("TINYEMU_X64_TRACE_CYCLES")
+	if s == "" {
+		return 0, 0
+	}
+	dash := -1
+	for i, ch := range s {
+		if ch == '-' {
+			dash = i
+			break
+		}
+	}
+	if dash < 0 {
+		return 0, 0
+	}
+	parseDec := func(t string) uint64 {
+		var v uint64
+		for _, ch := range t {
+			if ch < '0' || ch > '9' {
+				break
+			}
+			v = v*10 + uint64(ch-'0')
+		}
+		return v
+	}
+	return parseDec(s[:dash]), parseDec(s[dash+1:])
+}()
 
 // hexDump renders a slice as space-separated 2-digit hex (no 0x prefix,
 // no trailing space). Used by the one-shot dump trace.
