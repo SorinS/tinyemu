@@ -28,6 +28,11 @@ const (
 	bootBudgetTinyBanner   = 60 * time.Second
 	bootBudgetTinyInitrd   = 90 * time.Second
 	bootBudgetAlpineBanner = 120 * time.Second
+	// Alpine all the way through switch_root + OpenRC. The full path
+	// is dominated by initramfs unpack (~190 kernel-sec) plus the
+	// driver-load / package-install steps. 12 minutes gives ample
+	// headroom on a slow host; well-running hosts finish in ~8.
+	bootBudgetAlpineUserspace = 12 * time.Minute
 )
 
 // repoRoot returns the absolute repository root, computed from this
@@ -215,5 +220,50 @@ func TestBoot64_Alpine_ReachesKernelBanner(t *testing.T) {
 	if !ok {
 		t.Fatalf("alpine kernel did not print \"Linux version\" within %v.\nLast output:\n%s",
 			bootBudgetAlpineBanner, tail(out, 1500))
+	}
+}
+
+// TestBoot64_Alpine_ReachesUserspace is the "alpine actually boots"
+// guard. It uses the patched nonlplug initrd — the same one that
+// run64_iso.sh now defaults to — and waits for an OpenRC marker
+// that proves switch_root succeeded and userspace init is alive.
+//
+// This is the test that should have existed when the "Mounting boot
+// media" hang regressed silently. With this in place, any future
+// regression in the post-banner path (virtio data plane, ELF loader,
+// userspace exec, x87/SSE, syscall surface) fails CI within minutes
+// instead of being discovered by someone trying to boot interactively.
+//
+// We grep for "OpenRC" rather than a shell prompt because the
+// runTemuExpect helper feeds stdin=closed, which means busybox's
+// getty/login never produces an interactive prompt. OpenRC's
+// startup message is the latest deterministic marker we can match.
+func TestBoot64_Alpine_ReachesUserspace(t *testing.T) {
+	skipIfBootTestsDisabled(t)
+	root := repoRoot(t)
+	kernel := filepath.Join(root, "bin/alpine64/vmlinuz")
+	initrd := filepath.Join(root, "bin/alpine64/initrd.nonlplug")
+	iso := filepath.Join(root, "bin/alpine/alpine-standard-3.23.4-x86_64.iso")
+	requireFile(t, kernel)
+	requireFile(t, initrd)
+	requireFile(t, iso)
+	args := []string{
+		"-machine", "x86_64", "-m", "512",
+		"-kernel", kernel, "-initrd", initrd,
+		"-drive", iso, "-ro",
+		"-net-user",
+		"-append",
+		"console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp " +
+			"nokaslr tsc=reliable libata.force=disable ide=disable " +
+			"alpine_dev=vda:iso9660 usbdelay=1 " +
+			"modules=virtio_pci,virtio_blk,virtio_net,loop,squashfs " +
+			"module.sig_enforce=0 " +
+			"modprobe.blacklist=ata_piix,pata_acpi,usb-storage,usbhid",
+	}
+	out, ok := runTemuExpect(t, args, "OpenRC", bootBudgetAlpineUserspace)
+	if !ok {
+		t.Fatalf("alpine did not reach OpenRC within %v — boot regressed somewhere "+
+			"between kernel banner and switch_root.\nLast output:\n%s",
+			bootBudgetAlpineUserspace, tail(out, 2500))
 	}
 }

@@ -19,9 +19,10 @@
 set -e
 
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
-    echo "Usage: $0 <tinycore|alpine|alpine-debug> [bare|single|nonlplug|nohw|nomodloop|fast|superfast|nonlplug-fast]" >&2
-    echo "  alpine       : Alpine-standard x86_64 (same path as run86_iso.sh alpine)" >&2
+    echo "Usage: $0 <tinycore|alpine|alpine-debug> [upstream|bare|single|nonlplug|nohw|nomodloop|fast|superfast|nonlplug-fast]" >&2
+    echo "  alpine       : Alpine-standard x86_64 — defaults to initrd.nonlplug (boots to login)" >&2
     echo "  alpine-debug : Alpine-virt x86_64 with full System.map for fault triage" >&2
+    echo "  upstream     : use the unpatched Alpine initrd — will hang in nlplug (diagnostic only)" >&2
     echo "  bare         : drop straight to /bin/sh from initramfs" >&2
     echo "  nohw/.../fast: use patched initrd variant from bin/alpine64/" >&2
     exit 1
@@ -59,9 +60,20 @@ case $NAME in
         # boot end-to-end on the 32-bit emulator; reusing the standard
         # ISO's flow (rather than alpine-virt's) on x86_64 gives the
         # same shell-with-OpenRC experience.
+        #
+        # Default to the patched `initrd.nonlplug` because the upstream
+        # initrd's nlplug-findfs hangs indefinitely on x86_64 — both
+        # the helper and Alpine's init end up on futex(FUTEX_WAIT),
+        # most likely a still-open atomic-ordering / lock-free op bug
+        # in cpu/x86_64 (see scripts/extract_alpine64.sh nonlplug build
+        # comment + project memory). The nonlplug variant replaces the
+        # nlplug-findfs call with a direct `mount /dev/vda /media/cdrom`
+        # and lets the rest of Alpine's /init + switch_root + OpenRC
+        # proceed. Use the `upstream` variant below to reproduce the
+        # nlplug hang for diagnosis.
         "$ROOT/scripts/extract_alpine64.sh"
         KERNEL="$ROOT/bin/alpine64/vmlinuz"
-        INITRD="$ROOT/bin/alpine64/initrd"
+        INITRD="$ROOT/bin/alpine64/initrd.nonlplug"
         ISO="$ROOT/bin/alpine/alpine-standard-3.23.4-x86_64.iso"
         MEM=512
         # modprobe.blacklist: keep the kernel from auto-loading drivers
@@ -132,13 +144,27 @@ case $VARIANT in
         # Patched initrd that replaces the nlplug-findfs call with a
         # direct `mount /dev/vda /media/cdrom`. Works around the
         # x86_64 nlplug-findfs hang while keeping the rest of Alpine's
-        # /init flow (sysroot tmpfs, switch_root, OpenRC).
+        # /init flow (sysroot tmpfs, switch_root, OpenRC). This is now
+        # the alpine target's default; the variant is kept as an
+        # explicit override.
         candidate="$ROOT/bin/alpine64/initrd.nonlplug"
         if [ -f "$candidate" ]; then
             INITRD="$candidate"
             echo "[run64_iso] using nonlplug initrd ($candidate)"
         else
             echo "[run64_iso] warning: nonlplug initrd missing — run scripts/extract_alpine64.sh" >&2
+        fi
+        ;;
+    upstream)
+        # Switch the alpine target back to the unpatched upstream
+        # initrd. WARNING: this WILL hang at "Mounting boot media:"
+        # because nlplug-findfs blocks on a futex that never resolves
+        # under our emulator. Only useful for reproducing the hang for
+        # diagnosis (pair with TINYEMU_X64_USYS=1).
+        candidate="$ROOT/bin/alpine64/initrd"
+        if [ -f "$candidate" ]; then
+            INITRD="$candidate"
+            echo "[run64_iso] using UPSTREAM initrd ($candidate) — will hang in nlplug-findfs (diagnostic only)" >&2
         fi
         ;;
     nohw|nomodloop|fast|superfast|nonlplug-fast)
@@ -154,7 +180,7 @@ case $VARIANT in
         fi
         ;;
     *)
-        echo "Unknown variant '$VARIANT' (expected: bare|single|nonlplug|nohw|nomodloop|fast|superfast|nonlplug-fast)" >&2
+        echo "Unknown variant '$VARIANT' (expected: upstream|bare|single|nonlplug|nohw|nomodloop|fast|superfast|nonlplug-fast)" >&2
         exit 1
         ;;
 esac
