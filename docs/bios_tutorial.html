@@ -1,0 +1,1991 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BIOS — From Reset Vector to Boot Sector</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=JetBrains+Mono:wght@400;500&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:           #0e1117;
+  --bg-raised:    #141820;
+  --bg-panel:     #1a2030;
+  --bg-hover:     #1f2838;
+  --border:       #2a3448;
+  --border-soft:  #1e2a3a;
+  --text:         #d8d0c4;
+  --text-dim:     #7a8499;
+  --text-faint:   #3d4a5c;
+
+  --amber:        #e8a020;
+  --amber-dim:    #a06010;
+  --green:        #4daa6a;
+  --blue:         #5a9fd4;
+  --rose:         #c46060;
+  --violet:       #8b78d0;
+  --teal:         #4dcfb0;
+
+  --p1:           #e8a020;
+  --p2:           #4daa6a;
+  --p3:           #5a9fd4;
+  --p4:           #8b78d0;
+  --p5:           #c46060;
+  --p6:           #4dcfb0;
+
+  --radius:       6px;
+  --sidebar-w:    300px;
+  --font-serif:   'Libre Baskerville', Georgia, serif;
+  --font-display: 'Crimson Pro', Georgia, serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-behavior: smooth; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: var(--font-serif); font-size: 1rem; line-height: 1.75;
+  min-height: 100vh; display: flex; overflow: hidden;
+}
+
+#sidebar {
+  width: var(--sidebar-w); min-width: var(--sidebar-w);
+  background: var(--bg-raised); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  transition: transform 0.3s ease; z-index: 100;
+}
+#sidebar-header { padding: 24px 20px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#sidebar-header h1 {
+  font-family: var(--font-display); font-size: 1.1rem; font-weight: 600;
+  color: var(--amber); letter-spacing: 0.02em; line-height: 1.3;
+}
+#sidebar-header p {
+  font-family: var(--font-mono); font-size: 0.65rem; color: var(--text-dim);
+  margin-top: 4px; letter-spacing: 0.05em; text-transform: uppercase;
+}
+#progress-bar-wrap { padding: 12px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#progress-label {
+  font-family: var(--font-mono); font-size: 0.65rem; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  margin-bottom: 6px; display: flex; justify-content: space-between;
+}
+#progress-track { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+#progress-fill { height: 100%; background: var(--amber); transition: width 0.4s ease; border-radius: 2px; }
+
+#search-wrap { padding: 10px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#search {
+  width: 100%; background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text);
+  font-family: var(--font-mono); font-size: 0.72rem;
+  padding: 7px 10px; outline: none; transition: border-color 0.2s;
+}
+#search::placeholder { color: var(--text-faint); }
+#search:focus { border-color: var(--amber-dim); }
+
+#lesson-nav { overflow-y: auto; flex: 1; padding: 8px 0 20px; }
+#lesson-nav::-webkit-scrollbar { width: 4px; }
+#lesson-nav::-webkit-scrollbar-track { background: transparent; }
+#lesson-nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.phase-group { margin-bottom: 4px; }
+.phase-header {
+  padding: 10px 20px 6px; font-family: var(--font-mono); font-size: 0.6rem;
+  text-transform: uppercase; letter-spacing: 0.1em; font-weight: 500;
+  display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+}
+.phase-header .phase-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.phase-header .phase-toggle { margin-left: auto; color: var(--text-faint); font-size: 0.7rem; transition: transform 0.2s; }
+.phase-header.collapsed .phase-toggle { transform: rotate(-90deg); }
+.phase-lessons { overflow: hidden; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 20px 7px 28px; cursor: pointer;
+  transition: background 0.15s; border-left: 2px solid transparent;
+  font-size: 0.78rem; color: var(--text-dim); line-height: 1.3;
+}
+.nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.nav-item.active { color: var(--text); background: var(--bg-panel); }
+.nav-item.done .nav-check { opacity: 1; }
+.nav-check {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 1.5px solid var(--border); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.5rem; opacity: 0.4; transition: all 0.2s;
+}
+.nav-item.done .nav-check {
+  opacity: 1; background: var(--green); border-color: var(--green); color: white;
+}
+.nav-num { font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-faint); min-width: 20px; }
+.nav-stub { color: var(--text-faint); font-style: italic; }
+
+#main { flex: 1; overflow-y: auto; height: 100vh; display: flex; flex-direction: column; }
+#main::-webkit-scrollbar { width: 6px; }
+#main::-webkit-scrollbar-track { background: transparent; }
+#main::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+#topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 48px; border-bottom: 1px solid var(--border);
+  background: var(--bg); flex-shrink: 0; position: sticky; top: 0; z-index: 10;
+}
+#topbar-phase { font-family: var(--font-mono); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); }
+#topbar-nav { display: flex; gap: 8px; }
+.nav-btn {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  color: var(--text-dim); padding: 5px 14px; border-radius: var(--radius);
+  cursor: pointer; font-family: var(--font-mono); font-size: 0.7rem;
+  transition: all 0.15s;
+}
+.nav-btn:hover { background: var(--bg-hover); color: var(--text); border-color: var(--text-dim); }
+.nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+#lesson-content {
+  max-width: 820px; width: 100%; margin: 0 auto;
+  padding: 52px 48px 80px; flex: 1; animation: fadeSlide 0.3s ease;
+}
+@keyframes fadeSlide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.lesson-eyebrow {
+  font-family: var(--font-mono); font-size: 0.65rem;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  margin-bottom: 14px; display: flex; align-items: center; gap: 12px;
+}
+.lesson-eyebrow .phase-badge { padding: 2px 8px; border-radius: 3px; font-size: 0.6rem; }
+.lesson-eyebrow .stub-badge {
+  padding: 2px 8px; border-radius: 3px; font-size: 0.6rem;
+  background: #1e1400; color: var(--amber-dim);
+}
+.lesson-number { color: var(--text-faint); }
+.lesson-title {
+  font-family: var(--font-display); font-size: 2.6rem; font-weight: 600;
+  line-height: 1.1; color: #eee; margin-bottom: 8px; letter-spacing: -0.01em;
+}
+.lesson-subtitle {
+  font-family: var(--font-display); font-size: 1.2rem; font-style: italic;
+  color: var(--text-dim); margin-bottom: 36px; line-height: 1.4;
+}
+.lesson-divider { height: 1px; background: linear-gradient(to right, var(--border), transparent); margin-bottom: 36px; }
+
+.lesson-body h2 {
+  font-family: var(--font-display); font-size: 1.5rem; font-weight: 600;
+  color: #ddd; margin: 40px 0 14px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border-soft);
+}
+.lesson-body h3 {
+  font-family: var(--font-display); font-size: 1.15rem; font-weight: 600;
+  color: var(--amber); margin: 28px 0 10px; font-style: italic;
+}
+.lesson-body p { margin-bottom: 16px; color: var(--text); }
+.lesson-body p:last-child { margin-bottom: 0; }
+.lesson-body ul, .lesson-body ol { margin: 8px 0 16px 22px; color: var(--text); }
+.lesson-body li { margin-bottom: 6px; }
+
+.lesson-body code {
+  font-family: var(--font-mono); font-size: 0.82em;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 5px; color: #a8d0f0;
+}
+
+pre {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-left: 3px solid var(--amber-dim); border-radius: var(--radius);
+  padding: 20px 22px; overflow-x: auto; margin: 20px 0;
+  position: relative; font-family: var(--font-mono);
+  font-size: 0.82rem; line-height: 1.65;
+}
+pre::-webkit-scrollbar { height: 4px; }
+pre::-webkit-scrollbar-track { background: transparent; }
+pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+pre .lang-tag {
+  position: absolute; top: 8px; right: 10px;
+  font-size: 0.58rem; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-faint);
+}
+
+.kw  { color: #c792ea; }
+.rg  { color: #82aaff; }
+.fn  { color: #82cfda; }
+.cm  { color: #546e7a; font-style: italic; }
+.st  { color: #c3e88d; }
+.nm  { color: #f78c6c; }
+.op  { color: #89ddff; }
+.dc  { color: #ffcb6b; }
+.ct  { color: #ff5572; }
+.ty  { color: #82aaff; }
+
+.box {
+  border-radius: var(--radius); padding: 16px 20px; margin: 24px 0;
+  border-left: 3px solid; font-size: 0.92rem;
+}
+.box-note   { background: #0d1e2e; border-color: var(--blue);   color: #a8c8e8; }
+.box-think  { background: #1a1400; border-color: var(--amber);  color: #c8a060; }
+.box-key    { background: #0d1e18; border-color: var(--green);  color: #90c8a0; }
+.box-warn   { background: #1e100d; border-color: var(--rose);   color: #c88080; }
+.box-stub   { background: #1a1408; border-color: var(--amber-dim); color: #c8a060; font-style: italic; }
+.box strong { font-weight: 700; display: block; margin-bottom: 4px; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.corr-table {
+  width: 100%; border-collapse: collapse;
+  margin: 20px 0; font-size: 0.88rem;
+}
+.corr-table th {
+  text-align: left; font-family: var(--font-mono);
+  font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-dim); border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+}
+.corr-table td { padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+.corr-table td:first-child { color: var(--blue); font-family: var(--font-mono); font-size: 0.8rem; }
+.corr-table td:last-child  { color: var(--green); font-family: var(--font-mono); font-size: 0.8rem; }
+.corr-table td:nth-child(2){ color: var(--text-dim); }
+.corr-table tr:last-child td { border-bottom: none; }
+
+.exercises { margin-top: 40px; border-top: 1px solid var(--border); padding-top: 28px; }
+.exercises h2 {
+  font-family: var(--font-display); font-size: 1.3rem; color: var(--amber);
+  margin-bottom: 18px; border: none !important; padding: 0 !important;
+}
+.exercise {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 20px; margin-bottom: 14px;
+  position: relative; transition: border-color 0.2s;
+}
+.exercise:hover { border-color: var(--amber-dim); }
+.exercise-num {
+  font-family: var(--font-mono); font-size: 0.65rem; color: var(--amber);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
+}
+.exercise p { font-size: 0.9rem; margin-bottom: 0; }
+
+.complete-wrap { margin-top: 44px; display: flex; align-items: center; gap: 14px; }
+.btn-complete {
+  background: transparent; border: 1.5px solid var(--border); color: var(--text-dim);
+  padding: 10px 24px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem;
+  text-transform: uppercase; letter-spacing: 0.06em; transition: all 0.2s;
+}
+.btn-complete:hover { border-color: var(--green); color: var(--green); }
+.btn-complete.done  { border-color: var(--green); color: var(--green); background: #0d1e18; }
+.btn-next {
+  background: var(--amber); border: none; color: var(--bg);
+  padding: 10px 24px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.06em; transition: all 0.2s;
+}
+.btn-next:hover { background: #f0b848; }
+
+#welcome { max-width: 720px; margin: 60px auto; padding: 0 48px; animation: fadeSlide 0.4s ease; }
+#welcome h1 {
+  font-family: var(--font-display); font-size: 3.2rem; font-weight: 300;
+  line-height: 1.1; color: #eee; margin-bottom: 6px;
+}
+#welcome h1 em { color: var(--amber); font-style: italic; }
+#welcome .tagline {
+  font-family: var(--font-display); font-size: 1.2rem; font-style: italic;
+  color: var(--text-dim); margin-bottom: 36px;
+}
+#welcome .welcome-body { font-size: 0.95rem; }
+#welcome .welcome-body p { margin-bottom: 16px; }
+.phase-overview { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 28px 0; }
+.phase-card {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px;
+  cursor: pointer; transition: all 0.2s;
+}
+.phase-card:hover { border-color: var(--amber-dim); background: var(--bg-hover); }
+.phase-card-num {
+  font-family: var(--font-mono); font-size: 0.6rem;
+  text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 6px;
+}
+.phase-card h3 { font-family: var(--font-display); font-size: 1rem; font-weight: 600; color: #ddd; margin-bottom: 4px; }
+.phase-card p  { font-size: 0.8rem; color: var(--text-dim); margin: 0; }
+.btn-start {
+  background: var(--amber); border: none; color: var(--bg);
+  padding: 12px 32px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.8rem; font-weight: 500;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  transition: background 0.2s; margin-top: 8px;
+}
+.btn-start:hover { background: #f0b848; }
+
+#sidebar-toggle {
+  display: none; position: fixed; bottom: 20px; left: 20px; z-index: 200;
+  background: var(--amber); color: var(--bg); border: none;
+  border-radius: 50%; width: 44px; height: 44px;
+  cursor: pointer; font-size: 1.2rem;
+  align-items: center; justify-content: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+@media (max-width: 900px) {
+  #sidebar { position: fixed; top: 0; left: 0; transform: translateX(-100%); }
+  #sidebar.open { transform: translateX(0); }
+  #sidebar-toggle { display: flex; }
+  #lesson-content { padding: 36px 24px 60px; }
+  #topbar { padding: 12px 24px; }
+  .lesson-title { font-size: 2rem; }
+  .phase-overview { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<nav id="sidebar">
+  <div id="sidebar-header">
+    <h1>BIOS Internals</h1>
+    <p>From Bytes to Filesystems</p>
+  </div>
+  <div id="progress-bar-wrap">
+    <div id="progress-label">
+      <span>Progress</span>
+      <span id="progress-text">0 / 39</span>
+    </div>
+    <div id="progress-track"><div id="progress-fill" style="width:0%"></div></div>
+  </div>
+  <div id="search-wrap">
+    <input type="text" id="search" placeholder="Search lessons…" autocomplete="off">
+  </div>
+  <div id="lesson-nav"></div>
+</nav>
+
+<main id="main">
+  <div id="topbar">
+    <span id="topbar-phase">Overview</span>
+    <div id="topbar-nav">
+      <button class="nav-btn" id="btn-prev" disabled>← Prev</button>
+      <button class="nav-btn" id="btn-next-top">Next →</button>
+    </div>
+  </div>
+  <div id="content-area"></div>
+</main>
+
+<button id="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+
+<script>
+const PHASE_META = {
+  1: { name: "The Reset Vector & POST",   short: "Phase I",   color: "var(--p1)", lessons: "1–4"   },
+  2: { name: "Mode Transitions",          short: "Phase II",  color: "var(--p2)", lessons: "5–8"   },
+  3: { name: "Hardware Detection & Init", short: "Phase III", color: "var(--p3)", lessons: "9–12"  },
+  4: { name: "INT 13h & Booting",         short: "Phase IV",  color: "var(--p4)", lessons: "13–16" },
+  5: { name: "The Devices Under SeaBIOS", short: "Phase V",   color: "var(--p5)", lessons: "17–20" },
+  6: { name: "Building the BIOS Shim",    short: "Phase VI",  color: "var(--p6)", lessons: "21–24" },
+};
+
+const LESSONS = [
+
+// ============================================================
+// PHASE 1 — The Reset Vector & POST
+// ============================================================
+{
+  id: 1, phase: 1,
+  title: "Why a BIOS Exists",
+  subtitle: "The smallest possible bridge from silicon to OS",
+  content: `
+<h2>The cold-boot problem</h2>
+<p>When you press the power button, the CPU is in a defined but minimal state — no RAM controller initialised, no disk driver, no filesystem, no idea what an "operating system" is. It can only execute instructions from a fixed address (<code>0xFFFFFFF0</code> on x86) that the hardware wires to a non-volatile memory chip on the motherboard. That memory holds the <strong>firmware</strong>. The firmware's job is to take the machine from "raw CPU" to "ready to load an OS".</p>
+
+<p>The firmware on a classic PC is the <em>BIOS</em> (Basic Input/Output System). Modern PCs use UEFI, which solves the same problem with a richer model; this tutorial focuses on the legacy BIOS because that's what we model in <code>tinyemu-go</code>, what SeaBIOS implements, and what every x86 OS bootloader still has to be compatible with.</p>
+
+<h2>Five jobs in order</h2>
+<ol>
+  <li><strong>POST.</strong> Power-On Self Test. Verify the CPU is alive, RAM responds, the chipset is sane.</li>
+  <li><strong>Initialise the chipset.</strong> Program the memory controller; turn on shadow RAM regions; configure PCI.</li>
+  <li><strong>Probe devices.</strong> Walk PCI; identify storage, video, network, USB; load option ROMs from each one's BAR if present.</li>
+  <li><strong>Publish the runtime ABI.</strong> Install <em>interrupt handlers</em> at INT 10h (video), INT 13h (disk), INT 15h (system), INT 16h (keyboard). These are the BIOS "syscalls" that real-mode OS loaders use.</li>
+  <li><strong>Find a boot device and hand off.</strong> Read sector 0 of the first bootable drive into 0x7C00, set DL to the drive number, jump.</li>
+</ol>
+
+<h2>Why each of these matters</h2>
+<p>A modern OS doesn't keep using the BIOS — Linux talks directly to devices through its own drivers within seconds of boot. So why does the BIOS still matter?</p>
+<ul>
+  <li>Because the <em>bootloader</em> (GRUB, syslinux, MenuetOS's boot sector) absolutely depends on it. The bootloader has no disk driver of its own. It reads sectors via INT 13h until it has the kernel in memory.</li>
+  <li>Because the kernel learns about the machine's memory map from the BIOS. INT 15h AX=E820 returns the e820 table — what RAM exists, what's reserved.</li>
+  <li>Because SMBIOS / ACPI tables, which the kernel reads to discover CPUs and PCI roots, are laid out by the BIOS in low memory.</li>
+</ul>
+
+<div class="box box-key">
+<strong>The mental model</strong>
+The BIOS is a small program that runs once at boot, leaves behind a few data structures (IVT, BDA, EBDA, e820 table, ACPI tables) and a few interrupt handlers in ROM, and then jumps to the boot sector. After hand-off it's mostly idle — the OS calls back into it via INT 13h / INT 10h until it doesn't need to anymore.
+</div>
+
+<h2>What we built</h2>
+<p>We didn't write a BIOS from scratch — <code>tinyemu-go</code> uses the real <strong>SeaBIOS</strong> binary (the same one QEMU ships, <code>bios-256k.bin</code>). Our job was to make our emulator's CPU + chassis behave well enough that SeaBIOS can boot. That meant: correct mode transitions, correct interrupt delivery, a PCI bus, a working PIT, a floppy controller, and enough opcode coverage to run SeaBIOS's 32-bit C code. By the end of this tutorial you'll know exactly what each of those constraints means.</p>
+`,
+  exercises: [
+    "Why does INT 13h still exist in modern firmware, even on a UEFI system? Look up 'CSM' (Compatibility Support Module).",
+    "List the five BIOS jobs. Which is the only one that runs <em>after</em> the OS has started?",
+    "Open <code>bin/seabios/bios.bin</code> with <code>xxd</code> and find the last 16 bytes. What do they look like, and why?"
+  ]
+},
+
+{
+  id: 2, phase: 1,
+  title: "The Reset Vector",
+  subtitle: "The first instruction after power-on",
+  content: `
+<h2>Where the CPU starts</h2>
+<p>x86 power-on state is defined by the architecture. The relevant bits:</p>
+<ul>
+  <li>CR0 = 0x60000010 (only CD, NW, ET set — paging off, real mode).</li>
+  <li>EFLAGS = 0x00000002 (only reserved bit 1).</li>
+  <li>CS selector = 0xF000, CS base = 0xFFFF0000, CS limit = 0xFFFF, RIP = 0xFFF0.</li>
+  <li>All other segments cleared.</li>
+</ul>
+<p>So the first physical address fetched is <code>CS.base + RIP = 0xFFFF0000 + 0xFFF0 = 0xFFFFFFF0</code>. The motherboard wires that address to the top of the BIOS flash chip. The very first instruction is always a far jump into the BIOS's startup code.</p>
+
+<h2>What's at the reset vector</h2>
+<p>SeaBIOS's reset vector lives at the last 16 bytes of <code>bios.bin</code>. Disassemble it:</p>
+<pre>$ ndisasm -b16 -o 0xFFF0 -k 0,0x3fff0 bin/seabios/bios.bin
+0000FFF0  EA5BE000F0        jmp 0xf000:0xe05b
+0000FFF5  3036              ...padding/version string...</pre>
+<p>That single <code>JMP FAR 0xF000:0xE05B</code> redirects execution into SeaBIOS proper at <code>0xFE05B</code> (still in BIOS ROM, since CS.base is still 0xFFFF0000 — wait, after the jump the new CS = 0xF000 so base becomes 0xF0000, and the linear address is 0xFE05B).</p>
+
+<p>Why a far jump and not just code that runs in place? Because the reset vector's 16 bytes are too small to do anything useful. The far jump moves the CPU into the larger area of ROM where there's room for the actual POST code.</p>
+
+<h2>The shadowed BIOS region</h2>
+<p>Linear addresses 0xC0000–0xFFFFF (the top 256 KB of the first 1 MiB) are the <em>BIOS shadow window</em>. The motherboard chipset can route reads/writes here to either the flash chip (ROM) or to actual DRAM. SeaBIOS uses this: it copies parts of itself from flash into the shadow at init, then locks the shadow as read-only so its runtime data (the IVT, BDA, the drive tables) is fast RAM but still in the canonical "BIOS area".</p>
+
+<p>In <code>tinyemu-go</code> we cheat slightly: the BIOS region is just regular RAM (<code>RegisterRAM(0xC0000, 0x40000, 0)</code> in <code>machine/pc/pc.go</code>). We don't model the chipset's PAM (Programmable Attribute Map) registers that control shadowing — but the effect is the same, because we're already letting the guest write to the region.</p>
+
+<h2>The high alias</h2>
+<p>For a 256 KB BIOS like SeaBIOS, the reset vector at 0xFFFFFFF0 must land in BIOS bytes. The trick: map the BIOS image at the <em>top</em> of the 4 GiB address space too (<code>HighBIOSAddr = 0xFFFC0000</code>). The same bytes appear at both 0xC0000–0xFFFFF (the low shadow) and 0xFFFC0000–0xFFFFFFFF (the high alias). The reset vector at 0xFFFFFFF0 reads the high alias; after the first <code>JMP 0xF000:...</code>, CS reloads to 0xF000 and subsequent fetches use the low shadow.</p>
+
+<p>This dual mapping is exactly what real motherboards do for &gt;64 KB BIOSes, and what QEMU does for SeaBIOS. See <code>BIOSROMAddr</code> and <code>HighBIOSAddr</code> in <code>machine/pc/pc.go</code>.</p>
+
+<div class="box box-warn">
+<strong>The "0xEA in long mode" trap</strong>
+That first far jump at the reset vector is encoded as 0xEA + ptr16:16. The exact same opcode (0xEA) shows up again much later in the boot — Linux's <code>startup_32</code> uses it as <code>ljmp $__KERNEL_CS, $startup_64</code> to enter 64-bit mode. Both are valid. 0xEA is only invalid when actually in 64-bit mode (CS.L=1). A bug that gated on <code>EFER.LMA</code> instead broke every Linux boot for a week.
+</div>
+`,
+  exercises: [
+    "If you wanted to write your own tiny BIOS, what's the absolute minimum that would have to go at the reset vector? Sketch the bytes.",
+    "Why does the reset vector live at the top of the 4 GiB address space, not at 0x0?",
+    "Read the comment near <code>BIOSROMAddr</code> in <code>machine/pc/pc.go</code>. What does it say about BIOSes ≤64 KB vs &gt;64 KB?"
+  ]
+},
+
+{
+  id: 3, phase: 1,
+  title: "POST and the Debug Port",
+  subtitle: "Watching the BIOS think out loud",
+  content: `
+<h2>Why POST exists</h2>
+<p>POST (Power-On Self Test) is the first phase of BIOS execution after the reset vector. It runs before RAM is fully initialised, so the BIOS can't yet store much state. It checks that the CPU can execute, that the chipset responds, that memory writes round-trip. If something fails fatally, the BIOS can't even display an error — it writes a "POST code" to a fixed I/O port and halts. A diagnostic card reads that port.</p>
+
+<h2>Port 0x80: the POST diagnostic byte</h2>
+<p>Every BIOS writes a byte to port 0x80 before each major checkpoint. On real hardware a POST card sits on the ISA bus and lights up two hex digits to show the last value written. If the BIOS hangs, the last byte tells you which checkpoint it died in.</p>
+<p>POST codes are not standardised — every BIOS vendor uses its own table. SeaBIOS publishes its codes in <code>src/post.c</code>.</p>
+
+<p>In <code>tinyemu-go</code> we register port 0x80 in <code>machine/pc/pc.go</code> with a write handler that just stores the last value. <code>TINYEMU_BIOS_POST=1</code> turns on logging — useful for diagnosing where a BIOS hang stops, but spammy otherwise (BIOSes write thousands of 0xFFs to 0x80 as a microsecond delay).</p>
+
+<h2>Port 0x402: the QEMU debug-console</h2>
+<p>SeaBIOS, when built with <code>CONFIG_DEBUG_IO</code>, prints every <code>dprintf()</code> call as one byte per character to I/O port 0x402. QEMU treats 0x402 as a write-only debug console; the bytes go to QEMU's stderr. We do the same — see <code>p.io.RegisterWrite(0x402, ...)</code> in <code>machine/pc/pc.go</code>.</p>
+
+<p>The subtlety: SeaBIOS first <em>probes</em> whether port 0x402 is present by reading from it. The expected response is <code>0xE9</code> (the magic byte QEMU returns). If the read returns anything else (e.g. our default 0xFF), SeaBIOS concludes "no debug console here", sets its global <code>DebugOutputPort = 0</code>, and every later <code>dprintf()</code> becomes a no-op. The fix is one line:</p>
+
+<pre>p.io.RegisterRead(0x402, 0x402, func(port uint16) uint32 { return 0xE9 })</pre>
+
+<p>This single byte — returning 0xE9 instead of 0xFF — is what unblocks SeaBIOS's entire boot log. Without it you debug blind.</p>
+
+<h2>How to read the log</h2>
+<pre>TINYEMU_BIOS_DEBUG=stderr ./bin/temu... -bios bin/seabios/bios.bin -m 128</pre>
+<p>Routes the 0x402 stream to your terminal. You see exactly what SeaBIOS thinks:</p>
+<pre>SeaBIOS (version rel-1.17.0-0-gb52ca86e094d-prebuilt.qemu.org)
+No Xen hypervisor found.
+RamSize: 0x002c0000 [cmos]
+=== PCI bus &amp; bridge init ===
+Found 2 PCI devices (max PCI bus is 00)
+...</pre>
+<p>This becomes the first thing you grep when something stops booting.</p>
+
+<div class="box box-key">
+<strong>Two diagnostic channels</strong>
+Port 0x80: legacy POST byte, used by all BIOSes as a checkpoint marker. Useful when the BIOS hangs cold.<br>
+Port 0x402: QEMU/SeaBIOS debug console. Used by SeaBIOS for printf-style messages. Useful for everything else.
+</div>
+`,
+  exercises: [
+    "Run with <code>TINYEMU_BIOS_POST=1 TINYEMU_BIOS_DEBUG=stderr</code> and watch the order: do POST codes precede the debug messages?",
+    "Why does SeaBIOS bother to probe 0x402 at all? What would happen if it always assumed the port existed?",
+    "What's the smallest change to <code>pc.go</code> that would let a different BIOS than SeaBIOS — say, the Bochs BIOS — print its log to your terminal? (Hint: port 0xE9.)"
+  ]
+},
+
+{
+  id: 4, phase: 1,
+  title: "Memory Detection & e820",
+  subtitle: "How the OS learns what RAM exists",
+  content: `
+<h2>The bootstrap problem</h2>
+<p>Before any kind of memory allocator can run, the kernel needs to know what RAM the machine has and where it lives. It can't probe — touching addresses that aren't backed by anything would fault. So the BIOS has to tell it. There are three legacy ways and one modern way:</p>
+<ul>
+  <li><strong>CMOS bytes 0x15/0x16</strong> — base memory in KB (≤640 KiB).</li>
+  <li><strong>CMOS bytes 0x17/0x18</strong> — extended memory above 1 MiB in KB.</li>
+  <li><strong>CMOS bytes 0x30/0x31</strong> — extended memory above 16 MiB in 64-KiB units.</li>
+  <li><strong>INT 15h AX=E820</strong> — the modern way: a typed memory map.</li>
+</ul>
+
+<h2>E820: the canonical map</h2>
+<p>An INT 15h AX=E820 call asks the BIOS "give me the next entry of the memory map". Each entry is:</p>
+<pre>struct e820_entry {
+    u64 base;     // physical start
+    u64 length;   // bytes
+    u32 type;     // 1=RAM, 2=reserved, 3=ACPI, 4=ACPI NVS, ...
+};</pre>
+<p>The kernel iterates calling E820 with a continuation token until the BIOS reports "no more". The kernel keeps the union of all type-1 entries as the available physical memory.</p>
+
+<p>What you see in a typical SeaBIOS dprintf log:</p>
+<pre>e820 map has 6 items:
+  0: 0000000000000000 - 000000000009fc00 = 1 RAM
+  1: 000000000009fc00 - 00000000000a0000 = 2 RESERVED
+  2: 00000000000f0000 - 0000000000100000 = 2 RESERVED
+  3: 0000000000100000 - 00000000002bd000 = 1 RAM
+  4: 00000000002bd000 - 00000000002c0000 = 2 RESERVED
+  5: 00000000fffc0000 - 0000000100000000 = 2 RESERVED</pre>
+<p>Decoded: 640 KiB of conventional RAM, the EBDA region reserved, the F-segment (BIOS ROM shadow) reserved, then the main extended RAM from 1 MiB up to ~2.75 MiB, a small reserved region above it (allocator metadata), then the high BIOS alias.</p>
+
+<h2>Where SeaBIOS gets the numbers</h2>
+<p>From the CMOS bytes our <code>NewCMOSRTC(memSizeKB)</code> initialises in <code>machine/pc/rtc.go</code>. We compute the byte values from our <code>-m</code> RAM size; SeaBIOS reads them with the standard CMOS index/data sequence (out 0x70, in 0x71) and assembles the e820 map.</p>
+
+<h2>Why this matters for us</h2>
+<p>Two ways to break this:</p>
+<ol>
+  <li><strong>Wrong CMOS arithmetic.</strong> If 0x17/0x18 or 0x30/0x31 don't match the actual installed RAM, SeaBIOS publishes a wrong map and the kernel either over-uses memory (page fault on the first access past the real end) or under-uses it (loses several MiB).</li>
+  <li><strong>Missing CMOS entries.</strong> The boot reaches an e820 entry whose offset isn't initialised in our <code>NewCMOSRTC</code>, returns 0, and the map has a gap or a wrong-length entry. Look at the existing CMOS init carefully when you add a new memory size.</li>
+</ol>
+
+<div class="box box-warn">
+<strong>If you change the machine's RAM layout</strong>
+Update <code>NewCMOSRTC</code>. If you add reserved regions (e.g. ACPI tables in a new place), the BIOS has to know — either via fw_cfg (advanced) or by patching SeaBIOS's table-construction code (we don't).
+</div>
+`,
+  exercises: [
+    "Run with <code>-m 256</code> and grep the SeaBIOS log for the e820 map. Does the total RAM match 256 MiB?",
+    "What happens if you set CMOS byte 0x17 to 0 and leave 0x18 alone? Predict, then test.",
+    "The kernel's memory allocator wants <em>physical</em> memory but most of the time uses <em>virtual</em> addresses. Why does this distinction not matter for the BIOS's job?"
+  ]
+},
+
+// ============================================================
+// PHASE 2 — Mode Transitions
+// ============================================================
+{
+  id: 5, phase: 2,
+  title: "Real Mode and Its Quirks",
+  subtitle: "The 1 MiB world the CPU boots into",
+  content: `
+<h2>What real mode actually is</h2>
+<p>Real mode is the CPU's startup mode. It's 16-bit: registers are AX/BX/CX/DX/SI/DI/BP/SP (the 32-bit forms exist but addresses are 16-bit), instruction pointer is IP (16 bits), and addresses are formed by <em>segmentation</em> rather than paging.</p>
+
+<p>The segment registers (CS/DS/ES/SS/FS/GS) are 16-bit selectors, but in real mode they don't index a descriptor table. Instead, the effective base of each segment is <code>selector × 16</code>. So:</p>
+<pre>linear_address = segment.base + offset
+              = (selector_value &lt;&lt; 4) + offset</pre>
+<p>Maximum addressable linear address: <code>0xFFFF × 16 + 0xFFFF = 0x10FFEF</code>. That's just over 1 MiB. The bit above that — the A20 line — is what made real mode famously cap at 1 MiB (until A20 was enabled to allow access to "high memory").</p>
+
+<h2>The descriptor cache trick</h2>
+<p>Internally, each segment register is paired with a hidden <em>descriptor cache</em>: a hardware register holding the segment's base, limit, and access attributes. In protected mode these get loaded from the GDT when you write a selector. In real mode, only the base gets updated (to <code>sel&lt;&lt;4</code>) on a segment write. The cached <em>limit</em> and <em>access</em> bits are preserved from whatever the descriptor cache last held.</p>
+
+<p>This is the foundation of <strong>big real mode</strong>: enter protected mode briefly, load CS/DS/... with descriptors whose limit is 4 GiB, then exit back to real mode. The selector values reset to 16-bit, but the cached 4-GiB limits stay. Now you're in "real mode" but can address up to 4 GiB through the segment registers. SeaBIOS uses this trick during init.</p>
+
+<h2>IP is 16-bit. RIP is 32-bit. Both?</h2>
+<p>The architectural rule: in real mode (CR0.PE=0) with CS.D=0, the instruction pointer wraps at 16 bits — after executing the instruction at offset 0xFFFF, the next fetch is from offset 0x0000 of the same segment.</p>
+
+<p>"Big real mode" with CS.D=1 (a 32-bit code segment cached from a prior PE excursion) is different: IP can extend to 32 bits. SeaBIOS does this for parts of its boot code.</p>
+
+<p>Our emulator gates the wrap on CS.D: <code>if c.mode == ModeReal16 && c.segAccess[CS]&amp;csDBit == 0 { c.rip &amp;= 0xFFFF }</code>. See <code>exec.go</code>. The bug it fixes: a function that ran off the end of the F-segment kept fetching into unmapped RAM at 0x100000+ because we hadn't wrapped IP.</p>
+
+<h2>The interrupt vector table (IVT)</h2>
+<p>Real-mode interrupts are vectored through the IVT at linear 0x000–0x3FF — 256 entries of 4 bytes each: <code>{ip16, cs16}</code>. The CPU pushes flags + CS + IP and jumps to the entry. <code>iret</code> pops them back. That's the entire interrupt model in real mode — no descriptor tables, no privilege levels, no error code.</p>
+
+<p>The BIOS owns the IVT. Slots 0x10, 0x13, 0x15, 0x16 etc. get filled with pointers to the BIOS's handlers during init. Once the boot sector runs, every <code>int 0x13</code> it does vectors here.</p>
+
+<div class="box box-key">
+<strong>Big-real-mode in one sentence</strong>
+Set CR0.PE = 1, load CS/DS/... with descriptors having limit = 0xFFFFFFFF, set CR0.PE = 0. The selector values revert to real-mode, but the cached limits stay 4 GiB. The CPU now thinks it's in real mode but can touch any byte of the address space.
+</div>
+`,
+  exercises: [
+    "Compute the linear address of <code>CS:IP = 0x07C0:0x0000</code> and <code>0x0000:0x7C00</code>. Are they the same?",
+    "Why is the IVT at 0x000 and not at 0xC0000 with the rest of the BIOS data?",
+    "If <code>CS.base = 0xF0000</code> and <code>IP = 0xFFFE</code>, what physical byte does the next 2-byte instruction's <em>second</em> byte come from in true real mode? In big-real mode with CS.D=1?"
+  ]
+},
+
+{
+  id: 6, phase: 2,
+  title: "Protected Mode and the GDT",
+  subtitle: "Why every segment now needs a descriptor",
+  content: `
+<h2>The protected-mode model</h2>
+<p>Protected mode is what every OS after DOS runs in. Three big changes from real mode:</p>
+<ol>
+  <li><strong>Segments come from a table.</strong> A segment selector is no longer the literal base &gt;&gt; 4. It's an <em>index</em> into the Global Descriptor Table (GDT, or LDT for per-task tables). The descriptor at that index has the real base, limit, and access bits.</li>
+  <li><strong>Hardware enforces limits.</strong> Access past the descriptor's limit causes a general-protection fault.</li>
+  <li><strong>Privilege rings.</strong> CS has a current privilege level (CPL); each segment has a descriptor privilege level (DPL); access is checked.</li>
+</ol>
+
+<h2>The descriptor</h2>
+<p>A GDT/LDT entry is 8 bytes:</p>
+<pre>bits  0..15  limit[15:0]
+bits 16..39  base[23:0]
+bits 40..47  access byte: P, DPL(2), S, type(4)
+bits 48..51  limit[19:16]
+bits 52..55  flags nibble: AVL, L, D/B, G
+bits 56..63  base[31:24]</pre>
+<p>Two flag bits matter most for what we model:</p>
+<ul>
+  <li><strong>L</strong> (bit 53). 1 = 64-bit code segment ("long mode"). Only valid when EFER.LMA = 1.</li>
+  <li><strong>D/B</strong> (bit 54). For code segments: 0 = 16-bit default operand/address size, 1 = 32-bit. For SS: 0 = 16-bit stack, 1 = 32-bit stack.</li>
+</ul>
+
+<p>When the CPU loads a segment in protected mode, it walks the GDT, reads the descriptor, and updates the segment's hidden cache with the descriptor's <code>base</code>, <code>limit</code>, and <code>access</code> bytes. Subsequent accesses through that segment use the cached values — no GDT read per access.</p>
+
+<h2>The GDT register</h2>
+<p>GDTR is 80 bits — 64 bits of base address and 16 bits of limit. Loaded with <code>lgdt</code>; saved with <code>sgdt</code>. The base is a linear address; the limit is the size of the GDT in bytes minus one (so a 256-entry GDT has limit 0x7FF).</p>
+
+<h2>Entering protected mode</h2>
+<p>The canonical sequence:</p>
+<pre>cli                      ; no interrupts during the transition
+lgdt [pmode_gdt]         ; install the GDT
+mov  eax, cr0
+or   eax, 1              ; CR0.PE = 1
+mov  cr0, eax
+ljmp 0x08:1f             ; far jump to load CS = entry 1 of the GDT
+1:  mov ax, 0x10         ; entry 2 = data segment
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    ; ... now in pm32</pre>
+
+<p>The far jump (0xEA) is mandatory: <code>mov</code>ing to CS isn't allowed. The ljmp loads CS with the index 1 selector, which the CPU resolves via the GDT, and from then on the CPU runs in pm32.</p>
+
+<h2>The bug we hit: stale segment cache</h2>
+<p>The crucial subtlety: when the CPU loads a segment in protected mode, the hardware <strong>walks the GDT and overwrites the cached base/limit/access</strong>. Our emulator's <code>opMOVtoSreg</code> originally skipped this walk in protected mode — it just updated the selector value and left the cached base alone. The comment defended it: "the cached descriptor from the prior far-jump happens to be correct for those selectors."</p>
+
+<p>That assumption holds for SeaBIOS's POST flow (it loads each segment exactly once with a known descriptor). It breaks the moment any code reloads DS from a different segment than the one cached there. SeaBIOS's <code>call32</code> thunk does exactly that: a 16-bit INT 13h handler runs with DS = a zonelow segment (base 0xda800), transitions to 32-bit mode, and reloads DS to the flat data selector (base 0). Without the GDT walk the cached base stays 0xda800, and every "flat" pointer dereferenced in 32-bit C code lands 0xda800 bytes high — including <code>op-&gt;drive_fl</code> on the disk-read path. Symptom: SeaBIOS thinks the drive table is full of NULLs, fails the read.</p>
+
+<p>The fix is in <code>loadProtSegment</code> in <code>cpu/x86_64/opcodes.go</code> — parse the descriptor and overwrite the cache. The regression test is <code>cpu/x86_64/jmpfar_test.go</code>.</p>
+
+<div class="box box-warn">
+<strong>The lesson</strong>
+Segment register caches are not just an implementation detail — guests rely on them being refreshed from the GDT on every protected-mode load. If your emulator's MOV-to-Sreg doesn't walk the table, you'll catch the bug on the day a guest exercises a reload across mode boundaries.
+</div>
+`,
+  exercises: [
+    "Build a 64-bit code descriptor for a flat segment with limit 4 GiB. Decode each bit of the 8-byte value.",
+    "Why is loading CS via <code>mov cs, ax</code> not allowed in protected mode? Why is a far jump required?",
+    "Read <code>loadProtSegment</code> in <code>cpu/x86_64/opcodes.go</code>. What happens when the selector is null? Why is that the right behavior?"
+  ]
+},
+
+{
+  id: 7, phase: 2,
+  title: "Long Mode and Compatibility Mode",
+  subtitle: "Two flavours of 64-bit",
+  content: `
+<h2>Three modes living together</h2>
+<p>x86_64 (AMD64) added two new operating modes on top of protected mode:</p>
+<ul>
+  <li><strong>Long mode (64-bit)</strong>: CS.L=1, EFER.LMA=1. Native 64-bit instructions, 64-bit registers, flat segmentation (CS/DS/ES/SS bases are forced to 0). This is what a 64-bit kernel runs in.</li>
+  <li><strong>Compatibility mode</strong>: CS.L=0, EFER.LMA=1. Looks and behaves like 32-bit protected mode, but is "inside" long mode. Used to run 32-bit userland under a 64-bit kernel.</li>
+</ul>
+<p>Plus the legacy modes: real, pm16, pm32. The CPU picks one based on three bits: CR0.PE (protected mode enabled), EFER.LMA (long mode active), CS.L (long-mode code segment).</p>
+
+<h2>The transition into long mode</h2>
+<p>It looks weird the first time you see it. Starting from pm32:</p>
+<pre>; set up 4-level page tables, store CR3
+mov  eax, cr4
+or   eax, 1 &lt;&lt; 5       ; PAE
+mov  cr4, eax
+mov  ecx, 0xC0000080   ; EFER MSR
+rdmsr
+or   eax, 1 &lt;&lt; 8       ; LME (long mode enable)
+wrmsr
+mov  eax, cr0
+or   eax, 1 &lt;&lt; 31      ; PG (paging)
+mov  cr0, eax          ; ← LMA becomes 1 here, but CS.L is still 0
+ljmp $__KERNEL_CS, $startup_64</pre>
+
+<p>After the <code>mov cr0</code>: <strong>EFER.LMA = 1 but CS.L is still 0</strong>. This is compatibility mode. The CPU is "in long mode" in the sense that LMA is set, but the current code segment is still 32-bit. The very next instruction — the <code>ljmp</code> — is what loads CS with the 64-bit code descriptor (L=1) and finally enters 64-bit mode.</p>
+
+<p>That ljmp is encoded as <code>EA</code> + 32-bit offset + 16-bit selector — the same opcode we already saw at the BIOS reset vector. <strong>0xEA is valid in compatibility mode</strong> — it's the instruction that performs this very transition. 0xEA is only invalid when the CPU is already running 64-bit code (CS.L=1).</p>
+
+<div class="box box-warn">
+<strong>The one-line bug</strong>
+The 0xEA handler in <code>cpu/x86_64/opcodes.go</code> gated on <code>c.efer&amp;EFER_LMA != 0</code>. But LMA=1 with CS.L=0 is compat mode, where 0xEA is valid — and it's the literal next instruction Linux executes. Result: every x86_64 Linux boot died the moment the kernel tried to enter 64-bit mode. The fix: gate on <code>c.mode == ModeLong64</code>, not LMA.
+</div>
+
+<h2>What the GDT looks like in long mode</h2>
+<p>The descriptor format is the same 8 bytes, but most fields are ignored:</p>
+<ul>
+  <li>CS/DS/ES/SS bases are forced to 0. The cached base is ignored.</li>
+  <li>Limits are not enforced (segments effectively span the entire 64-bit virtual address space).</li>
+  <li>The L bit on CS distinguishes 64-bit (L=1) from compat (L=0).</li>
+  <li>FS/GS bases come from MSRs (FS_BASE = MSR 0xC0000100, GS_BASE = 0xC0000101), not the descriptor. WRMSR programs them.</li>
+</ul>
+
+<p>So in long mode the GDT mostly exists to hold one code descriptor per privilege level + the TSS. The bases and limits in the descriptors are mostly decorative.</p>
+
+<h2>Three-mode arithmetic</h2>
+<p>Each instruction's operand and address size depends on the current mode and any prefix bytes:</p>
+<table class="corr-table">
+  <tr><th>Mode</th><th>Default op size</th><th>0x66 prefix</th><th>Default addr size</th><th>0x67 prefix</th></tr>
+  <tr><td>Real 16</td><td>16</td><td>→ 32</td><td>16</td><td>→ 32</td></tr>
+  <tr><td>Protected 32</td><td>32</td><td>→ 16</td><td>32</td><td>→ 16</td></tr>
+  <tr><td>Long 64</td><td>32 (REX.W → 64)</td><td>→ 16</td><td>64</td><td>→ 32</td></tr>
+</table>
+<p>Most BIOS bugs in our emulator have been caused by getting one cell of this table wrong — see Lesson 8.</p>
+`,
+  exercises: [
+    "Predict what <code>c.mode</code> should be after each line of the Linux transition sequence shown above.",
+    "Why are segment bases forced to 0 in long mode, even though the descriptor still has a base field?",
+    "Read <code>recomputeMode</code> in <code>cpu/x86_64/mode.go</code>. Trace which bits it reads and in what order."
+  ]
+},
+
+{
+  id: 8, phase: 2,
+  title: "PUSH/POP/CALL/RET Width — The 0x66 Trap",
+  subtitle: "Why every stack op is a potential bug",
+  content: `
+<h2>The rule</h2>
+<p>Per Intel SDM Vol 2A, stack operations — PUSH, POP, CALL, RET, RETF, IRET, PUSHF, POPF, PUSHA, POPA — transfer bytes <strong>at operand size</strong>, not at stack-slot size. The 0x66 (operand-size override) prefix flips that. Stack-slot size (4 in pm32, 2 in pm16) is a property of the SS segment used for the stack pointer; operand size is a property of the instruction.</p>
+
+<p>These usually match. They diverge when the 0x66 prefix is present:</p>
+
+<table class="corr-table">
+  <tr><th>Mode</th><th>Instr</th><th>Operand size</th><th>Stack-slot size</th><th>Bytes pushed/popped</th></tr>
+  <tr><td>Real 16</td><td><code>push ax</code></td><td>2</td><td>2</td><td>2</td></tr>
+  <tr><td>Real 16</td><td><code>66 push eax</code></td><td>4</td><td>2</td><td><strong>4</strong></td></tr>
+  <tr><td>pm32</td><td><code>push eax</code></td><td>4</td><td>4</td><td>4</td></tr>
+  <tr><td>pm32</td><td><code>66 push ax</code></td><td>2</td><td>4</td><td><strong>2</strong></td></tr>
+  <tr><td>Long 64</td><td><code>push rax</code></td><td>(8 default)</td><td>8</td><td>8</td></tr>
+  <tr><td>Long 64</td><td><code>66 push ax</code></td><td>2</td><td>8</td><td><strong>2</strong></td></tr>
+</table>
+
+<h2>The bug shape</h2>
+<p>A push uses stack-slot size while the matching pop uses operand size (or vice versa), so the stack pointer ends up 2 or 4 bytes off the value the next pop expects. Common manifestation: <strong>a popped value has its low and high 16 bits swapped</strong>. That's the 2-byte misalignment fingerprint.</p>
+
+<p>Worked example. SeaBIOS's IRQ handler entry (<code>irqentry_extrastack</code>) does:</p>
+<pre>; from romlayout.S
+push   0xF0FC          ; 4 bytes — the IRQ handler function pointer
+jmp    irqentry_extrastack
+   ; ... pushes ds, eax, then runs SAVEBREGS_POP_DSEAX ...
+pop    ecx              ; 4 bytes — should retrieve 0xF0FC</pre>
+<p>If our PUSH r/m32 (Group 5 /6) writes 2 bytes instead of 4, the stack is now 2 bytes "shorter" than the popper expects. The <code>pop ecx</code> reads 4 bytes starting 2 bytes too high, fetches half the next stack slot — and ECX ends up as <code>0xF0FC0000</code> instead of <code>0x0000F0FC</code>. The high and low halves are swapped because of the 2-byte misalignment.</p>
+<p>Then <code>call *ecx</code> jumps to 0xF0FC0000, which is garbage RAM, and the emulator wanders off.</p>
+
+<h2>The audit pattern</h2>
+<p>The fix in our emulator was a single helper:</p>
+<pre>// pushPopOperandSize maps the per-instruction operandSize to the actual
+// push/pop width. Long mode has no 32-bit form: a default operandSize
+// of 4 there means "push/pop 8 bytes". Real and pm32 pass through.
+func (c *CPU) pushPopOperandSize(operandSize uint8) int {
+    if c.mode == ModeLong64 && operandSize == 4 {
+        return 8
+    }
+    return int(operandSize)
+}</pre>
+<p>Then every stack-op site was changed from <code>c.stackSlotSize()</code> to <code>c.pushPopOperandSize(operandSize)</code>. The audit list:</p>
+<ul>
+  <li>0xC3 RET, 0xC2 RET imm16</li>
+  <li>0xCB RETF, 0xCF IRET</li>
+  <li>0x50–0x57 PUSH r, 0x58–0x5F POP r</li>
+  <li>0x68 PUSH imm32, 0x6A PUSH imm8</li>
+  <li>0x06/0x07/0x0E/0x16/0x17/0x1E/0x1F PUSH/POP segment</li>
+  <li>0x60/0x61 PUSHA/POPA, 0x9C/0x9D PUSHF/POPF, 0xC9 LEAVE</li>
+  <li>0x8F /0 POP r/m (the irqentry bug above)</li>
+  <li>0x9A CALL FAR PTR16:N</li>
+  <li>Group 5 /2 CALL r/m, /3 CALL FAR m, /4 JMP r/m, /5 JMP FAR m, /6 PUSH r/m</li>
+</ul>
+<p>Same bug shape × thirteen instructions. A successful audit closes them all in one commit.</p>
+
+<div class="box box-key">
+<strong>Smell test</strong>
+If you see a popped value whose halves are swapped, suspect a 2- or 4-byte stack-width mismatch. Trace back to the matching push.
+</div>
+`,
+  exercises: [
+    "What does <code>66 9C</code> do in real mode? In pm32? In long mode? Write out the bytes pushed.",
+    "Why is there no 32-bit form for PUSH/POP in long mode (i.e. <code>push eax</code> is encoded but <em>means</em> <code>push rax</code>)?",
+    "Find one place in our code where the comment says \"width follows operand size\" and confirm it actually uses <code>pushPopOperandSize</code>."
+  ]
+},
+
+// ============================================================
+// PHASE 3 — Hardware Detection & Init
+// ============================================================
+{
+  id: 9, phase: 3,
+  title: "The PIC and IRQ Delivery",
+  subtitle: "Wiring hardware interrupts to vectors",
+  content: `
+<h2>What the PIC does</h2>
+<p>The 8259A Programmable Interrupt Controller takes up to 8 IRQ lines from devices and turns them into a single INTR line to the CPU. When the CPU acknowledges (INTA), the PIC drives the interrupt vector number onto the data bus. On a PC, two PICs are cascaded: master handles IRQ 0–7, slave handles IRQ 8–15. The slave's INTR pin is wired to the master's IRQ 2.</p>
+
+<p>So when IRQ 6 (the floppy) fires:</p>
+<ol>
+  <li>The floppy controller asserts IRQ 6 → the master PIC sets bit 6 of its IRR (Interrupt Request Register).</li>
+  <li>The master raises INTR to the CPU.</li>
+  <li>If EFLAGS.IF is set, the CPU acknowledges (INTA cycle).</li>
+  <li>The PIC moves bit 6 from IRR to ISR (In-Service Register), clears IRR.6, and drives the vector byte (typically 0x06 + the PIC's base offset, e.g. 0x08 → vector 0x0E) onto the bus.</li>
+  <li>The CPU vectors through IVT[0x0E] in real mode (or IDT[0x0E] in protected mode).</li>
+  <li>The handler runs, then issues an End-Of-Interrupt (EOI) to port 0x20: <code>outb 0x20, 0x20</code>.</li>
+  <li>The PIC clears bit 6 of its ISR. Now lower-priority interrupts can be delivered.</li>
+</ol>
+
+<h2>BIOS-vs-OS vector base</h2>
+<p>The PIC's base offset is configurable. The BIOS programs IRQ 0–7 → INT 0x08–0x0F and IRQ 8–15 → INT 0x70–0x77. That's why the timer (IRQ 0) is INT 0x08. Linux later reprograms the PIC to put hardware IRQs at vectors 0x20+ to avoid collisions with CPU exceptions. We don't model the reprogramming; the BIOS bases are good enough.</p>
+
+<h2>Our implementation</h2>
+<p>See <code>machine/pc/pic.go</code>:</p>
+<pre>type PIC8259 struct {
+    imr   uint8 // Interrupt Mask Register
+    irr   uint8 // Interrupt Request Register
+    isr   uint8 // In-Service Register
+    icw2  uint8 // base vector (programmed via ICW2)
+    ...
+}
+func (p *PIC8259) RaiseIRQ(irq uint8) { ... }
+func (p *PIC8259) Ack() int          { /* returns vector, moves IRR→ISR */ }
+func (p *PIC8259) EOI()              { /* clears lowest ISR bit */ }</pre>
+
+<p>Devices call <code>RaiseIRQ(N)</code> when they want attention. The PIC asserts INTR to the CPU via <code>cpu.SetINTR(1)</code>. The CPU's <code>Step()</code> checks INTR + IF + not-blocked at the start of every instruction and calls the ack callback to learn the vector.</p>
+
+<h2>Real-mode vs protected-mode delivery</h2>
+<p>These differ:</p>
+<ul>
+  <li><strong>Real mode (CR0.PE = 0):</strong> read 4-byte IVT entry, push FLAGS/CS/IP (3 × 2 bytes), clear IF and TF, load CS:IP from the IVT entry. Real-mode CS load means base = sel &lt;&lt; 4.</li>
+  <li><strong>Protected mode without long:</strong> read 8-byte IDT gate, push EFLAGS/CS/EIP (3 × 4 bytes), push errorCode if applicable, clear IF/TF per gate type, load CS from GDT.</li>
+  <li><strong>Long mode:</strong> read 16-byte IDT gate, push SS/RSP/RFLAGS/CS/RIP (5 × 8 bytes), TSS-based stack switch if changing CPL.</li>
+</ul>
+<p>Our <code>deliverInterruptLegacy</code> (in <code>cpu/x86_64/intr.go</code>) dispatches to the right path. SeaBIOS depends on the real-mode path being right for INT 13h disk reads and INT 10h video — see Lesson 13.</p>
+
+<div class="box box-warn">
+<strong>Where the timer goes silent</strong>
+A common boot hang is "IRQ 0 fires once, then nothing". The PIC moves bit 0 IRR→ISR on the first delivery. If the handler never EOIs (or our PIC's EOI logic is broken), the ISR bit stays set and subsequent IRQs are blocked by priority. Watch for <code>p.pic.EOI()</code> after every handler completes.
+</div>
+`,
+  exercises: [
+    "Why are the master PIC's vectors INT 0x08–0x0F instead of starting at 0x00?",
+    "Trace what happens if a guest issues two EOIs in a row with no interrupt in between.",
+    "Read <code>updateINTR</code> in <code>pic.go</code>. What does it do when the IMR masks an IRQ that's already in IRR?"
+  ]
+},
+
+{
+  id: 10, phase: 3,
+  title: "The PIT: 18.2 Hz and the Boot Wait",
+  subtitle: "A reload of 0 means 65536",
+  content: `
+<h2>What the PIT does</h2>
+<p>The 8254 PIT (Programmable Interval Timer) is three independent 16-bit countdown counters, all clocked from a 1.193182 MHz signal:</p>
+<ul>
+  <li><strong>Channel 0:</strong> fires IRQ 0 on counter underflow. This is "the system timer". BIOSes program it for ~18.2 Hz (1.193182 MHz / 65536); Linux later reprograms for 100 Hz or 1000 Hz.</li>
+  <li><strong>Channel 1:</strong> historically used for DRAM refresh. Mostly dead.</li>
+  <li><strong>Channel 2:</strong> drives the PC speaker.</li>
+</ul>
+
+<p>The CPU programs a channel by writing a control word to port 0x43, then writing the reload value to the channel's data port (0x40, 0x41, 0x42 for channels 0/1/2). The channel counts down from its reload value to 0; on underflow, it reloads (in mode 2/3) or halts (in mode 0/4) and pulses its output line. Channel 0's output is wired to the PIC's IRQ 0.</p>
+
+<h2>The reload-0 bug</h2>
+<p>The 8254's reload register is 16 bits, so it can hold values 0–65535. But: by convention, <strong>a reload of 0 means 65536</strong> — the maximum. SeaBIOS programs channel 0 with reload=0 to get the slowest possible tick rate (~18.2 Hz), the standard PC BIOS tick.</p>
+
+<p>Our PIT originally treated reload=0 as "channel disabled". So once SeaBIOS reprogrammed channel 0, the timer went silent. Symptom: IRQ 0 fired exactly once (from the initial 0xFFFF reload at construction time), then never again. SeaBIOS's boot-menu wait, which counts IRQ 0 ticks to time out, hung forever. The CPU spun in the HLT/<code>AdvanceIdle</code> path adding cycles by the trillion without delivering interrupts.</p>
+
+<p>The fix in <code>machine/pc/pit.go</code>: add an <code>active</code> flag (set when the channel is programmed, or pre-set for channel 0 at construction); in <code>tickLocked</code>, use a 32-bit effective reload where 0 → 65536, and reload periodic channels (mode 2/3) vs. halting one-shots (mode 0/4).</p>
+
+<h2>The lazy-tick optimisation</h2>
+<p>We don't run a goroutine that fires every microsecond. Instead:</p>
+<ul>
+  <li>The PIT remembers when it was last advanced (<code>lastAdvance</code> = CPU cycle count).</li>
+  <li>On any PIT port read/write, OR on <code>CheckTimer()</code> from the main loop, we compute the delta since lastAdvance and tick the channels.</li>
+  <li>If a channel underflowed during the elapsed cycles, we raise IRQ 0 once.</li>
+</ul>
+
+<p>This is fine because guests observe the timer either by reading the port (which triggers advance) or by waiting for the IRQ (which gets delivered on the next CheckTimer). A real 18.2 Hz tick would be ~65535 emulator cycles between IRQs.</p>
+
+<h2>HLT and AdvanceIdle</h2>
+<p>When the CPU executes HLT, we set <code>powerDown</code> and return from <code>Step()</code>. The main loop notices and calls <code>AdvanceIdle()</code>, which fast-forwards the cycle counter by 10000 cycles and re-checks the timer. After enough iterations the next IRQ fires, the CPU wakes, and execution resumes. Without this, a guest that HLT's would never see another timer tick (since cycles only advance during instruction execution).</p>
+
+<div class="box box-key">
+<strong>How we found the bug</strong>
+With <code>TINYEMU_X86_PERF=1</code> we saw the cycle counter explode to 1.7 trillion cycles per 20 seconds — clearly the AdvanceIdle loop spinning. <code>TINYEMU_X64_INTR=1</code> showed exactly one vec=8 delivery despite the spin. The PIT had to be programmed-but-silent. <code>writeChannel</code> with reload=0 was the proximate cause.
+</div>
+`,
+  exercises: [
+    "Why is the BIOS tick rate 18.2 Hz specifically? Compute the exact value from 1.193182 MHz / 65536.",
+    "How does Linux get 1000 Hz from the same hardware? Look up <code>HZ</code> in the kernel config.",
+    "Read <code>tickLocked</code> in <code>pit.go</code>. What happens if multiple full periods elapse between calls?"
+  ]
+},
+
+{
+  id: 11, phase: 3,
+  title: "PCI Enumeration",
+  subtitle: "Discovering devices through 0xCF8/0xCFC",
+  content: `
+<h2>What enumeration means</h2>
+<p>A PCI bus has up to 32 device slots, each with up to 8 functions. Each function presents 256 bytes of <em>configuration space</em>. The BIOS walks every (bus, device, function) triple, reads the vendor ID, and if it's not 0xFFFF (= no device present), reads the rest of the header. Device class, vendor/device ID, BARs, interrupt line, etc.</p>
+
+<p>The legacy mechanism is the "Type 1 configuration access": write the (bus, dev, fn, register) tuple to port 0xCF8, then read or write the data byte/word/dword at port 0xCFC. Modern PCIe adds memory-mapped MMCONFIG, but every chipset still supports the legacy port for backward compat.</p>
+
+<h2>BIOS's job</h2>
+<ol>
+  <li>For each device: identify the vendor/device ID and class.</li>
+  <li>Size each BAR: write all 1s, read back, the bits that stuck = the size mask. Allocate I/O or MMIO addresses.</li>
+  <li>Program the BARs with their assigned base addresses.</li>
+  <li>Program the interrupt line (which IRQ this device routes to, per the chipset's IRQ steering).</li>
+  <li>Enable the device by setting the I/O space and memory space enable bits in the Command register.</li>
+  <li>For devices with option ROMs (a BAR pointing to a small ROM): load the ROM at 0xC0000–0xDFFFF and execute its init entry.</li>
+</ol>
+<p>Our PC machine in <code>machine/pc/pci.go</code> implements the host-bridge config-space accessor. Devices register themselves at fixed (dev, fn) slots:</p>
+<ul>
+  <li>(0, 0, 0): 440FX host bridge.</li>
+  <li>(0, 1, 0): PIIX3 ISA bridge.</li>
+  <li>(0, 1, 1): PIIX3 IDE controller (x86 only; skipped on x86_64 to avoid the libata async-EH stall).</li>
+  <li>(0, 3+n, 0): virtio-blk for each <code>-drive</code>.</li>
+  <li>(0, 4+n, 0): virtio-net for each network device.</li>
+</ul>
+
+<h2>BAR sizing and the relocation bug</h2>
+<p>A BAR is a 32-bit register. Bit 0 indicates I/O (1) or memory (0); for memory BARs, bits 1–3 indicate type. The high bits hold the assigned base address; the low bits are write-protected zero (defined by the device's required size). To learn the size, the BIOS writes 0xFFFFFFFF to the BAR, reads it back, sees which bits are zero (those are the address-mask bits), and infers the size.</p>
+
+<p>The trap: <strong>BIOSes reassign BARs from scratch. Linux usually keeps the firmware-assigned bases.</strong> So if you statically register your virtio-blk I/O port handlers at 0xC100 (where you set the BAR at construction time), Linux is happy — but SeaBIOS will reassign BAR 0 to 0xC000 (or wherever its allocator decides), and now your handlers sit at the old address while the device's accesses go to nothing. SeaBIOS sees 0xFFFF for every register read and bails.</p>
+
+<p>The fix in <code>machine/pc/pci.go</code>: add a <code>SetBARChangeHandler</code> callback that fires from <code>writeBAR</code> when the masked base changes (filtering the all-ones sizing probe). <code>AttachVirtioBlock</code> installs a handler that clears the old port range and re-registers the transport at the new base, with closures capturing the live base so the offset math follows the BAR.</p>
+
+<p>Symptom of the unfixed bug: SeaBIOS reads "queue size 65535 > 256" and refuses to find a virtqueue. Zero I/O accesses ever reach the device.</p>
+
+<div class="box box-warn">
+<strong>The two-firmware reality</strong>
+Your device has to behave correctly whether the firmware moves the BARs (SeaBIOS) or doesn't (Linux). Always have a BAR-change callback even if you never tested it against SeaBIOS — the day you do, it'll save you.
+</div>
+`,
+  exercises: [
+    "How does the BAR-sizing protocol work for a 64-bit MMIO BAR (which is two consecutive 32-bit BARs)?",
+    "If two devices both want I/O addresses 0xC000, who wins under SeaBIOS? Is the choice deterministic?",
+    "Read <code>writeBAR</code> in <code>pci.go</code>. What test gates the <code>onBARChange</code> callback so the sizing probe doesn't fire it?"
+  ]
+},
+
+{
+  id: 12, phase: 3,
+  title: "PIT Calibration and Port 0x61",
+  subtitle: "How the BIOS measures the CPU's speed",
+  content: `
+<h2>The chicken-and-egg problem</h2>
+<p>How does software measure CPU speed? With a known time reference. The PIT is one — it tick at 1.193182 MHz reliably. But you can't <em>read</em> the PIT counter atomically from software; you have to latch it.</p>
+
+<p>The classic trick: program channel 2 (which feeds the PC speaker) as a one-shot, gate it via port 0x61, and run a busy loop while sampling the counter. The number of CPU cycles per PIT tick gives you the CPU frequency.</p>
+
+<h2>Port 0x61: System Control Port B</h2>
+<p>Port 0x61 has these bits:</p>
+<table class="corr-table">
+  <tr><th>Bit</th><th>Read/Write</th><th>Meaning</th></tr>
+  <tr><td>0</td><td>R/W</td><td>Channel 2 gate enable (gate input to PIT ch2)</td></tr>
+  <tr><td>1</td><td>R/W</td><td>Speaker data</td></tr>
+  <tr><td>4</td><td>R only</td><td>Refresh cycle toggle (DMA refresh, ~15 µs)</td></tr>
+  <tr><td>5</td><td>R only</td><td>Channel 2 output (the PIT's OUT2 pin)</td></tr>
+</table>
+<p>SeaBIOS's calibrate loop reads bit 5 in a tight inner loop, counting CPU cycles between bit transitions. Each transition is ~838 ns of real time, derived from PIT channel 2's countdown.</p>
+
+<h2>What goes wrong if 0x61 is misemulated</h2>
+<p>If bit 5 never toggles, SeaBIOS's calibration loop runs forever — and you see the boot stuck somewhere in POST. We model bit 5 in <code>machine/pc/pc.go</code> by XORing it (and bit 4, the refresh toggle) into port61 on every read. That guarantees toggles, even though we don't actually run channel 2 with a real countdown:</p>
+<pre>p.io.RegisterRead(0x61, 0x61, func(port uint16) uint32 {
+    port61 ^= 0x30        // toggle bits 4 and 5
+    return uint32(port61)
+})</pre>
+<p>SeaBIOS doesn't care about the wall-clock accuracy — it does the calibration, gets some number for "CPU MHz", and moves on. (Our reported MHz is 0 because we didn't bother to make the toggle rate represent a real frequency. SeaBIOS prints "CPU Mhz=0" and continues.)</p>
+
+<h2>Linux's quick_pit_calibrate</h2>
+<p>Linux uses a smarter routine: program channel 2, sample CPUID at known PIT tick boundaries, fit a line. Linux also masks port 0x61 differently (it reads it but ignores most bits). The toggle hack we have works for both — SeaBIOS sees the toggles it expects, Linux ignores the bits anyway.</p>
+
+<div class="box box-key">
+<strong>The two timing sources</strong>
+The PIT is the reference clock for calibration. The TSC (Time Stamp Counter, read via RDTSC) is the per-cycle counter used by the calibrated software clock. The BIOS publishes "CPU MHz" so the OS knows how to convert TSC ticks → wall time.
+</div>
+`,
+  exercises: [
+    "Why does SeaBIOS use channel 2 instead of channel 0 (the IRQ-driving one) for calibration?",
+    "What's the actual frequency of the bit 5 toggle in our emulator (in toggles per second)? Hint: <code>TINYEMU_X86_PERF=1</code>.",
+    "Read the <code>port61</code> handler in <code>pc.go</code>. Why does it XOR both bits 4 and 5, not just bit 5?"
+  ]
+},
+
+// ============================================================
+// PHASE 4 — INT 13h & Booting
+// ============================================================
+{
+  id: 13, phase: 4,
+  title: "INT 13h Anatomy",
+  subtitle: "The disk ABI every bootloader uses",
+  content: `
+<h2>What INT 13h is</h2>
+<p>INT 13h is the real-mode disk-service interrupt. The BIOS installs a handler at IVT[0x13] during init. Software passes parameters in registers (AH = function code, others vary) and calls <code>int 0x13</code>. The handler does the I/O and returns with CF = error flag and AH = status.</p>
+
+<p>The canonical functions, with the parameters they take:</p>
+
+<table class="corr-table">
+  <tr><th>AH</th><th>Name</th><th>Params</th></tr>
+  <tr><td>0x00</td><td>Reset disk</td><td>DL = drive</td></tr>
+  <tr><td>0x02</td><td>Read sectors (CHS)</td><td>AL = count, CH = cyl_low, CL = (cyl_high &lt;&lt; 6) | sector, DH = head, DL = drive, ES:BX = buffer</td></tr>
+  <tr><td>0x03</td><td>Write sectors (CHS)</td><td>same as 02</td></tr>
+  <tr><td>0x08</td><td>Get geometry</td><td>DL = drive; returns CHS limits</td></tr>
+  <tr><td>0x15</td><td>Get DASD type</td><td>DL = drive</td></tr>
+  <tr><td>0x41</td><td>Check LBA extensions</td><td>DL = drive</td></tr>
+  <tr><td>0x42</td><td>Read sectors (LBA)</td><td>DL = drive, DS:SI = packet</td></tr>
+</table>
+
+<p>DL = 0x80 + N for hard disks, 0x00 + N for floppies. The "type bit" (bit 7 of DL) is what distinguishes "hard" from "floppy".</p>
+
+<h2>The boot-sector contract</h2>
+<p>When the BIOS finds a bootable device, it:</p>
+<ol>
+  <li>Reads sector 0 of the device into linear 0x7C00 (CS:IP = 0x0000:0x7C00).</li>
+  <li>Sets DL to the drive number it just used.</li>
+  <li>Jumps to 0x0000:0x7C00.</li>
+</ol>
+<p>The boot sector is then free to use INT 13h with that same DL to read more of the OS. <strong>This is the most important invariant of the legacy boot ABI.</strong> A boot sector that hardcodes <code>DL = 0x00</code> instead of using what the BIOS handed it can only boot from a floppy — that's exactly what MenuetOS's boot sector does:</p>
+<pre>00007C7D  BA0001  mov dx,0x0100   ; DH=1, DL=0 (floppy drive A)
+00007C80  E88E00  call 0x7D11     ; read-sector loop via INT 13h</pre>
+
+<h2>Where the read goes</h2>
+<p>SeaBIOS's INT 13h handler dispatches by drive number to the right driver:</p>
+<ul>
+  <li>DL &lt; 0x80: <code>floppy_13</code> → the FDC driver.</li>
+  <li>0x80 ≤ DL &lt; 0xE0: <code>disk_13</code> → the hard-disk driver (ATA, virtio-blk, AHCI, ...).</li>
+  <li>DL ≥ 0xE0: CD-ROM (ATAPI / virtio-scsi).</li>
+</ul>
+<p>For our virtio-blk: SeaBIOS in 16-bit mode notices it's not a 16-bit-friendly driver and calls into <code>process_op_32</code> via <code>call32</code>, transitioning to 32-bit, doing the virtio request, and coming back. (The <code>call32</code> mechanism is what tripped the GDT-walk bug in Lesson 6.)</p>
+
+<h2>CHS vs LBA</h2>
+<p>The CHS interface (function 0x02) takes cylinder/head/sector — limited to 10 bits of cylinder, 8 of head, 6 of sector → max ~8 GiB. The LBA extensions (0x42) take a 64-bit LBA and an arbitrary buffer count. Modern bootloaders use LBA; floppy boot sectors use CHS because the floppy geometry is small.</p>
+
+<p>For a 1.44 MiB floppy: 80 cylinders × 2 heads × 18 sectors × 512 bytes = 1,474,560 bytes. Conversion:</p>
+<pre>lba = (cyl * 2 + head) * 18 + (sector - 1)</pre>
+
+<div class="box box-key">
+<strong>The DL convention</strong>
+A bootloader that uses the DL the BIOS hands it is portable across boot devices. One that hardcodes DL=0x80 (or 0x00) only boots from one device class. MenuetOS hardcodes 0x00 — so it must be presented as a floppy. That's why our boot path goes through the FDC, not virtio-blk.
+</div>
+`,
+  exercises: [
+    "Why is the boot sector loaded at 0x7C00 specifically? (Historical answer; look it up.)",
+    "If the boot sector hardcodes DL=0x80, what does SeaBIOS do if there's no hard disk attached?",
+    "Trace the path from <code>int 0x13</code> in real mode to the virtio-blk port write. List each function call."
+  ]
+},
+
+{
+  id: 14, phase: 4,
+  title: "FDC + DMA: Booting a Floppy",
+  subtitle: "Recreating the 8272 + 8237 chain",
+  content: `
+<h2>The two-chip dance</h2>
+<p>A floppy read on a real PC involves two chips:</p>
+<ul>
+  <li>The <strong>FDC</strong> (8272 / 82077): the floppy controller. Receives commands like SPECIFY, SEEK, READ over its I/O ports (0x3F2–0x3F7). For data transfers, it doesn't do the bytes itself — it tells the DMA controller "I'm ready", and the DMA does the memory write.</li>
+  <li>The <strong>DMA controller</strong> (8237, slave): channel 2 is wired to the FDC. The CPU programs the DMA's base address, count, and mode for channel 2. When the FDC has data, the DMA writes it to RAM.</li>
+</ul>
+
+<p>SeaBIOS issues a fixed sequence to read a sector:</p>
+<ol>
+  <li>SPECIFY (0x03): set step-rate and head-load timings. No IRQ, no result.</li>
+  <li>RECALIBRATE (0x07): seek to cylinder 0. Raises IRQ 6.</li>
+  <li>SENSE_INTERRUPT (0x08): read the result (ST0 + PCN). Clears the pending IRQ flag.</li>
+  <li>SEEK (0x0F): move to the target cylinder. Raises IRQ 6.</li>
+  <li>SENSE_INTERRUPT again.</li>
+  <li>Program DMA channel 2: target address, byte count, mode = "write to memory, single transfer".</li>
+  <li>READ (0xE6): cyl/head/sector/size/EOT. The FDC transfers via DMA, then raises IRQ 6 with 7 result bytes.</li>
+</ol>
+
+<h2>Our "synchronous-execute" shortcut</h2>
+<p>We don't simulate the cycle-by-cycle FDC + DMA. When SeaBIOS writes the READ command + 8 parameter bytes to port 0x3F5, we do the whole transfer inline:</p>
+<ol>
+  <li>Decode CHS from the params → compute LBA.</li>
+  <li>Read the DMA channel-2 state: target = (page &lt;&lt; 16) | addr, count = count register + 1.</li>
+  <li>Copy <code>count</code> bytes from the floppy image to guest memory at <code>target</code>.</li>
+  <li>Stuff 7 result bytes (ST0/ST1/ST2/C/H/R/N) into a result buffer.</li>
+  <li>Set MSR to "result ready" (RQM | DIO | CB).</li>
+  <li>Raise IRQ 6.</li>
+</ol>
+<p>SeaBIOS reads the result bytes via port 0x3F5, sees ST0 bits 6–7 = 0 (success), and the read is done.</p>
+
+<p>This shortcut is invisible from SeaBIOS's perspective — the FDC's externally-visible behavior is identical. We're just not pacing the bytes through the FIFO byte-by-byte.</p>
+
+<h2>The MSR state machine</h2>
+<p>Port 0x3F4 returns the Main Status Register. Three bits matter:</p>
+<ul>
+  <li>RQM (0x80): controller ready to transfer a byte.</li>
+  <li>DIO (0x40): direction — 1 = FDC → CPU (result phase), 0 = CPU → FDC (command phase).</li>
+  <li>CB (0x10): command in progress.</li>
+</ul>
+<p>Our <code>readMSR()</code>:</p>
+<pre>if len(f.result) > 0  { return RQM | DIO | CB }  // result phase
+if f.need > 0          { return RQM | CB }        // command phase
+                       { return RQM }             // idle</pre>
+
+<h2>DMA channel 2: the minimum</h2>
+<p>Just enough to satisfy SeaBIOS:</p>
+<ul>
+  <li>Port 0x04: ch2 base address, low then high (flip-flop sequenced).</li>
+  <li>Port 0x05: ch2 count, low then high.</li>
+  <li>Port 0x81: ch2 page register (the high byte beyond the 16-bit address).</li>
+  <li>Port 0x0C: flip-flop reset (any write).</li>
+  <li>Ports 0x0A, 0x0B: mask and mode (accepted, ignored — we transfer eagerly).</li>
+</ul>
+<p>Target physical address: <code>(page &lt;&lt; 16) | base</code>. Byte count: <code>count + 1</code>. That's it.</p>
+
+<h2>The CMOS hint</h2>
+<p>SeaBIOS only probes the FDC if CMOS byte 0x10 says a floppy is present. We set <code>cmos[0x10] = 0x40</code> (drive A = 1.44 MB, drive B = none) and the equipment-list byte 0x14 bit 0 in <code>SetFloppyType144</code>. Otherwise SeaBIOS skips the floppy entirely.</p>
+
+<div class="box box-key">
+<strong>Smallest-thing-that-works</strong>
+You don't need a faithful 8272 byte-stream model to boot a floppy. You need: the four ports, the right MSR transitions, the right result bytes, IRQ 6, and a working DMA target. ~250 lines.
+</div>
+`,
+  exercises: [
+    "Walk through a SEEK command. What bytes get written, in what order? What does the result phase look like?",
+    "Why is RECALIBRATE followed by SENSE_INTERRUPT? What does sense interrupt return?",
+    "Modify <code>execRead</code> to handle a multi-track transfer (reads that span past the End Of Track). Test with a sector count > 18."
+  ]
+},
+
+{
+  id: 15, phase: 4,
+  title: "Boot-Device Selection",
+  subtitle: "From boot order to INT 19h",
+  content: `
+<h2>The boot menu and the wait</h2>
+<p>After init, SeaBIOS prints "Press ESC for boot menu" and waits up to 2.5 seconds. If the user presses ESC, it shows the menu; otherwise it boots the first device in its boot order.</p>
+
+<p>The 2.5 seconds isn't real time — it's <strong>~46 timer ticks</strong>. SeaBIOS's <code>get_keystroke(2500_ms)</code> converts the millisecond budget to ticks (at the standard 18.2 Hz) and decrements a counter on every IRQ 0. If the timer never fires, the wait never ends. (See Lesson 10 for how this hung us before the PIT fix.)</p>
+
+<h2>The boot order</h2>
+<p>SeaBIOS reads boot-order entries from fw_cfg (or a hard-coded fallback). Each entry is a device path like <code>/pci@i0cf8/*@3</code> (any device at PCI slot 3). For each entry SeaBIOS searches its discovered drive list for a match, and calls <code>boot_disk(drive)</code> on the first hit.</p>
+
+<p>The path syntax follows OpenBoot conventions. Some examples:</p>
+<ul>
+  <li><code>/pci@i0cf8/*@3</code> — virtio-blk at slot 3 (this matched our drive in MenuetOS run).</li>
+  <li><code>/pci@i0cf8/isa@1/fdc@03f0/floppy@0</code> — the FDC's floppy drive 0.</li>
+  <li><code>HALT</code> — a sentinel for "no more options, halt".</li>
+</ul>
+
+<h2>boot_disk's contract</h2>
+<p>For each candidate drive:</p>
+<ol>
+  <li>Read sector 0 via INT 13h AH=2 to 0x7C00.</li>
+  <li>If the read fails: print "Boot failed: could not read the boot disk" and try the next.</li>
+  <li>Check the boot signature: bytes 510–511 of the sector = 0x55, 0xAA. If not: print "not a bootable disk" and try the next.</li>
+  <li>If both pass: print "Booting from 0000:7c00", set DL to the drive number, jump to 0x0000:0x7C00.</li>
+</ol>
+
+<h2>INT 19h: the reboot vector</h2>
+<p>If no boot device works, SeaBIOS doesn't quit — it calls INT 19h, the "reboot" vector. The INT 19h handler restarts the entire boot process from scratch (re-probe devices, re-walk boot order, retry). On real hardware this lets you swap a floppy and have the BIOS pick it up. We don't model media changes, so INT 19h just loops forever.</p>
+
+<p>If the kernel later wants to reboot the machine, it can also call INT 19h. But modern OSes use the ACPI reset register or a triple-fault instead.</p>
+
+<h2>What the user sees</h2>
+<p>For our MenuetOS run with <code>-fda</code>:</p>
+<pre>Press ESC for boot menu.
+Searching bootorder for: HALT
+Booting from Floppy...
+Booting from 0000:7c00</pre>
+<p>"Booting from Floppy..." means SeaBIOS picked the floppy device, read its sector 0 (FDC READ chs=0/0/1), verified the 55 AA signature, set DL=0, and jumped to 0x7C00. From here on, the floppy boot sector owns the CPU. Whether MenuetOS can actually use it depends on what the boot sector does next — and as we saw, MenuetOS's needs VBE which we don't model.</p>
+
+<div class="box box-key">
+<strong>The boot-sector handoff</strong>
+At <code>jmp 0x0000:0x7C00</code>, SeaBIOS's responsibilities are paused. From the boot sector's perspective: registers are mostly garbage <em>except</em> DL = the drive number, the IVT is populated with BIOS handlers, the BDA at 0x400+ has system info. Everything else is up to the boot sector.
+</div>
+`,
+  exercises: [
+    "What happens if you press ESC during the boot-menu wait? Trace the keyboard-read path.",
+    "If a boot sector returns to SeaBIOS (e.g. via <code>retf</code>), what does SeaBIOS do?",
+    "How does SeaBIOS decide which entry of the boot order to try first when none match a device path exactly?"
+  ]
+},
+
+{
+  id: 16, phase: 4,
+  title: "Why MenuetOS Hangs (and a GUI Limit)",
+  subtitle: "Reaching the bottom of the legacy stack",
+  content: `
+<h2>What MenuetOS does after boot</h2>
+<p>MenuetOS is a graphical, 64-bit hobby OS. Its 1.44 MB floppy boot sector reads more sectors via INT 13h, loads a second-stage loader to 0x10000, and jumps to it. The loader does:</p>
+<ol>
+  <li>Enable A20 (so addresses above 1 MiB work).</li>
+  <li>Probe memory.</li>
+  <li>Probe video — INT 10h AX=4F00 to query VBE (VESA BIOS Extensions).</li>
+  <li>If VBE is available, pick a 1024×768 mode and enter it.</li>
+  <li>Set up 64-bit page tables, enter long mode, jump to the kernel.</li>
+</ol>
+
+<h2>Where it stops in our emulator</h2>
+<p>After our PIT/FDC/CMPS/BAR/GDT-walk fixes, MenuetOS executes its loader and reaches step 3. INT 10h AX=4F00 calls SeaBIOS's video service. SeaBIOS sees no VGA BIOS option ROM has been loaded (because we don't ship one), and falls through to a stub that doesn't recognize the VBE function. AX stays 0x4F00 on return (instead of changing to AL=0x4F + AH=0x00 for success).</p>
+
+<p>MenuetOS checks AX after the call. AX != 0x004F → no VBE → <code>jmp $</code> (deliberate halt).</p>
+
+<p>We caught this by watching RAX in a step trace at the halt instruction (<code>eb fe</code> at lin 0x10ab2). RAX = 0x20004F00, low 16 bits = 0x4F00 — the AX value MenuetOS passed in, unchanged. That's the VBE-not-supported signature.</p>
+
+<h2>What it would take to go further</h2>
+<p>Three things, in increasing order of effort:</p>
+<ol>
+  <li><strong>A VGA BIOS option ROM.</strong> The open-source VGA BIOS (vgabios.bin / SeaVGABIOS) is ~32 KB. Loading it at 0xC0000–0xC7FFF and letting SeaBIOS run its init entry would give us INT 10h AX=4F00 returning success. About a day of work.</li>
+  <li><strong>A VBE-capable VGA device.</strong> The VGA BIOS calls back through I/O ports to set video modes and into MMIO to expose a linear framebuffer. We'd need a much richer VGA model than the current text-mode-only one in <code>machine/pc/vga.go</code>. Probably 1500+ lines.</li>
+  <li><strong>A graphical display backend.</strong> Currently <code>tinyemu-go</code> is a terminal emulator — it can render text-mode VGA to stderr as ANSI escapes, but has no pixel output. To <em>see</em> MenuetOS's GUI we'd need SDL or a browser canvas attached to the framebuffer. This is a different kind of project.</li>
+</ol>
+
+<h2>Why we stop here</h2>
+<p>The fundamental wall isn't a CPU bug or a missing instruction. It's that <code>tinyemu-go</code> is, by design, a text-mode emulator — built for headless server OSes (Alpine, embedded Linux) where the whole output is a UART or a virtio-console. MenuetOS, being a GUI OS, needs pixels we have nowhere to put.</p>
+
+<p>What the journey gave us:</p>
+<ul>
+  <li>A fully working SeaBIOS shim on cpu/x86_64.</li>
+  <li>FDC + DMA + CMOS hooks robust enough to boot a floppy.</li>
+  <li>13 new opcode encodings (the legacy batch — AAM/AAD/LES/LDS/...).</li>
+  <li>Correct push/pop widths across all stack ops.</li>
+  <li>Real-mode interrupt delivery, GDT-walk on segment loads, BAR relocation, PIT 0=65536.</li>
+  <li>A debug toolkit that catches "memory says X, I never wrote X" bugs in minutes, not days.</li>
+</ul>
+<p>All of which boot Alpine, MenuetOS-to-loader, and would boot any text-mode OS that respects the legacy ABI. That's the right place to draw the line for a text-mode emulator.</p>
+
+<div class="box box-key">
+<strong>The lesson</strong>
+You can faithfully emulate the legacy boot path without faithfully emulating every device class behind it. MenuetOS reaches the bottom of the legacy stack — INT 10h VBE — and finds it absent. The right response is not to bolt on a VGA BIOS; it's to recognise that the goal of "boot a GUI OS in a text emulator" was always going to hit a display-backend wall.
+</div>
+`,
+  exercises: [
+    "Write a test program that calls INT 10h AX=4F00 and checks the result. Confirm AX is unchanged in our emulator.",
+    "What other GUI-only OSes would hit the same wall? (Hint: any pre-UEFI hobby OS that does its own video mode setting.)",
+    "Sketch the design of a minimal SDL backend for tinyemu-go. What would the interface to VGA look like?"
+  ]
+},
+
+// ============================================================
+// PHASE 5 — The Devices Under SeaBIOS
+// ============================================================
+{
+  id: 17, phase: 5,
+  title: "virtio-blk Init and the Queue",
+  subtitle: "How SeaBIOS sets up a paravirtual disk",
+  content: `
+<h2>The virtio-blk init sequence</h2>
+<p>SeaBIOS finds our virtio-blk device on the PCI bus (vendor 0x1AF4, device 0x1001, subsystem ID 0x0002 = block). It then walks the legacy virtio init flow:</p>
+<ol>
+  <li>Reset the device: write 0 to the status register at port-offset 0x12.</li>
+  <li>Set ACKNOWLEDGE: status = 0x01.</li>
+  <li>Set DRIVER: status = 0x03.</li>
+  <li>Read host features from port-offset 0x00. We return 0 (no fancy features).</li>
+  <li>Write guest features to port-offset 0x04 (subset of host features the driver accepts).</li>
+  <li>Set FEATURES_OK: ... actually legacy skips this; goes straight to queue setup.</li>
+  <li>Select virtqueue 0 (port-offset 0x0E).</li>
+  <li>Read queue size (port-offset 0x0C). We return 256.</li>
+  <li>Allocate descriptor/avail/used ring memory in low RAM. Write the PFN (physical &gt;&gt; 12) to port-offset 0x08.</li>
+  <li>Read virtio-blk-specific config: capacity (8 bytes), size_max, seg_max, geometry, blk_size, ...</li>
+  <li>Set DRIVER_OK: status = 0x07.</li>
+</ol>
+
+<h2>The queue size trap</h2>
+<p>If our virtio device offers a queue size that's larger than SeaBIOS supports (MAX_QUEUE_NUM = 256), SeaBIOS prints "ERROR: queue size N &gt; 256" and gives up. We return exactly 256 from <code>pciQueueSize</code> in <code>virtio/pci.go</code> — and that's exactly the SeaBIOS limit, by coincidence.</p>
+
+<p>If our device offers <em>too few</em> entries (say, 16), SeaBIOS quietly uses that — but the kernel might not, because Linux's virtio-net needs num_free ≥ 2 + MAX_SKB_FRAGS = 19, and refuses to bring the device up with a smaller queue. 256 is the right number for both BIOS and kernel.</p>
+
+<h2>The disk read path</h2>
+<p>Once initialised, a single disk read is:</p>
+<ol>
+  <li>SeaBIOS builds a virtio request: a header struct (request type, sector LBA) followed by a data buffer (where the read goes) followed by a 1-byte status.</li>
+  <li>Three descriptors in the desc ring: one for each of those three regions. They're chained.</li>
+  <li>SeaBIOS writes the head descriptor's index to the avail ring.</li>
+  <li>Bumps the avail ring's idx counter.</li>
+  <li>Writes the queue notify port (port-offset 0x10) to kick the device.</li>
+</ol>
+<p>Our device's <code>queueNotify</code> handler walks the avail ring, processes the request (reads the LBA from the backing store, writes to the data buffer in guest memory), sets the status byte to VIRTIO_BLK_S_OK, writes the used ring entry, bumps the used idx, and optionally raises an interrupt.</p>
+
+<p>SeaBIOS polls the used ring (it doesn't wait for interrupts during boot — it uses a busy-loop with <code>usleep</code> to throttle). Once used.idx changes, it reads the request status from the status byte. Done.</p>
+
+<h2>Why the read silently failed at first</h2>
+<p>SeaBIOS reassigned our BAR from 0xC100 to 0xC000. Our I/O port handlers stayed at 0xC100. The init reads/writes saw 0xFFFF everywhere → "queue size 65535 > 256". The fix: <code>SetBARChangeHandler</code>. See Lesson 11.</p>
+
+<p>After fixing the BAR, init succeeded but the read still silently failed. SeaBIOS's <code>process_op_32</code> tested <code>op-&gt;drive_fl-&gt;type</code> and got 0 — not DTYPE_VIRTIO_BLK. The drive lookup returned NULL because in 32-bit mode DS had a stale base. The fix: GDT walk on protected-mode segment loads. See Lesson 6.</p>
+
+<div class="box box-key">
+<strong>Two layers of bug</strong>
+The BAR-relocation bug was visible from the BIOS log ("queue size 65535"). The GDT-cache bug was silent — SeaBIOS reported "Booting from Hard Disk..." and then "could not read the boot disk", with no I/O ever reaching the device. The DUMPCYCLE + watchpoint chain in DEBUG.md is what eventually exposed it.
+</div>
+`,
+  exercises: [
+    "What's a virtqueue \"descriptor chain\" and why does virtio use it instead of separate (header, data, status) ports?",
+    "Why does SeaBIOS poll instead of waiting for an interrupt during boot?",
+    "Read <code>queueNotify</code> in our virtio code. How does it know how many requests to process?"
+  ]
+},
+
+{
+  id: 18, phase: 5,
+  title: "INT 13h Through Three Layers",
+  subtitle: "The 16-to-32 transition for a disk read",
+  content: `
+<h2>The three layers</h2>
+<p>A virtio-blk disk read invoked via INT 13h passes through three SeaBIOS layers:</p>
+<ol>
+  <li><strong>The 16-bit interrupt-vector stub.</strong> IVT[0x13] points at SeaBIOS code in BIOS ROM. The stub pushes the BIOS function pointer and jumps to a common entry trampoline.</li>
+  <li><strong>The 16-bit common entry (<code>irqentry_arg_extrastack</code>).</strong> Switches stacks (because INT 13h has caller register-pressure constraints), saves the caller's registers into a bregs struct, calls the C handler in 16-bit mode.</li>
+  <li><strong>The C handler (<code>handle_13</code> in <code>disk.c</code>).</strong> Looks up the drive struct, builds a disk_op_s, calls <code>process_op</code>. For drives that need 32-bit mode (virtio-blk does), <code>process_op_both</code>'s default case calls <code>call32(process_op_32, ...)</code>, transitioning to 32-bit mode for the actual virtio request.</li>
+</ol>
+
+<h2>The call32 mechanism</h2>
+<p>SeaBIOS's <code>__call32</code> in <code>romlayout.S</code> does an in-line mode transition:</p>
+<pre>; entering: %eax = arg, %edx = function ptr
+mov  %ss, %0          ; save SS for later restore
+mov  %esp, %1         ; save ESP
+shl  $4, %0
+add  %0, %esp         ; flatten ESP for 32-bit
+shr  $4, %0
+mov  $(BIOS+1f), %edx
+jmp  transition32_nmi_off
+[in pm32]:
+1:  call *%3          ; call the 32-bit function
+    mov  $2f, %edx
+    jmp  transition16big
+[back in 16-bit]:
+2:  mov %0, %ds       ; restore segments
+    mov %0, %ss
+    mov %1, %esp</pre>
+
+<p>The key thing: after the jump to <code>transition32_nmi_off</code>, the CPU executes a few instructions that reload DS/SS/ES/etc. with flat 32-bit selectors from the 32-bit GDT. This is where our GDT-walk-on-MOV-to-Sreg comes in. If we skip the GDT walk, DS keeps its real-mode-cached base (0xda800 if we just switched to the zonelow stack), and the C function's first dereference of <code>op-&gt;drive_fl</code> lands 0xda800 bytes high.</p>
+
+<h2>How we identified the bug</h2>
+<p>Step 1: confirm where the failure point is. We captured a per-cycle RIP sample, found the INT 13h delivery cycle (with <code>TINYEMU_X64_INTR=1</code>: <code>cycle=20272304 vec=19 -&gt; 0xf000:0xe3fe</code>), then did a step trace from there.</p>
+
+<p>Step 2: notice that pm32 IS entered (3334 instructions in pm32 within the INT 13h window). So <code>call32</code> works. But no virtqueue notify happens. So we reach <code>process_op_32</code> but don't reach <code>virtio_blk_op</code>.</p>
+
+<p>Step 3: figure out where <code>process_op_32</code> branches away. The pm32 code starts at the call32 landing pad (in BIOS ROM), then calls <code>process_op_32</code> in the relocated init code. Disassemble there and look at the switch on <code>op-&gt;drive_fl-&gt;type</code>.</p>
+
+<p>Step 4: dump <code>[DS:EAX]</code> at the cycle where the switch executes. The dump shows <code>DS=0x10:0xda800</code> — DS selector 0x10 (the flat data segment, expected) but DS base 0xda800 (the stale zonelow base). That's wrong; flat should have base 0. The drive type read from this stale-base address is 0.</p>
+
+<p>That's the bug. The fix is one function (<code>loadProtSegment</code>) and one call from <code>opMOVtoSreg</code>.</p>
+
+<h2>How the boot looks after the fix</h2>
+<pre>SeaBIOS (version rel-1.17.0-...)
+...
+Booting from Hard Disk...
+Booting from 0000:7c00</pre>
+<p>The sector successfully reads to 0x7C00, and the boot sector starts executing.</p>
+
+<div class="box box-key">
+<strong>The methodology in 4 steps</strong>
+(1) Find the failure cycle. (2) Confirm the mode transition succeeded. (3) Identify the branch that goes wrong. (4) Dump the data that the branch reads. The diagnostic toolkit makes each step a 30-second operation; the bug surrendered in an afternoon.
+</div>
+`,
+  exercises: [
+    "Why does SeaBIOS run INT 13h on a different stack from the caller? What stack is it on?",
+    "Could the GDT-walk bug have been caught by Linux? Why didn't it surface there?",
+    "Read <code>loadProtSegment</code>. What happens if the GDT entry has a non-flat base (e.g. for a legacy 32-bit segmented OS)?"
+  ]
+},
+
+{
+  id: 19, phase: 5,
+  title: "Option ROMs and Why We Don't Need One",
+  subtitle: "The 0xC0000 scan region",
+  content: `
+<h2>The scan</h2>
+<p>After PCI init, SeaBIOS walks the address range 0xC0000–0xEFFFF looking for option ROMs:</p>
+<ol>
+  <li>At each 2 KB boundary, check the first two bytes. <code>55 AA</code> = option ROM present.</li>
+  <li>The third byte is the ROM size in 512-byte units.</li>
+  <li>If a valid ROM is found, set up the segment, call the ROM's init entry at offset 3.</li>
+  <li>The init code is expected to (a) install any IVT hooks it wants, (b) return.</li>
+</ol>
+<p>Common option ROM contents:</p>
+<ul>
+  <li>VGA BIOS (vgabios.bin): hooks INT 10h.</li>
+  <li>Network boot ROMs (iPXE, gPXE): hook INT 19h to redirect boot to TFTP.</li>
+  <li>Disk-controller ROMs: pre-init or expose extended INT 13h.</li>
+</ul>
+
+<h2>What we ship</h2>
+<p>Nothing. The 0xC0000–0xEFFFF region in our emulator is plain RAM with no preloaded ROMs. SeaBIOS scans it, finds nothing, and continues without any extensions.</p>
+
+<p>That's why:</p>
+<ul>
+  <li>INT 10h returns SeaBIOS's stub responses — basic teletype works, VBE doesn't.</li>
+  <li>There's no network-boot option in SeaBIOS's boot menu.</li>
+  <li>The IDE handler exists but offers only the basic functions SeaBIOS built in.</li>
+</ul>
+
+<h2>How to add a VGA BIOS</h2>
+<p>If we wanted MenuetOS to get past the VBE check, the sequence would be:</p>
+<ol>
+  <li>Acquire vgabios.bin (the SeaBIOS-side VGA BIOS, ~32 KB).</li>
+  <li>At boot, copy it into RAM at 0xC0000. SeaBIOS scans, finds the signature, calls its init.</li>
+  <li>The VGA BIOS init expects a VGA device on a known set of I/O ports + a linear framebuffer. We'd need to model both.</li>
+  <li>VBE mode-set calls (INT 10h AX=4F02) ask for a specific mode. The VGA BIOS programs the device's mode registers. The framebuffer becomes available at a known MMIO base.</li>
+  <li>Render the framebuffer somewhere a human can see it.</li>
+</ol>
+<p>Step 4 is what makes this expensive: it's a substantial new device with state machines for CRTC programming, attribute controller, sequencer, plus VBE mode tables. Step 5 is what makes it impossible <em>in a terminal emulator</em>.</p>
+
+<div class="box box-key">
+<strong>The scan region is just RAM with bytes</strong>
+The whole option-ROM mechanism is "BIOS scans a region for magic bytes". You can do anything you want with it as long as the bytes follow the format. That's how iPXE replaces INT 19h — its init code writes a new vector into IVT[0x19].
+</div>
+`,
+  exercises: [
+    "What's the maximum total option-ROM size that fits in the scan region?",
+    "If you wrote a tiny option ROM that printed \"hello\" via INT 10h teletype, what would it look like? (Three lines of asm.)",
+    "Read SeaBIOS's option-ROM scan code (<code>src/optionroms.c</code>). What does it do if the size byte is 0?"
+  ]
+},
+
+{
+  id: 20, phase: 5,
+  title: "The Boot Log, Read End-to-End",
+  subtitle: "Every line of a clean SeaBIOS boot",
+  content: `
+<h2>The annotated log</h2>
+<p>What you see with <code>TINYEMU_BIOS_DEBUG=stderr</code> on a successful run:</p>
+
+<pre>SeaBIOS (version rel-1.17.0-...)</pre>
+<p>SeaBIOS's banner. Confirms the binary is the prebuilt QEMU one.</p>
+
+<pre>No Xen hypervisor found.</pre>
+<p>SeaBIOS probes for Xen via a CPUID leaf. Not relevant for us.</p>
+
+<pre>RamSize: 0x002c0000 [cmos]</pre>
+<p>Total RAM, derived from our CMOS bytes 0x17/0x18 (extended above 1 MiB) plus 640 KiB conventional. <code>[cmos]</code> indicates the source. With <code>-m 128</code> we get 0x2C0000 (= 2.75 MiB, because SeaBIOS reports a conservative low number while still using the larger e820 entries we populate).</p>
+
+<pre>Relocating init from 0x000d6360 to 0x0026c080 (size 81632)</pre>
+<p>SeaBIOS copies its initialisation code from the low ROM shadow into high RAM so the F-segment can be claimed for runtime data. Standard.</p>
+
+<pre>=== PCI bus &amp; bridge init ===
+PCI: pci_bios_init_bus_rec bus = 0x0
+=== PCI device probing ===
+Found 2 PCI devices (max PCI bus is 00)</pre>
+<p>PCI enumeration starts. Found 2 = host bridge + ISA bridge. With <code>-drive</code>, 3 = host + ISA + virtio-blk.</p>
+
+<pre>=== PCI new allocation pass #1 ===
+=== PCI new allocation pass #2 ===
+PCI: IO: c000 - bfff
+PCI: 32: 0000000080000000 - 00000000fec00000</pre>
+<p>Two-pass BAR assignment. The first I/O address allocated is 0xC000 (above the PIIX3's hardcoded BMDMA at 0xC000 — wait, there's no conflict on x86_64 because we skip the PIIX3 IDE on x86_64). I/O space allocator is empty (c000 &gt; bfff). MMIO ranges programmed for the host bridge.</p>
+
+<pre>PCI: map device bdf=00:03.0  bar 0, addr 0000c000, size 00000040 [io]</pre>
+<p>SeaBIOS assigned BAR 0 of our virtio-blk device to I/O 0xC000, size 64 bytes. This triggered <code>SetBARChangeHandler</code> in our PCI device, which re-registered the virtio I/O handlers at 0xC000.</p>
+
+<pre>PCI: init bdf=00:00.0 id=8086:1237
+PCI: init bdf=00:01.0 id=8086:7000
+PIIX3/PIIX4 init: elcr=00 0c
+PCI: init bdf=00:03.0 id=1af4:1001</pre>
+<p>Per-device init. The PIIX3 init prints its ELCR (Edge/Level Control Register) state.</p>
+
+<pre>No apic - only the main cpu is present.
+Copying PIR from 0x0027fd40 to 0x000f55a0
+Copying MPTABLE from 0x00006de4/263ed0 to 0x000f54c0
+Copying SMBIOS from 0x00006de4 to 0x000f5390
+ACPI tables for qemu 1.6 and older are not supported any more.
+CPU Mhz=0</pre>
+<p>SeaBIOS copies the PIR (PCI IRQ routing), MPTABLE (Intel MultiProcessor spec), SMBIOS (system management BIOS) tables into the F-segment so the OS can find them at fixed locations. ACPI is skipped because our fw_cfg doesn't speak the format SeaBIOS expects from QEMU. CPU MHz=0 because our PIT calibration produces 0 (the toggles aren't paced).</p>
+
+<pre>Scan for VGA option rom
+No VGA found, scan for other display
+Turning on vga text mode console</pre>
+<p>Scans 0xC0000–0xEFFFF for option ROMs with 55 AA signatures. Finds none. Falls back to the text-mode VGA console.</p>
+
+<pre>Space available for UMB: c0000-e9800, f4e20-f5390
+Returned 249856 bytes of ZoneHigh
+e820 map has 6 items:
+  0: 0000000000000000 - 000000000009fc00 = 1 RAM
+  ...</pre>
+<p>Finalising the memory map. UMB (upper memory blocks) are claimed; ZoneHigh (SeaBIOS's high allocator) gives some back. The e820 map is the OS-facing memory map.</p>
+
+<pre>found virtio-blk at 00:03.0
+pci dev 00:03.0 using legacy (0.9.5) virtio mode
+Searching bootorder for: /pci@i0cf8/*@3
+Searching bios-geometry for: /pci@i0cf8/*@3
+drive 0x000e9910: PCHS=65535/255/255 translation=lba LCHS=2/16/63 s=2880</pre>
+<p>virtio-blk init succeeds. SeaBIOS picks legacy mode (we don't advertise modern virtio). Finds the drive in the boot order. Computes geometry: 2880 sectors = 1.44 MiB.</p>
+
+<pre>Press ESC for boot menu.
+
+Searching bootorder for: HALT
+Booting from Hard Disk...
+Booting from 0000:7c00</pre>
+<p>2.5-second boot-menu timeout. Then INT 13h reads sector 0, validates the boot signature, jumps to 0x7C00. The bootloader has the CPU now.</p>
+
+<h2>Diagnostic patterns</h2>
+<p>Reading this log over and over reveals patterns. "Found N PCI devices" gives you a quick sanity check that all your -drive and -net flags wired through. "queue size N &gt; 256" jumps out from across the screen. "could not read the boot disk" tells you the bug is in your INT 13h path. Once you've debugged five SeaBIOS hangs, you can guess the bug from a 5-line excerpt.</p>
+
+<div class="box box-key">
+<strong>The cheap diagnostic</strong>
+<code>TINYEMU_BIOS_DEBUG=stderr</code> costs nothing and is the first thing you should run when a boot misbehaves. Treat the BIOS log as your test oracle.
+</div>
+`,
+  exercises: [
+    "Compare the log with and without <code>-drive</code>. What's different?",
+    "What does the e820 map look like with <code>-m 256</code>? Predict, then check.",
+    "Read SeaBIOS's <code>handle_post</code> in <code>post.c</code>. Match each \"=== ===\" log line to its source."
+  ]
+},
+
+// ============================================================
+// PHASE 6 — Building the BIOS Shim
+// ============================================================
+{
+  id: 21, phase: 6,
+  title: "The Shim's Inventory",
+  subtitle: "Everything we added to host SeaBIOS",
+  content: `
+<h2>The list</h2>
+<p>The chassis around SeaBIOS — what cpu/x86_64 + machine/pc had to grow to host it.</p>
+
+<h3>CPU work (cpu/x86_64)</h3>
+<ul>
+  <li><strong>Operand-size correctness</strong> across CALL/RET/RETF/IRET/PUSH/POP/PUSHA/POPA/PUSHF/POPF/LEAVE/0x8F/CALL FAR/Group 5 /2,/3,/4,/5,/6. The <code>pushPopOperandSize</code> helper.</li>
+  <li><strong>Real-mode + pm32 interrupt delivery</strong> (the 4-byte vs 8-byte gate format).</li>
+  <li><strong>Real-mode IP wrap on CS.D=0</strong> with big-real-mode preservation when CS.D=1.</li>
+  <li><strong>GDT walk on protected-mode segment loads</strong> in opMOVtoSreg.</li>
+  <li><strong>Big-real-mode preservation</strong> of CS.limit/access on real-mode segment loads.</li>
+  <li><strong>0xEA gate on CS.L, not LMA</strong> — the one-line fix that re-enabled Linux long-mode boot.</li>
+  <li><strong>12 new legacy opcodes</strong>: AAM/AAD/SALC/XLAT/INTO/INT1/CMC + LES/LDS/LSS + ENTER + Group 5 /3,/5.</li>
+  <li><strong>String ops</strong>: CMPSB/CMPSW (used by MenuetOS's FAT-name match).</li>
+  <li><strong>Diagnostic helpers</strong>: TINYEMU_X64_RIPSAMPLE, TRACE_CYCLES, DUMPCYCLE, PHYSWATCH, INTR.</li>
+</ul>
+
+<h3>Chassis work (machine/pc)</h3>
+<ul>
+  <li><strong>BIOS region as 256 KB RAM</strong> with high alias at 0xFFFC0000.</li>
+  <li><strong>Port 0x402 returns 0xE9</strong> on read so SeaBIOS's debug port probe sticks.</li>
+  <li><strong>Port 0x61 toggles bits 4 and 5</strong> for PIT calibration loops.</li>
+  <li><strong>LAPIC/IOAPIC MMIO stubs</strong> at 0xFEE00000/0xFEC00000 (read-as-zero, write-ignored).</li>
+  <li><strong>VGA aperture</strong> at 0xA0000-0xBFFFF.</li>
+  <li><strong>PCI BAR relocation callback</strong> so devices follow firmware-assigned bases.</li>
+  <li><strong>PIT reload-0 = 65536</strong> with per-channel <code>active</code> flag.</li>
+  <li><strong>FDC + slave 8237 DMA channel 2</strong> + <code>-fda</code> flag + CMOS floppy-type byte.</li>
+</ul>
+
+<h3>SeaBIOS interfacing</h3>
+<ul>
+  <li>SeaBIOS's <code>bios.bin</code> staged in <code>bin/seabios/</code>.</li>
+  <li><code>scripts/extract_seabios.sh</code> copies it from local QEMU or fetches from upstream.</li>
+  <li><code>TINYEMU_BIOS_DEBUG=path/stderr</code> routes the 0x402 stream.</li>
+</ul>
+
+<h2>The shape of the work</h2>
+<p>Most of these are 5–30 lines of code each. The interpretive work — "why does SeaBIOS expect this; what does it cost to provide it" — was the expensive part. A vanilla SeaBIOS-on-tinyemu-go implementation took maybe two weeks of focused debugging. With the techniques in <code>DEBUG.md</code> on hand, similar effort would now find similar bugs in a day.</p>
+
+<div class="box box-key">
+<strong>Inventory growth</strong>
+A BIOS shim is dozens of small, individually-easy fixes. Each one is exposed by a specific guest interaction. The bugs are not in obvious code — they're in subtle interactions like "what's CS.D after a 32-bit pm32 call32 back to 16-bit on the zonelow stack". The toolkit is what makes finding them tractable.
+</div>
+`,
+  exercises: [
+    "Order the fixes by how long the bug existed before being caught. Which dormant bug took the longest?",
+    "Which fix was the highest-leverage (unblocked the most other things)? Which was the lowest?",
+    "If you had to add one more SeaBIOS-required feature to <code>tinyemu-go</code>, what would you pick? Why?"
+  ]
+},
+
+{
+  id: 22, phase: 6,
+  title: "The Debug Toolkit",
+  subtitle: "What the env vars give you",
+  content: `
+<h2>The instruments</h2>
+<p>Every tool is gated on an env var and writes structured lines to stderr. The pattern is "instrument once, use forever."</p>
+
+<table class="corr-table">
+  <tr><th>Variable</th><th>Use it when</th></tr>
+  <tr><td><code>TINYEMU_X64_RIPSAMPLE=N</code></td><td>Hung; need to know where RIP is spinning.</td></tr>
+  <tr><td><code>TINYEMU_X64_TRACE_CYCLES=lo-hi</code></td><td>Have a cycle window of interest, want the instruction stream.</td></tr>
+  <tr><td><code>TINYEMU_X64_RIPTRACE=lo-hi</code></td><td>Want full trace whenever RIP enters a function range.</td></tr>
+  <tr><td><code>TINYEMU_X64_PHYSWATCH=lo-hi</code></td><td>A value at memory is wrong; want every write to it.</td></tr>
+  <tr><td><code>TINYEMU_X64_DUMPCYCLE=N</code></td><td>Want a one-shot register + memory snapshot at cycle N.</td></tr>
+  <tr><td><code>TINYEMU_X64_INTR=1</code></td><td>Suspect an interrupt path is wrong.</td></tr>
+  <tr><td><code>TINYEMU_X86_IO_DEBUG=1</code></td><td>Device isn't responding; want every I/O port access.</td></tr>
+  <tr><td><code>TINYEMU_VIRTIO_PCI_DEBUG=1</code></td><td>Virtio device misbehaving; want register-level access trace.</td></tr>
+  <tr><td><code>TINYEMU_BIOS_DEBUG=path/stderr</code></td><td>Always.</td></tr>
+  <tr><td><code>TINYEMU_FDC_DEBUG=1</code></td><td>Floppy reads aren't reaching the device.</td></tr>
+  <tr><td><code>TINYEMU_X86_PERF=1</code></td><td>Cycle count is suspicious (HLT loop spin, etc.).</td></tr>
+</table>
+
+<h2>How they compose</h2>
+<p>A typical session uses 2–3 at once. The MenuetOS disk-read diagnosis used:</p>
+<ul>
+  <li><code>BIOS_DEBUG</code> to confirm SeaBIOS reported "could not read the boot disk".</li>
+  <li><code>X64_INTR</code> to find the cycle of the INT 13h delivery.</li>
+  <li><code>X64_TRACE_CYCLES</code> over the INT 13h window to see the instruction stream.</li>
+  <li><code>X64_DUMPCYCLE</code> at one specific instruction to see the EAX value and what [DS:EAX] contained.</li>
+</ul>
+<p>The DUMPCYCLE output gave us the answer: <code>DS=0x10:0xda800</code> when it should be <code>DS=0x10:0x0</code>.</p>
+
+<h2>Adding a new instrument</h2>
+<p>The pattern in our codebase:</p>
+<pre>// cpu/x86_64/exec.go
+var traceCycleLo, traceCycleHi uint64 = func() (uint64, uint64) {
+    s := os.Getenv("TINYEMU_X64_TRACE_CYCLES")
+    if s == "" { return 0, 0 }
+    ... parse "lo-hi" ...
+}()
+
+// inside Step():
+if traceCycleLo < traceCycleHi && c.cycles >= traceCycleLo && c.cycles < traceCycleHi {
+    ... print step ...
+}</pre>
+<p>Three properties:</p>
+<ol>
+  <li>Gate on a global, lazily-initialized from env. Zero cost when off.</li>
+  <li>Print structured lines starting with a tag (<code>[step]</code>, <code>[intr]</code>, <code>[fdc]</code>) so grep works.</li>
+  <li>Include the cycle counter in every line so you can correlate across instruments.</li>
+</ol>
+
+<h2>The "cycle" anchor</h2>
+<p>Every line from every instrument includes the cycle count. That's the universal join key. When you have INTR output and STEP output and a PHYSWATCH output, you can sort all three by cycle and read the unified narrative. The bug surrenders.</p>
+
+<div class="box box-key">
+<strong>Build instruments before you need them</strong>
+The day you debug a hard bug, you'd rather have the right tool than spend two hours building one. Add a new env-var-gated trace whenever you find yourself doing the same grep/awk three times.
+</div>
+`,
+  exercises: [
+    "Add a trace that prints every time the CPU's c.mode changes. What env-var name do you use?",
+    "Write a tiny shell pipeline that joins INTR trace + STEP trace by cycle.",
+    "Which instrument would you add next? What gap does it fill?"
+  ]
+},
+
+{
+  id: 23, phase: 6,
+  title: "How to Audit a New Guest",
+  subtitle: "The first hour of bringing up an OS in tinyemu-go",
+  content: `
+<h2>Phase 1: minimum viable boot</h2>
+<p>You have a new guest image. What you do in the first 30 minutes:</p>
+
+<ol>
+  <li><strong>Decide the target.</strong> What do you want the guest to do? "Print to UART", "show login prompt", "run /init"?</li>
+  <li><strong>Run it.</strong> Pick the right machine type, the right device. <code>-drive</code> for HDD-bootable, <code>-fda</code> for floppy, <code>-cdrom</code> for ISO, <code>-kernel</code> for direct bzImage load.</li>
+  <li><strong>Enable BIOS debug.</strong> <code>TINYEMU_BIOS_DEBUG=stderr</code>. Read what SeaBIOS thinks is happening.</li>
+  <li><strong>Look at the first failure.</strong> Is it an <code>ErrNotImplemented</code> opcode? A device timeout? A hang?</li>
+</ol>
+
+<h2>Phase 2: classify the failure</h2>
+<table class="corr-table">
+  <tr><th>What you see</th><th>What it usually is</th></tr>
+  <tr><td>"Boot failed: could not read the boot disk"</td><td>SeaBIOS's INT 13h path failed — drive lookup, geometry, or transition.</td></tr>
+  <tr><td>"queue size N &gt; 256"</td><td>BAR relocation; the virtio device isn't being reached.</td></tr>
+  <tr><td>Boot menu wait never times out</td><td>Timer ticks not firing (PIT bug).</td></tr>
+  <tr><td>"ERROR in Run: decoder feature not implemented yet: opcode 0xNN"</td><td>Missing opcode; either implement it or check why this code path is reached.</td></tr>
+  <tr><td>Boot succeeds, then halt at <code>eb fe</code></td><td>Guest detected a missing feature (VBE, A20, ACPI table) and deliberately halted.</td></tr>
+  <tr><td>"Linux version" prints but no shell</td><td>Root filesystem issue, not the emulator. Check kernel cmdline and initrd.</td></tr>
+</table>
+
+<h2>Phase 3: diagnose</h2>
+<p>Pick the right tool for what you saw:</p>
+<ul>
+  <li>Missing opcode? Implement it directly, or batch (Lesson 14 of DEBUG.md — opcode-frequency audit).</li>
+  <li>Device not reached? <code>TINYEMU_X86_IO_DEBUG=1</code>, see if the I/O writes are landing on a registered port. Check BARs.</li>
+  <li>Wrong control flow? RIPSAMPLE coarse → fine → cycle-window trace. Disassemble the divergence point.</li>
+  <li>Memory corruption? PHYSWATCH on the bytes that look wrong.</li>
+  <li>Mode wrong? DUMPCYCLE at the suspect instruction. Check CS.access bits in the dump.</li>
+</ul>
+
+<h2>Phase 4: pin it</h2>
+<p>Every non-trivial fix gets a unit test that:</p>
+<ol>
+  <li>Sets up the exact CPU/device state the bug needs.</li>
+  <li>Lays down the failing bytes.</li>
+  <li>Runs <code>Step()</code>.</li>
+  <li>Asserts the corrected behavior.</li>
+  <li>Verified to fail against the pre-fix code.</li>
+</ol>
+<p>See <code>cpu/x86_64/jmpfar_test.go</code> for the canonical example. The test has comments explaining what's being guarded and why.</p>
+
+<h2>The 80/20</h2>
+<p>For most new guests:</p>
+<ul>
+  <li>~10 minutes: get it to start.</li>
+  <li>~30 minutes: find the first hang or crash.</li>
+  <li>~2-4 hours: diagnose and fix.</li>
+  <li>~30 minutes: write the regression test.</li>
+</ul>
+<p>For pathological guests (graphical, novel chipset, unsupported architecture), the diagnose step can be days. The toolkit shortens this; it doesn't eliminate it.</p>
+
+<div class="box box-key">
+<strong>The audit checklist</strong>
+(1) Does it reach a recognizable BIOS log line? (2) Does it hit an opcode gap? (3) Does it complete device init? (4) Does it issue I/O? (5) Does it find a boot device? Anything beyond (5) is "the guest is running"; bugs there are usually the guest's, not ours.
+</div>
+`,
+  exercises: [
+    "Pick a hobby OS image (anything pre-built) and run through Phase 1 + Phase 2. Write up what you saw.",
+    "Of the failure-class table above, which would you fix first if you had to pick one? Why?",
+    "What's a test setup you'd add to the toolkit to catch a new class of bug?"
+  ]
+},
+
+{
+  id: 24, phase: 6,
+  title: "Where to Read Next",
+  subtitle: "What's beyond this tutorial",
+  content: `
+<h2>In this repo</h2>
+<ul>
+  <li><code>docs/x86_tutorial.html</code> — what the CPU itself does. Instructions, registers, paging, GDT/IDT, syscalls.</li>
+  <li><code>docs/x64_tutorial.html</code> — the long-mode extensions: 64-bit registers, 4-level paging, the new GP exception classes.</li>
+  <li><code>docs/osdev_tutorial.html</code> — what a kernel does with all that. Drivers, scheduling, filesystems.</li>
+  <li><code>docs/DEBUG.md</code> — the diagnostic techniques used to find every BIOS bug above.</li>
+  <li><code>docs/USAGE.md</code> — running the emulator: command-line flags, env vars, machine types.</li>
+  <li><code>docs/Optimization.md</code> — how we made the emulator fast enough to boot a real kernel in reasonable wall time.</li>
+</ul>
+
+<h2>The source we audited</h2>
+<ul>
+  <li><code>bin/seabios.git/src/</code> — the SeaBIOS source. <code>romlayout.S</code> for mode transitions; <code>disk.c</code> for INT 13h; <code>floppy.c</code>, <code>virtio-blk.c</code> for the drivers; <code>post.c</code> for the main init flow.</li>
+  <li><code>bin/seabios/bios.bin</code> — the binary we boot.</li>
+</ul>
+
+<h2>Spec references</h2>
+<ul>
+  <li><strong>Intel SDM Vol 2</strong>: instruction reference. The spec for what each opcode does. We've cited it ~50 times.</li>
+  <li><strong>Intel SDM Vol 3 §3</strong>: segmentation, GDT/LDT descriptor format. The spec for Lessons 6 and 7.</li>
+  <li><strong>Intel SDM Vol 3 §6</strong>: interrupts and exceptions. The spec for Lesson 9.</li>
+  <li><strong>SeaBIOS Wiki</strong>: <a href="https://www.seabios.org/SeaBIOS">seabios.org</a>. Architecture, build system, debug port details.</li>
+  <li><strong>OSDev Wiki</strong>: <a href="https://wiki.osdev.org/">wiki.osdev.org</a>. The de facto reference for everything from PIC to FDC to virtio.</li>
+</ul>
+
+<h2>Things we deliberately didn't model</h2>
+<p>Useful to know what's <em>not</em> in scope when reading our code:</p>
+<ul>
+  <li>SMP — we're single-CPU.</li>
+  <li>SMM (System Management Mode) — never entered.</li>
+  <li>x87 floating point arithmetic to bit-exact precision — basics are there, edge cases aren't.</li>
+  <li>Cache coherency / fence semantics — single-threaded.</li>
+  <li>Performance counters / PMCs — RDMSR returns 0 for performance-counter MSRs.</li>
+  <li>Vector instructions beyond SSE2 — no AVX, no AVX-512.</li>
+  <li>UEFI firmware — legacy BIOS only.</li>
+</ul>
+<p>A modern OS might assume some of these exist. When it does, we usually surface as <code>ErrNotImplemented</code>; sometimes as a wrong value that confuses the guest in obscure ways. The toolkit catches the latter cases.</p>
+
+<h2>The closing thought</h2>
+<p>The BIOS is the most "lower" piece of software running on a PC. Everything else — kernel, drivers, applications — sits on top of an ABI it published. Understanding the BIOS makes you fluent in the assumptions the entire stack inherits. Now that you've read this far you've seen them all: the IVT, the e820 map, INT 13h's DL convention, the 0x55AA boot signature, the 64-bit transition through a 32-bit ljmp. They're not arbitrary — they're forty years of accumulated compatibility constraints, frozen into the smallest layer that has to know about every disk, every interrupt, and every device class an OS expects to find.</p>
+
+<p>Anywhere you see those assumptions in a kernel, you can now point at the BIOS line responsible.</p>
+
+<div class="box box-key">
+<strong>You now understand</strong>
+What the BIOS does. Why each piece exists. How to debug it. How to write the chassis that hosts it. What its successors (UEFI) replaced. Everything that hangs off these primitives — bootloaders, hypervisors, embedded firmware — is a variant of the same machine.
+</div>
+`,
+  exercises: [
+    "Read SeaBIOS's main entry (<code>handle_post</code>). Match each phase to one of the lessons in this tutorial.",
+    "Write a one-page summary of what we changed in <code>tinyemu-go</code> to host SeaBIOS, ordered by which fix unblocked the next.",
+    "Pick any one BIOS function we didn't implement in detail (INT 15h AX=87h block move, INT 1Ah RTC time) and write a one-page tutorial entry on it."
+  ]
+}
+
+];
+
+
+// ============================================================
+// APP STATE
+// ============================================================
+let currentLesson = null;
+let completed = JSON.parse(localStorage.getItem('bios_done') || '[]');
+
+function isComplete(id) { return completed.includes(id); }
+function markComplete(id) {
+  if (!completed.includes(id)) completed.push(id);
+  localStorage.setItem('bios_done', JSON.stringify(completed));
+  updateProgress(); renderNav();
+}
+function unmarkComplete(id) {
+  completed = completed.filter(x => x !== id);
+  localStorage.setItem('bios_done', JSON.stringify(completed));
+  updateProgress(); renderNav();
+}
+function updateProgress() {
+  const pct = LESSONS.length ? Math.round(completed.length / LESSONS.length * 100) : 0;
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('progress-text').textContent = `${completed.length} / ${LESSONS.length}`;
+}
+
+let collapsedPhases = new Set(JSON.parse(localStorage.getItem('bios_collapsed') || '[]'));
+
+function renderNav(filter = '') {
+  const nav = document.getElementById('lesson-nav');
+  nav.innerHTML = '';
+  const f = filter.toLowerCase();
+  for (let ph = 1; ph <= 6; ph++) {
+    const meta = PHASE_META[ph];
+    const lessons = LESSONS.filter(l => l.phase === ph && (
+      !f || l.title.toLowerCase().includes(f) || l.subtitle.toLowerCase().includes(f)
+    ));
+    if (lessons.length === 0) continue;
+    const collapsed = collapsedPhases.has(ph);
+    const group = document.createElement('div');
+    group.className = 'phase-group';
+    group.innerHTML = `
+      <div class="phase-header ${collapsed ? 'collapsed' : ''}" data-phase="${ph}"
+           style="color:${meta.color}">
+        <span class="phase-dot" style="background:${meta.color}"></span>
+        ${meta.short}: ${meta.name}
+        <span class="phase-toggle">▾</span>
+      </div>
+      <div class="phase-lessons" ${collapsed ? 'style="display:none"' : ''}>
+        ${lessons.map(l => `
+          <div class="nav-item ${currentLesson === l.id ? 'active' : ''} ${isComplete(l.id) ? 'done' : ''}"
+               data-id="${l.id}"
+               style="${currentLesson === l.id ? `border-left-color:${meta.color}` : ''}">
+            <span class="nav-check">${isComplete(l.id) ? '✓' : ''}</span>
+            <span class="nav-num">${l.id}</span>
+            <span class="${l.stub ? 'nav-stub' : ''}">${l.title}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+    nav.appendChild(group);
+  }
+  nav.querySelectorAll('.phase-header').forEach(h => {
+    h.addEventListener('click', () => {
+      const ph = parseInt(h.dataset.phase);
+      const lessons = h.nextElementSibling;
+      if (collapsedPhases.has(ph)) {
+        collapsedPhases.delete(ph);
+        h.classList.remove('collapsed');
+        lessons.style.display = '';
+      } else {
+        collapsedPhases.add(ph);
+        h.classList.add('collapsed');
+        lessons.style.display = 'none';
+      }
+      localStorage.setItem('bios_collapsed', JSON.stringify([...collapsedPhases]));
+    });
+  });
+  nav.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', () => showLesson(parseInt(item.dataset.id)));
+  });
+}
+
+function showLesson(id) {
+  const lesson = LESSONS.find(l => l.id === id);
+  if (!lesson) return;
+  currentLesson = id;
+  const phase = PHASE_META[lesson.phase];
+  const prev = LESSONS.find(l => l.id === id - 1);
+  const next = LESSONS.find(l => l.id === id + 1);
+
+  document.getElementById('topbar-phase').textContent = `${phase.short} — ${phase.name}`;
+  const prevBtn = document.getElementById('btn-prev');
+  const nextBtn = document.getElementById('btn-next-top');
+  prevBtn.disabled = !prev;
+  nextBtn.disabled = !next;
+  prevBtn.onclick = () => prev && showLesson(prev.id);
+  nextBtn.onclick = () => next && showLesson(next.id);
+
+  const done = isComplete(id);
+  const stubBadge = lesson.stub ? `<span class="stub-badge">STUB</span>` : '';
+  document.getElementById('content-area').innerHTML = `
+    <div id="lesson-content">
+      <div class="lesson-eyebrow">
+        <span class="phase-badge" style="background:${phase.color}22;color:${phase.color}">${phase.short}</span>
+        <span class="lesson-number">Lesson ${lesson.id} of ${LESSONS.length}</span>
+        ${stubBadge}
+      </div>
+      <h1 class="lesson-title">${lesson.title}</h1>
+      <p class="lesson-subtitle">${lesson.subtitle}</p>
+      <div class="lesson-divider"></div>
+      <div class="lesson-body">${lesson.content}</div>
+      <div class="exercises">
+        <h2>Exercises</h2>
+        ${lesson.exercises.map((ex, i) => `
+          <div class="exercise">
+            <div class="exercise-num">Exercise ${i + 1}</div>
+            <p>${ex}</p>
+          </div>
+        `).join('')}
+      </div>
+      <div class="complete-wrap">
+        <button class="btn-complete ${done ? 'done' : ''}" id="btn-done">
+          ${done ? '✓ Completed' : 'Mark Complete'}
+        </button>
+        ${next ? `<button class="btn-next" id="btn-next-lesson">Next: ${next.title} →</button>` : ''}
+      </div>
+    </div>
+  `;
+  document.getElementById('btn-done').onclick = () => {
+    if (isComplete(id)) unmarkComplete(id); else markComplete(id);
+    renderNav();
+    document.getElementById('btn-done').className = `btn-complete ${isComplete(id) ? 'done' : ''}`;
+    document.getElementById('btn-done').textContent = isComplete(id) ? '✓ Completed' : 'Mark Complete';
+  };
+  const nl = document.getElementById('btn-next-lesson');
+  if (nl) nl.onclick = () => showLesson(next.id);
+  renderNav();
+  document.getElementById('main').scrollTo(0, 0);
+  if (window.innerWidth < 900) document.getElementById('sidebar').classList.remove('open');
+}
+
+function showWelcome() {
+  currentLesson = null;
+  document.getElementById('topbar-phase').textContent = 'Overview';
+  document.getElementById('btn-prev').disabled = true;
+  document.getElementById('btn-next-top').disabled = false;
+  document.getElementById('btn-next-top').onclick = () => showLesson(1);
+  const stubsCount = LESSONS.filter(l => l.stub).length;
+  const filledCount = LESSONS.length - stubsCount;
+  document.getElementById('content-area').innerHTML = `
+    <div id="welcome">
+      <h1>BIOS <em>Internals</em></h1>
+      <p class="tagline">From reset vector to boot sector — what the firmware does, how SeaBIOS implements it, and how we built the chassis to host it.</p>
+      <div class="welcome-body">
+        <p>This course covers the smallest layer of software that runs on a PC: the legacy BIOS. It uses <strong>SeaBIOS</strong> (the open-source BIOS QEMU ships) as the concrete implementation, and <code>tinyemu-go</code> as the emulator hosting it. Every lesson cites both — a real bug in real code, with a real fix.</p>
+        <p>Read this alongside <code>x86_tutorial.html</code> (what the CPU does) and <code>osdev_tutorial.html</code> (what the kernel does on top). The BIOS sits between them: it brings the CPU from reset to a state where the kernel can take over.</p>
+        <p>${LESSONS.length} lessons across six phases. Progress is saved in your browser.</p>
+        <div class="phase-overview">
+          ${[1,2,3,4,5,6].map(ph => {
+            const m = PHASE_META[ph];
+            const done = LESSONS.filter(l => l.phase === ph && isComplete(l.id)).length;
+            const total = LESSONS.filter(l => l.phase === ph).length;
+            return `
+              <div class="phase-card" onclick="showLesson(${(LESSONS.find(l=>l.phase===ph)||{id:1}).id})">
+                <div class="phase-card-num" style="color:${m.color}">${m.short} — Lessons ${m.lessons}</div>
+                <h3>${m.name}</h3>
+                <p>${done}/${total} complete</p>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <button class="btn-start" onclick="showLesson(${completed.length > 0 ? Math.max(...completed) + 1 : 1})">
+          ${completed.length > 0 ? 'Continue →' : 'Start from Lesson 1 →'}
+        </button>
+      </div>
+    </div>
+  `;
+  renderNav();
+}
+
+document.getElementById('search').addEventListener('input', e => renderNav(e.target.value));
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowRight' || e.key === 'j') {
+    const next = currentLesson && LESSONS.find(l => l.id === currentLesson + 1);
+    if (next) showLesson(next.id);
+  }
+  if (e.key === 'ArrowLeft' || e.key === 'k') {
+    const prev = currentLesson && LESSONS.find(l => l.id === currentLesson - 1);
+    if (prev) showLesson(prev.id);
+  }
+  if (e.key === 'h') showWelcome();
+});
+
+function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
+document.getElementById('sidebar-header').style.cursor = 'pointer';
+document.getElementById('sidebar-header').onclick = showWelcome;
+
+updateProgress();
+showWelcome();
+</script>
+</body>
+</html>
