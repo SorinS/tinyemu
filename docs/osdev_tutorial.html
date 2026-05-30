@@ -414,7 +414,7 @@ const LESSONS = [
 <p>The "OS development" half of this tutorial is mostly about how each row's right column is built.</p>
 
 <h2>This course's two halves</h2>
-<p>The companion course (<code>x86_tutorial.html</code>) focuses on what the CPU itself does — instructions, registers, paging, interrupts. This one picks up where that one leaves off: <em>what does the kernel do with those capabilities?</em> The two are designed to be read in parallel.</p>
+<p>Three companion courses cover the layers below this one. <code>x86_tutorial.html</code> and <code>x64_tutorial.html</code> cover what the CPU itself does — instructions, registers, paging, interrupts, the long-mode extensions. <code>bios_tutorial.html</code> covers what the firmware does between reset and the boot sector — POST, mode transitions, INT 13h, the BIOS shim around SeaBIOS. This one picks up where they leave off: <em>what does the kernel do with those capabilities?</em> The four are designed to be read in parallel.</p>
 
 <div class="box box-key">
 <strong>Key Insight</strong>
@@ -2081,8 +2081,8 @@ function showWelcome() {
       <h1>OS <em>Development</em></h1>
       <p class="tagline">From bytes to filesystems — a hands-on tour of what an operating system does and how its drivers work.</p>
       <div class="welcome-body">
-        <p>This course is the companion to <code>x86_tutorial.html</code>. Where that one focuses on the CPU itself — instructions, paging, interrupts — this one focuses on what the kernel does with those primitives: drivers, buses, storage, networking, virtualisation.</p>
-        <p>Every concept anchors to working code in the <code>tinyemu-go</code> emulator that lives alongside this file. Pages on already-implemented features (IDE/ATA, ATAPI, virtio-blk, the PIC cascade) walk you through the actual source. Pages on features still in flight (PCI, VGA, virtio-net on PC, AHCI, NVMe) are <strong>stubs</strong> that get expanded as the implementation lands.</p>
+        <p>This course is the companion to <code>x86_tutorial.html</code> (what the CPU does), <code>x64_tutorial.html</code> (long-mode extensions), and <code>bios_tutorial.html</code> (what the firmware does before the kernel runs). Where they focus on the CPU and firmware, this one focuses on what the kernel does with those primitives: drivers, buses, storage, networking, virtualisation.</p>
+        <p>Every concept anchors to working code in the <code>tinyemu-go</code> emulator that lives alongside this file. Pages on already-implemented features (IDE/ATA, ATAPI, virtio-blk, the PIC cascade) walk you through the actual source. Pages on features still in flight (PCI, VGA, virtio-net on PC, AHCI, NVMe) are <strong>stubs</strong> that get expanded as the implementation lands. For diagnostic techniques — RIP sampling, watchpoints, cycle-window traces, the bug shapes we keep catching — see <code>DEBUG.md</code>.</p>
         <p>${LESSONS.length} lessons across six phases (${filledCount} filled, ${stubsCount} stubs). Progress is saved in your browser.</p>
         <div class="phase-overview">
           ${[1,2,3,4,5,6].map(ph => {
