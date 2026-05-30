@@ -32,6 +32,7 @@ the log lives, the wall time used, and the last 25 lines of output.
 | `ripsample.sh`     | `TINYEMU_X64_RIPSAMPLE=10000` | sampled RIPs (pair with `scripts/sym.sh`)        |
 | `bios.sh`          | `TINYEMU_BIOS_DEBUG=1`        | SeaBIOS debug-port writes (BIOS-boot only)       |
 | `userpf.sh`        | `TINYEMU_X86_USERPF=1`        | dump regs on user-mode PF to addr < 0x1000       |
+| `usys.sh`          | `TINYEMU_X64_USYS=1`          | per-syscall trace (defaults to `upstream` variant)|
 
 ## Shared runner
 
