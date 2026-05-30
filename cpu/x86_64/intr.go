@@ -512,10 +512,18 @@ func (c *CPU) opCPUID() error {
 		// Signature: family 6, model 0, stepping 0.
 		a = 0x00000600
 		b = 0
-		// ECX features: keep minimal — most kernels probe a few specific
-		// bits (SSE3=0, SSSE3=9, SSE4_1=19, SSE4_2=20). Advertise SSE3
-		// (bit 0) for the rare cases that expect it; nothing else.
-		cx = 1 << 0
+		// ECX features:
+		//   bit  0  SSE3 — advertised for the rare cases that expect it.
+		//   bit 30  RDRAND — load-bearing for Linux's crng_init. Without
+		//           it Linux's entropy collection falls back to
+		//           interrupt-arrival timing, which on our emulator (no
+		//           HPET, slow TSC, no real device noise) drags crng
+		//           init out to ~300 *kernel-seconds*. That's the
+		//           Alpine-boot delay between "i8042 probe failed" and
+		//           "Mounting boot media". With RDRAND advertised + a
+		//           working `rdrand` opcode, crng init drops to under
+		//           a second of boot-time and the wait disappears.
+		cx = 1<<0 | 1<<30
 		// EDX features (bits): FPU(0), TSC(4), MSR(5), PAE(6), CX8(8),
 		// SEP(11), PGE(13), CMOV(15), PAT(16), PSE36(17),
 		// MMX(23), FXSR(24), SSE(25), SSE2(26).

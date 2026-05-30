@@ -3,6 +3,7 @@ package x86_64
 import (
 	"fmt"
 	"math/bits"
+	"math/rand/v2"
 	"os"
 )
 
@@ -1561,6 +1562,15 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int, repPrefix uint8
 	case op2 == 0xC1:
 		return c.opXADD(rex, operandSize)
 
+	case op2 == 0xC7:
+		// Group 9. With mod=11 (register form), reg=6 is RDRAND and
+		// reg=7 is RDSEED. We treat them identically: write a fresh
+		// random value into the destination register, set CF=1 (success),
+		// and clear OF/SF/ZF/AF/PF per SDM. Memory forms (CMPXCHG8B /
+		// CMPXCHG16B) are not implemented — kernels we boot don't use
+		// them on a uniprocessor.
+		return c.opGroup9(rex, operandSize)
+
 	case op2 == 0xAE:
 		// Group 15 — FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/XSAVE/LFENCE/
 		// MFENCE/SFENCE etc.
@@ -1824,6 +1834,46 @@ func (c *CPU) opGroup15(rex uint8) error {
 		return nil
 	}
 	return c.unimplementedAt("Group 15 /%d (memory form)", m.reg)
+}
+
+// opGroup9 implements 0x0F 0xC7 — Group 9. We only handle the
+// register-form sub-opcodes /6 RDRAND and /7 RDSEED. Both are required
+// for Linux's crng_init to finish quickly: without them, the kernel
+// falls back to interrupt-arrival jitter for entropy, which on our
+// emulated host takes ~300 kernel-seconds and stalls Alpine boot
+// between "i8042 probe failed" and "Mounting boot media".
+//
+// Per Intel SDM Vol 2: on success the destination register receives a
+// random value and CF=1; OF, SF, ZF, AF, PF are cleared. We always
+// succeed (the host's PRNG never blocks); we do not model the
+// "underflow" / "try again" failure case because Linux's loop will
+// notice the rare CF=0 and just retry — making it CF=0 occasionally
+// here would only slow things down.
+//
+// Operand size follows the usual REX.W / 0x66 rules. The 8-bit form is
+// not legal for RDRAND/RDSEED, so we treat operandSize<2 as
+// operandSize=2.
+func (c *CPU) opGroup9(rex, operandSize uint8) error {
+	m := c.parseModRM64(rex)
+	if !m.isReg {
+		// Memory form — CMPXCHG8B (operandSize=4) or CMPXCHG16B
+		// (operandSize=8) at reg=1, and various MSR ops at /6,/7. Not
+		// reached by the kernels we boot; surface clearly if it is.
+		return c.unimplementedAt("Group 9 /%d memory form", m.reg)
+	}
+	switch m.reg {
+	case 6, 7: // RDRAND, RDSEED
+		size := operandSize
+		if size < 2 {
+			size = 2
+		}
+		c.writeReg(m.rm, rand.Uint64(), size)
+		// Clear OF/SF/ZF/AF/PF, set CF=1.
+		c.rflags &^= RFLAGS_OF | RFLAGS_SF | RFLAGS_ZF | RFLAGS_AF | RFLAGS_PF
+		c.rflags |= RFLAGS_CF
+		return nil
+	}
+	return c.unimplementedAt("Group 9 /%d (reg form)", m.reg)
 }
 
 // opX87Stub was deleted in favour of handleX87 in x87.go, which
