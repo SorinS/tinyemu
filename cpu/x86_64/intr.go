@@ -382,7 +382,8 @@ func (c *CPU) deliverInterruptProt(vec uint8, hasErr bool, errorCode uint32) err
 	idtLimit := c.segLimit[IDTR]
 	gateAddr := idtBase + uint64(vec)*8
 	if uint64(vec)*8+8 > uint64(idtLimit)+1 {
-		return fmt.Errorf("prot-mode interrupt: vector %d beyond IDT limit %#x", vec, idtLimit)
+		return fmt.Errorf("prot-mode interrupt: vector %d beyond IDT limit %#x (RIP=%#x CS=%#x)",
+			vec, idtLimit, c.rip, c.seg[CS])
 	}
 	gate := c.readMem64(gateAddr)
 	offsetLo := uint16(gate)
@@ -390,7 +391,8 @@ func (c *CPU) deliverInterruptProt(vec uint8, hasErr bool, errorCode uint32) err
 	typeAttr := uint8(gate >> 40)
 	offsetHi := uint16(gate >> 48)
 	if typeAttr&0x80 == 0 {
-		return fmt.Errorf("prot-mode interrupt: gate %d not present (typeAttr=%#x)", vec, typeAttr)
+		return fmt.Errorf("prot-mode interrupt: gate %d not present (typeAttr=%#x RIP=%#x CS=%#x)",
+			vec, typeAttr, c.rip, c.seg[CS])
 	}
 	gateType := typeAttr & 0xF
 	newRIP := uint64(offsetLo) | (uint64(offsetHi) << 16)
