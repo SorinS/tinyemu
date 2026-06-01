@@ -9,11 +9,20 @@
 #   ./run_baremetal.sh trace bin/baremetal/hello.bin    # both
 #
 # A payload is a flat binary linked at ORG 0x1E0000 (where BareMetal's
-# init_sys copies it before jumping). Maximum payload size: 16 KiB
-# (init_sys copies 2048 qwords). The payload calls into the kernel
-# via the fixed pointer slots at 0x100010 onwards — see
-# `cat ~/Dev/Assembler/BareMetal.git/api/libBareMetal.asm` for the
-# table, and bin/baremetal/hello.asm for a worked example.
+# init_sys copies it before jumping). Maximum payload size is 8 KiB
+# in this boot path: Pure64's BIOS MBR (bios-novideo.sys) loads exactly
+# 32 KiB from disk into 0x8000, of which 4 KiB is the Pure64 loader
+# itself and 20 KiB is the BareMetal kernel — leaving 8 KiB for the
+# payload that got appended to the kernel image. BareMetal's init_sys
+# copies a 16 KiB window from "kernel-end" to 0x1E0000, but bytes
+# past the 8-KiB disk-load mark are uninitialised RAM, so anything
+# bigger than 8 KiB will execute garbage past its real bytes. Larger
+# payloads need a BMFS-formatted disk (Pure64's bios.sys path) or a
+# small bootstrap that pulls more bytes off the disk via b_nvs_read.
+#
+# The payload calls into the kernel via the fixed pointer slots at
+# 0x100010 onwards — see api/libBareMetal.asm in the BareMetal source
+# and docs/baremetal-payload-example/hello.asm for a worked example.
 #
 # Artefact layout in bin/baremetal/:
 #   bios-novideo.sys           MBR boot sector (512 B; reads sectors 16..63)
@@ -56,8 +65,11 @@ PAYLOAD="${2:-}"
 if [ -n "$PAYLOAD" ]; then
     [ -r "$PAYLOAD" ] || { echo "missing payload: $PAYLOAD" >&2; exit 1; }
     psize=$(wc -c <"$PAYLOAD" | tr -d ' ')
-    if [ "$psize" -gt 16384 ]; then
-        echo "payload $PAYLOAD is ${psize} bytes; init_sys copies only 16 KiB" >&2
+    if [ "$psize" -gt 8192 ]; then
+        echo "payload $PAYLOAD is ${psize} bytes; the Pure64+BareMetal boot path" >&2
+        echo "caps at 8 KiB (DAP_SECTORS=64 in Pure64's MBR + KERNELSIZE=20KiB in" >&2
+        echo "BareMetal). Bigger payloads need a BMFS disk or an in-payload" >&2
+        echo "bootstrap that reads more sectors via b_nvs_read." >&2
         exit 1
     fi
     echo "[run_baremetal] payload: $PAYLOAD ($psize bytes)"
