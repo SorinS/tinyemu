@@ -1,12 +1,60 @@
 package x86_64
 
-// String-operation primitives (MOVS / STOS / LODS / SCAS) and the
-// REP / REPE / REPNE wrappers. Default address size is 64-bit in
-// long mode, so the index registers used are RSI/RDI/RCX; a 0x67
-// prefix shrinks them to ESI/EDI/ECX (not yet implemented). DF in
-// RFLAGS picks increment (DF=0) vs decrement (DF=1). The element
-// size comes from operandSize for the word/dword/qword variants;
-// the byte variants always use 1.
+// String-operation primitives (MOVS / STOS / LODS / SCAS / CMPS) and
+// the REP / REPE / REPNE wrappers.
+//
+// Per Intel SDM Vol 2 (operand encoding for string instructions):
+//   - the source index reads from the segment selected by the active
+//     segment-override prefix, defaulting to DS for LODS/MOVS/CMPS,
+//   - the destination index always writes through ES; the destination
+//     segment is NOT overridable per the architecture (the segment-
+//     override prefix only affects the *source* of MOVS / CMPS),
+//   - the index width follows the current address size (16-bit in
+//     real / pm16, 32-bit in pm32, 64-bit in long mode), and
+//   - the index register reads back through the segment base — in real
+//     and pm modes a non-zero base must be added.
+//
+// The previous implementation used the raw RSI/RDI value as the linear
+// address, which only happens to be correct in long mode where every
+// segment is architecturally forced to base zero. In real mode SeaBIOS
+// runs `rep movsb` to copy ACPI / e820 entries from CS:0x5660 — with
+// CS=0xF000 (base 0xF0000) the source is 0xF5660; reading from 0x5660
+// gave us conventional-RAM zeros instead, which manifested as MBR-issued
+// INT 15h E820 returning all-zero entries to its caller and Pure64
+// then underflowing its mem_amount counter.
+
+// stringSrcBase returns the linear-address base for the *source* index
+// (RSI). DS is the default; a CS/SS/ES/FS/GS segment-override prefix
+// substitutes one of those instead.
+func (c *CPU) stringSrcBase() uint64 {
+	if c.currentSegOverride >= 0 {
+		return c.segBase[c.currentSegOverride]
+	}
+	return c.segBase[DS]
+}
+
+// stringDstBase returns the linear-address base for the *destination*
+// index (RDI). Always ES; the segment-override prefix has no effect on
+// the destination for MOVS / STOS / SCAS / CMPS (per SDM Vol 2 §3.7.5).
+func (c *CPU) stringDstBase() uint64 {
+	return c.segBase[ES]
+}
+
+// indexMask returns the bit-mask the address size truncates the index
+// register to: 0xFFFF in 16-bit address mode, 0xFFFFFFFF in 32-bit,
+// all-ones in 64-bit. This is what lets a 16-bit address-size MOVS
+// wrap at the segment boundary instead of running off into adjacent
+// memory.
+func (c *CPU) indexMask() uint64 {
+	switch c.currentAddressSize {
+	case 2:
+		return 0xFFFF
+	case 4:
+		return 0xFFFFFFFF
+	default:
+		return ^uint64(0)
+	}
+}
 
 func (c *CPU) stringDelta(size uint8) int64 {
 	d := int64(size)
@@ -16,33 +64,48 @@ func (c *CPU) stringDelta(size uint8) int64 {
 	return d
 }
 
-// opStringMOVS — MOVSB/MOVSW/MOVSD/MOVSQ. Copies [RSI] → [RDI] and
+// advanceIndex applies the address-size-mask to the new index value so
+// that 16-bit addressing wraps SI/DI inside their 64-KiB segment, and
+// 32-bit addressing wraps ESI/EDI inside 4 GiB. The high bits of RSI/
+// RDI are preserved (a 32-bit form zero-extends; 16-bit leaves the high
+// 48 bits alone per real silicon).
+func (c *CPU) advanceIndex(reg int, oldIdx uint64, delta int64) {
+	mask := c.indexMask()
+	newLow := uint64(int64(oldIdx&mask)+delta) & mask
+	c.SetReg64(reg, (oldIdx &^ mask) | newLow)
+}
+
+// indexValue returns the *offset* portion of the index register the
+// string op should use this iteration, after the address-size mask.
+func (c *CPU) indexValue(reg int) uint64 {
+	return c.GetReg64(reg) & c.indexMask()
+}
+
+// opStringMOVS — MOVSB/MOVSW/MOVSD/MOVSQ. Copies [DS:SI] → [ES:DI] and
 // advances both. With REP (repPrefix=1) it loops while RCX != 0,
-// decrementing RCX per iteration and updating RSI/RDI before
-// continuing. The per-iteration decrement is load-bearing for #PF
-// resumption: if a write/read inside the loop faults, Step's defer
-// rewinds RIP, the kernel handles the PF, IRETQ resumes at the same
-// REP instruction — and the architectural RCX must reflect the count
-// of bytes actually committed, not the original count. With a single
-// post-loop SetReg64(RCX, 0) the rep would restart from the original
-// count after each fault and effectively never terminate.
+// decrementing RCX per iteration. The per-iteration decrement is load-
+// bearing for #PF resumption: if a write/read inside the loop faults,
+// Step's defer rewinds RIP, the kernel handles the PF, IRETQ resumes
+// at the same REP instruction — and the architectural RCX must reflect
+// the count of bytes actually committed, not the original count.
 func (c *CPU) opStringMOVS(rex, size, repPrefix uint8) error {
 	_ = rex
 	delta := c.stringDelta(size)
+	srcBase := c.stringSrcBase()
+	dstBase := c.stringDstBase()
+	step := func() {
+		srcIdx := c.indexValue(RSI)
+		dstIdx := c.indexValue(RDI)
+		c.stringCopyOne(srcBase+srcIdx, dstBase+dstIdx, size)
+		c.advanceIndex(RSI, c.GetReg64(RSI), delta)
+		c.advanceIndex(RDI, c.GetReg64(RDI), delta)
+	}
 	if repPrefix == 0 {
-		src := c.GetReg64(RSI)
-		dst := c.GetReg64(RDI)
-		c.stringCopyOne(src, dst, size)
-		c.SetReg64(RSI, uint64(int64(src)+delta))
-		c.SetReg64(RDI, uint64(int64(dst)+delta))
+		step()
 		return nil
 	}
-	for c.GetReg64(RCX) != 0 {
-		src := c.GetReg64(RSI)
-		dst := c.GetReg64(RDI)
-		c.stringCopyOne(src, dst, size)
-		c.SetReg64(RSI, uint64(int64(src)+delta))
-		c.SetReg64(RDI, uint64(int64(dst)+delta))
+	for c.GetReg64(RCX)&c.indexMask() != 0 {
+		step()
 		c.SetReg64(RCX, c.GetReg64(RCX)-1)
 	}
 	return nil
@@ -62,25 +125,23 @@ func (c *CPU) stringCopyOne(src, dst uint64, size uint8) {
 }
 
 // opStringSTOS — STOSB/STOSW/STOSD/STOSQ. Writes the low operandSize
-// bytes of RAX to [RDI] and advances RDI. See opStringMOVS for why the
-// per-iteration RCX decrement matters — page-faulting writes to lazily-
-// mapped pages (e.g. musl mallocng's just-mmap'd group storage being
-// memset'd by busybox's xzalloc) resume on the same instruction and
-// must see RCX reflecting bytes already committed.
+// bytes of RAX to [ES:DI] and advances RDI. ES is non-overridable.
 func (c *CPU) opStringSTOS(rex, size, repPrefix uint8) error {
 	_ = rex
 	delta := c.stringDelta(size)
 	val := c.readReg(RAX, size)
+	dstBase := c.stringDstBase()
+	step := func() {
+		dstIdx := c.indexValue(RDI)
+		c.stringStoreOne(dstBase+dstIdx, val, size)
+		c.advanceIndex(RDI, c.GetReg64(RDI), delta)
+	}
 	if repPrefix == 0 {
-		dst := c.GetReg64(RDI)
-		c.stringStoreOne(dst, val, size)
-		c.SetReg64(RDI, uint64(int64(dst)+delta))
+		step()
 		return nil
 	}
-	for c.GetReg64(RCX) != 0 {
-		dst := c.GetReg64(RDI)
-		c.stringStoreOne(dst, val, size)
-		c.SetReg64(RDI, uint64(int64(dst)+delta))
+	for c.GetReg64(RCX)&c.indexMask() != 0 {
+		step()
 		c.SetReg64(RCX, c.GetReg64(RCX)-1)
 	}
 	return nil
@@ -99,48 +160,50 @@ func (c *CPU) stringStoreOne(dst, val uint64, size uint8) {
 	}
 }
 
-// opStringLODS — load [RSI] into RAX and advance. Same per-iteration
-// RCX semantics as the others.
+// opStringLODS — load [DS:SI] into RAX and advance. DS is the default
+// source segment, overridable.
 func (c *CPU) opStringLODS(rex, size, repPrefix uint8) error {
 	_ = rex
 	delta := c.stringDelta(size)
+	srcBase := c.stringSrcBase()
 	step := func() {
-		src := c.GetReg64(RSI)
+		srcIdx := c.indexValue(RSI)
 		var v uint64
 		switch size {
 		case 8:
-			v = c.readMem64(src)
+			v = c.readMem64(srcBase + srcIdx)
 		case 4:
-			v = uint64(c.readMem32(src))
+			v = uint64(c.readMem32(srcBase + srcIdx))
 		case 2:
-			v = uint64(c.readMem16(src))
+			v = uint64(c.readMem16(srcBase + srcIdx))
 		default:
-			v = uint64(c.readMem8(src))
+			v = uint64(c.readMem8(srcBase + srcIdx))
 		}
 		c.writeReg(RAX, v, size)
-		c.SetReg64(RSI, uint64(int64(src)+delta))
+		c.advanceIndex(RSI, c.GetReg64(RSI), delta)
 	}
 	if repPrefix == 0 {
 		step()
 		return nil
 	}
-	for c.GetReg64(RCX) != 0 {
+	for c.GetReg64(RCX)&c.indexMask() != 0 {
 		step()
 		c.SetReg64(RCX, c.GetReg64(RCX)-1)
 	}
 	return nil
 }
 
-// opStringCMPS — CMPSB/CMPSW/CMPSD/CMPSQ. Compares [RSI] with [RDI],
-// setting the arithmetic flags from ([RSI] - [RDI]), and advances both
-// index registers. With REPE (repPrefix=1) continues while ZF=1 (equal)
-// and RCX!=0; with REPNE (=2) continues while ZF=0. MenuetOS's boot
-// sector uses `repe cmpsb` (CX=11) to match 8.3 FAT names. Like the
-// other string ops this uses the raw index registers as linear
-// addresses — correct for the flat / DS=ES=0 cases we run.
+// opStringCMPS — CMPSB/CMPSW/CMPSD/CMPSQ. Compares [DS:SI] with [ES:DI],
+// setting the arithmetic flags from ([DS:SI] - [ES:DI]), and advances
+// both index registers. DS is the default source (overridable), ES is
+// the destination. With REPE (repPrefix=1) continues while ZF=1 and
+// RCX!=0; with REPNE (=2) continues while ZF=0. MenuetOS's boot sector
+// uses `repe cmpsb` (CX=11) to match 8.3 FAT names.
 func (c *CPU) opStringCMPS(rex, size, repPrefix uint8) error {
 	_ = rex
 	delta := c.stringDelta(size)
+	srcBase := c.stringSrcBase()
+	dstBase := c.stringDstBase()
 	readAt := func(addr uint64) uint64 {
 		switch size {
 		case 8:
@@ -154,21 +217,21 @@ func (c *CPU) opStringCMPS(rex, size, repPrefix uint8) error {
 		}
 	}
 	step := func() bool {
-		src := c.GetReg64(RSI)
-		dst := c.GetReg64(RDI)
-		a := readAt(src)
-		b := readAt(dst)
+		srcIdx := c.indexValue(RSI)
+		dstIdx := c.indexValue(RDI)
+		a := readAt(srcBase + srcIdx)
+		b := readAt(dstBase + dstIdx)
 		_, fl := sub(a, b, size)
 		c.setArithFlags(fl)
-		c.SetReg64(RSI, uint64(int64(src)+delta))
-		c.SetReg64(RDI, uint64(int64(dst)+delta))
+		c.advanceIndex(RSI, c.GetReg64(RSI), delta)
+		c.advanceIndex(RDI, c.GetReg64(RDI), delta)
 		return fl.zf
 	}
 	if repPrefix == 0 {
 		step()
 		return nil
 	}
-	for c.GetReg64(RCX) != 0 {
+	for c.GetReg64(RCX)&c.indexMask() != 0 {
 		zf := step()
 		c.SetReg64(RCX, c.GetReg64(RCX)-1)
 		if repPrefix == 1 && !zf {
@@ -181,37 +244,37 @@ func (c *CPU) opStringCMPS(rex, size, repPrefix uint8) error {
 	return nil
 }
 
-// opStringSCAS — compare [RDI] vs RAX and advance. With REPE (=1)
-// continues while ZF=1; with REPNE (=2) continues while ZF=0. Each
-// iteration sets the arithmetic flags so the early-exit test is
-// observable.
+// opStringSCAS — compare [ES:DI] vs RAX and advance. With REPE (=1)
+// continues while ZF=1 and RCX!=0; with REPNE (=2) continues while
+// ZF=0. ES is non-overridable for SCAS.
 func (c *CPU) opStringSCAS(rex, size, repPrefix uint8) error {
 	_ = rex
 	delta := c.stringDelta(size)
 	a := c.readReg(RAX, size)
+	dstBase := c.stringDstBase()
 	step := func() bool {
-		dst := c.GetReg64(RDI)
+		dstIdx := c.indexValue(RDI)
 		var b uint64
 		switch size {
 		case 8:
-			b = c.readMem64(dst)
+			b = c.readMem64(dstBase + dstIdx)
 		case 4:
-			b = uint64(c.readMem32(dst))
+			b = uint64(c.readMem32(dstBase + dstIdx))
 		case 2:
-			b = uint64(c.readMem16(dst))
+			b = uint64(c.readMem16(dstBase + dstIdx))
 		default:
-			b = uint64(c.readMem8(dst))
+			b = uint64(c.readMem8(dstBase + dstIdx))
 		}
 		_, fl := sub(a, b, size)
 		c.setArithFlags(fl)
-		c.SetReg64(RDI, uint64(int64(dst)+delta))
+		c.advanceIndex(RDI, c.GetReg64(RDI), delta)
 		return fl.zf
 	}
 	if repPrefix == 0 {
 		step()
 		return nil
 	}
-	for c.GetReg64(RCX) != 0 {
+	for c.GetReg64(RCX)&c.indexMask() != 0 {
 		zf := step()
 		c.SetReg64(RCX, c.GetReg64(RCX)-1)
 		if repPrefix == 1 && !zf {

@@ -309,6 +309,13 @@ func New(cfg Config) (*PC, error) {
 	// MADT + HPET — that SeaBIOS allocates, relocates, and publishes on
 	// our behalf via its BiosLinker.
 	p.fwCfg = newFWCfg()
+	// etc/e820 must be added BEFORE etc/table-loader — SeaBIOS reads
+	// e820 during its early POST (when responding to the MBR's INT
+	// 15h E820 calls), and a missing file makes the staging buffer
+	// it copies from stay all-zero. Loaders that build page tables
+	// from the e820 then see no RAM, underflow their MiB counter,
+	// and overrun the page-table area into their own code.
+	p.fwCfg.addFile("etc/e820", buildE820(cfg.RAMSize))
 	p.fwCfg.addFile("etc/acpi/rsdp", rsdpBlob())
 	p.fwCfg.addFile("etc/acpi/tables", tablesBlob())
 	p.fwCfg.addFile("etc/table-loader", tableLoaderScript())

@@ -140,8 +140,8 @@ func (c *CPU) writeMem8(addr uint64, v uint8) {
 			defer func() {
 				base := phys &^ uint64(7)
 				if v8, rerr := c.memMap.Read64(base); rerr == nil {
-					fmt.Fprintf(os.Stderr, "[physw] phys=%#x RIP=%#x byte=%#x qword@%#x=%#x\n",
-						phys, c.rip, v, base, v8)
+					fmt.Fprintf(os.Stderr, "[physw] cyc=%d phys=%#x RIP=%#x byte=%#x qword@%#x=%#x\n",
+						c.cycles, phys, c.rip, v, base, v8)
 				}
 			}()
 		}

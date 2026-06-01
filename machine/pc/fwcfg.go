@@ -2,7 +2,11 @@ package pc
 
 import (
 	"encoding/binary"
+	"fmt"
+	"os"
 )
+
+var fwCfgDebug = os.Getenv("TINYEMU_FWCFG_DEBUG") == "1"
 
 // fw_cfg — QEMU's hypervisor-to-firmware paravirt channel. SeaBIOS,
 // OVMF/EDK2, and the various coreboot SeaBIOS payloads all consume it.
@@ -97,6 +101,25 @@ func (f *fwCfg) addFile(name string, data []byte) uint16 {
 func (f *fwCfg) writeSelector(val uint32) {
 	f.selector = uint16(val)
 	f.offset = 0
+	if fwCfgDebug {
+		name := "<unknown>"
+		switch f.selector {
+		case fwCfgSelSignature:
+			name = "<signature>"
+		case fwCfgSelID:
+			name = "<id>"
+		case fwCfgSelFileDir:
+			name = "<file-dir>"
+		default:
+			for _, fl := range f.files {
+				if fl.sel == f.selector {
+					name = fl.name
+					break
+				}
+			}
+		}
+		fmt.Fprintf(os.Stderr, "[fwcfg] select %#x (%s)\n", f.selector, name)
+	}
 }
 
 // readData implements byte reads from port 0x511. Returns zero past
@@ -106,9 +129,17 @@ func (f *fwCfg) writeSelector(val uint32) {
 func (f *fwCfg) readData() uint32 {
 	data := f.dataForSelector(f.selector)
 	if int(f.offset) >= len(data) {
+		if fwCfgDebug {
+			fmt.Fprintf(os.Stderr, "[fwcfg] read sel=%#x off=%d → 0 (past end, len=%d)\n",
+				f.selector, f.offset, len(data))
+		}
 		return 0
 	}
 	b := data[f.offset]
+	if fwCfgDebug {
+		fmt.Fprintf(os.Stderr, "[fwcfg] read sel=%#x off=%d → %#02x\n",
+			f.selector, f.offset, b)
+	}
 	f.offset++
 	return uint32(b)
 }
