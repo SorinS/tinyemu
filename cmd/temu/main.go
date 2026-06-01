@@ -798,8 +798,9 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 			}
 		}
 
-		// Execute instructions
-		if err := cpu.Run(maxExecCycle); err != nil {
+		// Execute instructions. Route via the Board so per-machine
+		// pre-step hooks fire (e.g. PC.Run's ACPI RSDP re-stamp).
+		if err := m.Run(maxExecCycle); err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR in Run: %v\n", err)
 			return 1
 		}
