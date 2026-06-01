@@ -2,79 +2,87 @@ package pc
 
 import "encoding/binary"
 
-// Minimal ACPI table set. Generates a blob suitable for handing to
-// SeaBIOS via fw_cfg (see machine/pc/fwcfg.go — TODO):
+// Minimal ACPI table set, packaged for SeaBIOS's BiosLinker / fw_cfg
+// path. We hand SeaBIOS three files via fw_cfg:
 //
-//   - an RSDP at a 16-byte boundary inside 0xE0000..0xFFFFF so Pure64's
-//     foundACPI scan finds it
-//   - an RSDT that points to a single APIC (MADT) table
-//   - a MADT with one Local-APIC entry (LAPIC base = 0xFEE00000)
-//   - an HPET table so Pure64's "load HPET frequency" step doesn't end
-//     up with garbage in p_HPET_Address
-//   - a FADT — even though we don't model power management, several
-//     loaders (Pure64 included) read FADT fields like the IAPC_BOOT_ARCH
-//     legacy-device flags before continuing
+//   - etc/acpi/rsdp     — the 36-byte RSDP, with the RsdtAddress
+//                         field left as an offset (zero); SeaBIOS
+//                         patches it via ADD_POINTER once it knows
+//                         where it has allocated the tables blob.
+//   - etc/acpi/tables   — RSDT + FADT + MADT + HPET concatenated.
+//                         The RSDT entries are stored as offsets
+//                         into this same blob; SeaBIOS patches them
+//                         to absolute addresses with ADD_POINTER.
+//   - etc/table-loader  — the BiosLinker script telling SeaBIOS the
+//                         allocation zone, the pointer fixups, and
+//                         the checksum fixups it owes us.
 //
-// Earlier attempts injected this blob directly into the SeaBIOS BIOS
-// shadow at LoadBIOS time, but SeaBIOS rewrites every byte of
-// 0xE0000..0xFFFFF during POST as it lays out its own (partially
-// populated, fw_cfg-dependent) BIOS-area data structures. The
-// fw_cfg path lets SeaBIOS choose where to place the tables and
-// patch the pointers itself, so this builder hands SeaBIOS a blob
-// rather than scribbling on its memory directly.
-//
-// acpiBase below records the historical "this is where we used to
-// stamp the RSDP" address; the offsets it anchors are still used by
-// the unit tests to verify the layout is well-formed regardless of
-// final placement.
+// We do NOT pre-finalize the table checksums or pointers in the
+// blob; that's the BiosLinker's job. Pre-finalized checksums would
+// be wrong after SeaBIOS rewrites the pointers, and pre-baked
+// absolute pointers would assume an allocation address we don't
+// control.
 
 const (
-	// Base of our injected ACPI table set, in the *low* BIOS shadow
-	// (mirrored to the high BIOS alias by LoadBIOS).
-	acpiBase = 0x000F5660
-
-	// Layout inside the gap (all 16-byte aligned).
-	acpiRSDPOff = 0x00 // 36 bytes — RSDP v2 (works for v1 too)
-	acpiRSDTOff = 0x40 // RSDT header (36) + table-pointer entries
-	acpiFADTOff = 0x80 // FADT (276 bytes)
-	acpiMADTOff = 0x1A0 // MADT (44 header + LAPIC entry)
-	acpiHPETOff = 0x200 // HPET descriptor (56 bytes)
-
-	// LAPIC base — matches our LAPIC stub registered at PC init.
-	lapicBase = 0xFEE00000
-
-	// IOAPIC base — matches our IOAPIC stub.
+	// Where in the MADT we record the LAPIC base, and where in the
+	// HPET descriptor we record the HPET MMIO base. The values come
+	// from the LAPIC and IOAPIC stubs registered in PC.New (see
+	// pc.go); changing them here without also changing the stubs
+	// gives the guest an address it can't talk to.
+	lapicBase  = 0xFEE00000
 	ioapicBase = 0xFEC00000
-
-	// HPET base — fake but stable. Nothing in the emulator services
-	// reads/writes here; Pure64 just stores it and BareMetal reads it
-	// for an os_HPET_Address field it doesn't currently dereference.
-	hpetBase = 0xFED00000
+	hpetBase   = 0xFED00000
 )
 
-// guestAddr returns the *guest physical* address of an offset inside our
-// ACPI gap. Loaders embed these in table-pointer fields.
-func guestAddr(off int) uint32 { return uint32(acpiBase + off) }
+// ACPI sub-table sizes. Kept as package-level constants so the
+// blob-offset arithmetic in tablesBlob() and tableLoaderScript()
+// agrees with both the builder and the tests.
+const (
+	rsdpLen   = 36
+	rsdtLen   = 36 + 4*3    // header + 3 entries (FADT, MADT, HPET)
+	fadtLen   = 276
+	madtLen   = 44 + 8 + 12 // header + Local-APIC entry + I/O-APIC entry
+	hpetLen   = 56
+
+	// Offsets of each sub-table inside the tables blob.
+	rsdtBlobOff = 0
+	fadtBlobOff = rsdtBlobOff + rsdtLen
+	madtBlobOff = fadtBlobOff + fadtLen
+	hpetBlobOff = madtBlobOff + madtLen
+
+	tablesBlobLen = hpetBlobOff + hpetLen
+
+	// Where SeaBIOS will need to patch pointers into the RSDT.
+	rsdtFadtPtrOff = 36 // points to FADT
+	rsdtMadtPtrOff = 40 // points to MADT
+	rsdtHpetPtrOff = 44 // points to HPET
+
+	// The RSDP's RsdtAddress field — SeaBIOS patches this to the
+	// absolute address where it allocates the tables blob.
+	rsdpRsdtAddrOff = 16
+	rsdpChecksumOff = 8
+)
 
 // writeACPITableHeader writes the standard 36-byte ACPI table header
-// (sig, length, revision, checksum-placeholder, OEM, etc.) and returns
-// the number of bytes written. The caller fills in the body, then calls
-// finalizeChecksum to fix the byte-sum-to-zero invariant.
+// (sig, length, revision, checksum-placeholder, OEM, etc.). The
+// caller fills in the body; the BiosLinker computes the final
+// checksum after pointer patching.
 func writeACPITableHeader(buf []byte, sig string, length uint32, revision byte) {
 	copy(buf[0:4], sig)
 	binary.LittleEndian.PutUint32(buf[4:8], length)
 	buf[8] = revision
-	// buf[9] = checksum — filled in by finalizeChecksum
-	copy(buf[10:16], "TEMU64")     // OEMID
-	copy(buf[16:24], "TEMUACPI")   // OEM Table ID
+	// buf[9] = checksum — left at zero; BiosLinker rewrites it.
+	copy(buf[10:16], "TEMU64")                   // OEMID
+	copy(buf[16:24], "TEMUACPI")                 // OEM Table ID
 	binary.LittleEndian.PutUint32(buf[24:28], 1) // OEM revision
-	copy(buf[28:32], "TEMU")       // Creator ID
+	copy(buf[28:32], "TEMU")                     // Creator ID
 	binary.LittleEndian.PutUint32(buf[32:36], 1) // Creator revision
 }
 
-// finalizeChecksum makes the byte-sum over the first `length` bytes of
-// `buf` equal to zero by writing the negated partial sum into
-// buf[checksumOffset]. Required by every ACPI table (and the RSDP).
+// finalizeChecksum makes the byte-sum over the first `length` bytes
+// of `buf` equal to zero by writing the negated partial sum into
+// buf[checksumOffset]. Used by tests; the production blob lets the
+// BiosLinker compute the same checksum at the right time.
 func finalizeChecksum(buf []byte, length int, checksumOffset int) {
 	buf[checksumOffset] = 0
 	var sum byte
@@ -84,117 +92,157 @@ func finalizeChecksum(buf []byte, length int, checksumOffset int) {
 	buf[checksumOffset] = byte(-int8(sum))
 }
 
-// buildACPITables fills the supplied BIOS-shadow slice with a minimal
-// RSDP + RSDT + FADT + MADT + HPET that satisfies Pure64's walker.
-// `biosShadow` must be the entire low BIOS shadow buffer (256 KiB), and
-// the caller is responsible for making sure the gap at acpiBase is
-// otherwise empty (it is, in the bundled SeaBIOS image — see comment
-// at the top of this file).
-func buildACPITables(biosShadow []byte) {
-	// Slice into the gap. The constants above are guest-physical, so
-	// translate to BIOS-shadow offsets by subtracting BIOSROMAddr.
-	const shadowOff = acpiBase - BIOSROMAddr
+// rsdpBlob builds the 36-byte RSDP that SeaBIOS will place in low
+// memory and announce to the firmware. RsdtAddress is left zero
+// here; the BiosLinker patches it via ADD_POINTER and finalizes the
+// checksum via ADD_CHECKSUM.
+func rsdpBlob() []byte {
+	r := make([]byte, rsdpLen)
+	copy(r[0:8], "RSD PTR ")
+	// r[8] = checksum (BiosLinker patches)
+	copy(r[9:15], "TEMU64")
+	r[15] = 0 // revision = 0 → ACPI v1.0, picks the RSDT path
+	// r[16:20] = RsdtAddress — BiosLinker patches
+	binary.LittleEndian.PutUint32(r[20:24], rsdpLen)
+	// r[24:32] = XsdtAddress = 0 (we don't ship one; v1 consumers ignore it)
+	// r[32]    = extended checksum (unused at revision=0)
+	return r
+}
 
-	// === RSDP (36 bytes — ACPI 2.0 layout) ===
-	// Pure64 only reads the first 20 (v1.0 layout) but writing the
-	// v2.0 length is harmless and lets later loaders treat it as v2.
-	rsdp := biosShadow[shadowOff+acpiRSDPOff : shadowOff+acpiRSDPOff+36]
-	copy(rsdp[0:8], "RSD PTR ")
-	// rsdp[8] = checksum — patched after fill
-	copy(rsdp[9:15], "TEMU64")             // OEMID
-	rsdp[15] = 0                           // Revision = 0 (ACPI 1.0)
-	binary.LittleEndian.PutUint32(rsdp[16:20], guestAddr(acpiRSDTOff))
-	// v2.0 fields — present in the buffer but Pure64 v1 path ignores them.
-	binary.LittleEndian.PutUint32(rsdp[20:24], 36) // length
-	binary.LittleEndian.PutUint64(rsdp[24:32], 0)  // XsdtAddress = 0 (Pure64 routes via v1 path)
-	// rsdp[32] = extended checksum (only meaningful in v2)
-	rsdp[33], rsdp[34], rsdp[35] = 0, 0, 0
-	finalizeChecksum(rsdp, 20, 8) // v1 checksum: first 20 bytes
+// tablesBlob builds the concatenated RSDT + FADT + MADT + HPET. All
+// inter-table pointers are stored as *offsets into this blob* — the
+// BiosLinker rewrites them to absolute addresses with ADD_POINTER
+// once it knows where it placed the blob in guest memory.
+func tablesBlob() []byte {
+	buf := make([]byte, tablesBlobLen)
 
-	// === RSDT (header + 3 32-bit entries) ===
-	// Entries: FADT, MADT, HPET. Pure64 walks all entries and
-	// dispatches on signature.
-	const rsdtEntries = 3
-	rsdtLen := uint32(36 + 4*rsdtEntries)
-	rsdt := biosShadow[shadowOff+acpiRSDTOff : shadowOff+acpiRSDTOff+int(rsdtLen)]
+	// --- RSDT ---
+	rsdt := buf[rsdtBlobOff : rsdtBlobOff+rsdtLen]
 	writeACPITableHeader(rsdt, "RSDT", rsdtLen, 1)
-	binary.LittleEndian.PutUint32(rsdt[36:40], guestAddr(acpiFADTOff))
-	binary.LittleEndian.PutUint32(rsdt[40:44], guestAddr(acpiMADTOff))
-	binary.LittleEndian.PutUint32(rsdt[44:48], guestAddr(acpiHPETOff))
-	finalizeChecksum(rsdt, int(rsdtLen), 9)
+	binary.LittleEndian.PutUint32(rsdt[rsdtFadtPtrOff-rsdtBlobOff:], uint32(fadtBlobOff))
+	binary.LittleEndian.PutUint32(rsdt[rsdtMadtPtrOff-rsdtBlobOff:], uint32(madtBlobOff))
+	binary.LittleEndian.PutUint32(rsdt[rsdtHpetPtrOff-rsdtBlobOff:], uint32(hpetBlobOff))
 
-	// === FADT (276 bytes — ACPI 6.x layout) ===
-	// We zero-fill the body; the only fields Pure64 reads are the
-	// header (checksum + length) and IAPC_BOOT_ARCH. Other loaders
-	// might read more, in which case revisit and stamp the
-	// power-management / SCI fields they need.
-	const fadtLen = 276
-	fadt := biosShadow[shadowOff+acpiFADTOff : shadowOff+acpiFADTOff+fadtLen]
+	// --- FADT ---
+	// Zero body except the IAPC_BOOT_ARCH legacy-device flags at
+	// offset 109 (bits: legacy devices present + 8042 present). The
+	// BiosLinker fills the checksum.
+	fadt := buf[fadtBlobOff : fadtBlobOff+fadtLen]
 	writeACPITableHeader(fadt, "FACP", fadtLen, 6)
-	// IAPC_BOOT_ARCH at offset 109 — set bits for "legacy devices
-	// present" and "8042 present" so the kernel knows the PS/2 path
-	// is available. Pure64 falls back to these when it can't find
-	// the field in CMOS.
 	binary.LittleEndian.PutUint16(fadt[109:111], 0x03)
-	finalizeChecksum(fadt, fadtLen, 9)
 
-	// === MADT (header + Local APIC entry + IO APIC entry) ===
-	// Layout per ACPI Vol 5.2.12:
-	//   0x00..0x23  : standard table header
-	//   0x24..0x27  : 32-bit Local APIC physical address
-	//   0x28..0x2B  : 32-bit flags (bit 0 = 8259 PIC present)
-	//   0x2C..      : variable-length interrupt-controller structures
-	// We supply one "Processor Local APIC" (type 0, length 8) +
-	// one "I/O APIC" (type 1, length 12). That covers everything
-	// Pure64 will store in its InfoMap.
-	const madtLen = 44 + 8 + 12
-	madt := biosShadow[shadowOff+acpiMADTOff : shadowOff+acpiMADTOff+madtLen]
+	// --- MADT ---
+	madt := buf[madtBlobOff : madtBlobOff+madtLen]
 	writeACPITableHeader(madt, "APIC", madtLen, 5)
 	binary.LittleEndian.PutUint32(madt[36:40], uint32(lapicBase))
-	binary.LittleEndian.PutUint32(madt[40:44], 0x01) // PCAT_COMPAT — 8259 present
-	// Local APIC entry — type=0, length=8, ACPI processor id=0,
-	// APIC id=0, flags=1 (processor enabled).
-	madt[44] = 0  // type
-	madt[45] = 8  // length
-	madt[46] = 0  // ACPI processor id
-	madt[47] = 0  // APIC id
-	binary.LittleEndian.PutUint32(madt[48:52], 0x01) // flags
-	// I/O APIC entry — type=1, length=12, id=0, reserved=0, addr,
-	// gsi-base=0.
-	madt[52] = 1  // type
-	madt[53] = 12 // length
-	madt[54] = 0  // io-apic id
-	madt[55] = 0  // reserved
+	binary.LittleEndian.PutUint32(madt[40:44], 0x01) // PCAT_COMPAT
+	// Processor Local APIC entry (type 0, length 8)
+	madt[44] = 0
+	madt[45] = 8
+	madt[46] = 0 // ACPI processor id
+	madt[47] = 0 // APIC id
+	binary.LittleEndian.PutUint32(madt[48:52], 0x01) // flags (enabled)
+	// I/O APIC entry (type 1, length 12)
+	madt[52] = 1
+	madt[53] = 12
+	madt[54] = 0 // io-apic id
+	madt[55] = 0 // reserved
 	binary.LittleEndian.PutUint32(madt[56:60], uint32(ioapicBase))
 	binary.LittleEndian.PutUint32(madt[60:64], 0) // GSI base
-	finalizeChecksum(madt, madtLen, 9)
 
-	// === HPET (56 bytes — ACPI Vol 6 HPET-spec layout) ===
-	// We do not model the HPET MMIO. Pure64 reads the base address
-	// from this table, the BareMetal kernel stores it, but nothing
-	// actually pokes the HPET in our boot path. Leaving the rest of
-	// the table zeroed is intentional — we'd rather Pure64 record
-	// "no minimum tick" (which is treated as "I don't know") than
-	// invent a plausible-but-wrong number.
-	const hpetLen = 56
-	hpet := biosShadow[shadowOff+acpiHPETOff : shadowOff+acpiHPETOff+hpetLen]
+	// --- HPET ---
+	hpet := buf[hpetBlobOff : hpetBlobOff+hpetLen]
 	writeACPITableHeader(hpet, "HPET", hpetLen, 1)
-	// 36..39 : Event Timer Block ID (vendor, etc.) — leave zero
-	// 40     : Address Space ID (0 = MMIO)
+	// 40 = Address Space ID (0 = MMIO), 41 = bit width, 44..51 = base addr
 	hpet[40] = 0
-	// 41 : Register Bit Width
 	hpet[41] = 64
-	// 42 : Register Bit Offset
-	hpet[42] = 0
-	// 43 : Reserved
-	hpet[43] = 0
-	// 44..51 : Base Address (64-bit)
 	binary.LittleEndian.PutUint64(hpet[44:52], uint64(hpetBase))
-	// 52     : HPET number (0 since we describe only one)
-	hpet[52] = 0
-	// 53..54 : minimum tick
-	binary.LittleEndian.PutUint16(hpet[53:55], 0)
-	// 55     : page protection
-	hpet[55] = 0
-	finalizeChecksum(hpet, hpetLen, 9)
+
+	return buf
+}
+
+// BiosLinker (table-loader) command layout. Each entry is exactly
+// 128 bytes; the leading 4 bytes are the command code, the rest is
+// a union sized to the largest variant (124 bytes of payload).
+const (
+	biosLinkerCmdAllocate   = 1
+	biosLinkerCmdAddPointer = 2
+	biosLinkerCmdAddChecksum = 3
+
+	biosLinkerEntrySize = 128
+	biosLinkerFileSize  = 56 // null-padded file name field
+
+	biosLinkerZoneHigh = 1
+	biosLinkerZoneLow  = 2 // F-segment / EBDA accessible; needed for RSDP
+)
+
+// tableLoaderScript returns the binary BiosLinker / fw_cfg table-loader
+// script. SeaBIOS reads it, allocates space for each declared file in
+// the requested zone, then walks the ADD_POINTER and ADD_CHECKSUM
+// entries to patch pointer fields and finalize checksums.
+//
+// Order matters: ALLOCATE entries must precede ADD_POINTER /
+// ADD_CHECKSUM entries that name them.
+func tableLoaderScript() []byte {
+	var entries [][]byte
+
+	allocate := func(file string, alignment uint32, zone byte) {
+		e := make([]byte, biosLinkerEntrySize)
+		binary.LittleEndian.PutUint32(e[0:4], biosLinkerCmdAllocate)
+		copy(e[4:4+biosLinkerFileSize], file)
+		binary.LittleEndian.PutUint32(e[4+biosLinkerFileSize:4+biosLinkerFileSize+4], alignment)
+		e[4+biosLinkerFileSize+4] = zone
+		entries = append(entries, e)
+	}
+	addPointer := func(destFile, srcFile string, offset uint32, size byte) {
+		e := make([]byte, biosLinkerEntrySize)
+		binary.LittleEndian.PutUint32(e[0:4], biosLinkerCmdAddPointer)
+		copy(e[4:4+biosLinkerFileSize], destFile)
+		copy(e[4+biosLinkerFileSize:4+2*biosLinkerFileSize], srcFile)
+		binary.LittleEndian.PutUint32(e[4+2*biosLinkerFileSize:4+2*biosLinkerFileSize+4], offset)
+		e[4+2*biosLinkerFileSize+4] = size
+		entries = append(entries, e)
+	}
+	addChecksum := func(file string, checksumOff, start, length uint32) {
+		e := make([]byte, biosLinkerEntrySize)
+		binary.LittleEndian.PutUint32(e[0:4], biosLinkerCmdAddChecksum)
+		copy(e[4:4+biosLinkerFileSize], file)
+		binary.LittleEndian.PutUint32(e[4+biosLinkerFileSize:4+biosLinkerFileSize+4], checksumOff)
+		binary.LittleEndian.PutUint32(e[4+biosLinkerFileSize+4:4+biosLinkerFileSize+8], start)
+		binary.LittleEndian.PutUint32(e[4+biosLinkerFileSize+8:4+biosLinkerFileSize+12], length)
+		entries = append(entries, e)
+	}
+
+	const tables = "etc/acpi/tables"
+	const rsdp = "etc/acpi/rsdp"
+
+	// Allocate the tables blob anywhere — SeaBIOS prefers low RAM
+	// for ACPI; we let it choose. 16-byte aligned per ACPI spec.
+	allocate(tables, 16, biosLinkerZoneHigh)
+	// The RSDP must sit in low memory so the legacy F-segment scan
+	// can reach it; ask for zone=low explicitly.
+	allocate(rsdp, 16, biosLinkerZoneLow)
+
+	// Patch RSDP.RsdtAddress to point at the start of the tables blob.
+	addPointer(rsdp, tables, rsdpRsdtAddrOff, 4)
+	// Patch RSDT entries to point at FADT / MADT / HPET inside the
+	// tables blob. The destFile is tables itself — SeaBIOS resolves
+	// "src == dest" to "patch relative to my own base".
+	addPointer(tables, tables, rsdtFadtPtrOff, 4)
+	addPointer(tables, tables, rsdtMadtPtrOff, 4)
+	addPointer(tables, tables, rsdtHpetPtrOff, 4)
+
+	// Checksums. RSDP uses the ACPI 1.0 first-20-bytes form; every
+	// other table uses the standard "sum all length bytes to zero".
+	addChecksum(rsdp, rsdpChecksumOff, 0, 20)
+	addChecksum(tables, rsdtBlobOff+9, rsdtBlobOff, rsdtLen)
+	addChecksum(tables, fadtBlobOff+9, fadtBlobOff, fadtLen)
+	addChecksum(tables, madtBlobOff+9, madtBlobOff, madtLen)
+	addChecksum(tables, hpetBlobOff+9, hpetBlobOff, hpetLen)
+
+	out := make([]byte, 0, len(entries)*biosLinkerEntrySize)
+	for _, e := range entries {
+		out = append(out, e...)
+	}
+	return out
 }

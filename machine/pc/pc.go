@@ -71,6 +71,7 @@ type PC struct {
 	lowRAM     *mem.PhysMemoryRange
 	biosROM    *mem.PhysMemoryRange
 	biosHigh   *mem.PhysMemoryRange
+	fwCfg      *fwCfg
 	console    *virtio.CharacterDevice
 	consoleDev *virtio.Console
 
@@ -298,6 +299,20 @@ func New(cfg Config) (*PC, error) {
 	if _, err := p.memMap.RegisterDevice(0xFEC00000, 0x1000, nil, stubRead, stubWrite, stubFlags); err != nil {
 		return nil, fmt.Errorf("register IOAPIC stub: %w", err)
 	}
+
+	// fw_cfg — QEMU paravirt channel that SeaBIOS reads to find ACPI
+	// tables, kernel cmdline, SMBIOS, etc. Without this SeaBIOS publishes
+	// a stub RSDP whose XsdtAddress is uninitialized, and any guest that
+	// walks 0xE0000..0xFFFFF for an RSDP (Pure64, BareMetal, ACPI-aware
+	// custom loaders) halts on the first checksum failure. The files
+	// added here describe a minimal ACPI table set — RSDP + RSDT + FADT +
+	// MADT + HPET — that SeaBIOS allocates, relocates, and publishes on
+	// our behalf via its BiosLinker.
+	p.fwCfg = newFWCfg()
+	p.fwCfg.addFile("etc/acpi/rsdp", rsdpBlob())
+	p.fwCfg.addFile("etc/acpi/tables", tablesBlob())
+	p.fwCfg.addFile("etc/table-loader", tableLoaderScript())
+	p.fwCfg.Register(p.io)
 
 	// Wire CPU I/O to board I/O dispatcher
 	p.cpu.SetIOHandlers(

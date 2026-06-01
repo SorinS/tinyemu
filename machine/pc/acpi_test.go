@@ -5,113 +5,162 @@ import (
 	"testing"
 )
 
-// TestBuildACPITables_RSDPSignature pins the single most load-bearing
-// invariant — that the "RSD PTR " signature lands at acpiBase, on a
-// 16-byte boundary, with a checksum that zeros the first-20-byte sum.
-// Pure64's foundACPI scan walks 0xE0000..0xFFFFF in 16-byte strides
-// looking for exactly this pattern. If the offset drifts or the
-// checksum drifts, every Pure64-style payload silently halts at
-// `noACPI:`.
-func TestBuildACPITables_RSDPSignature(t *testing.T) {
-	shadow := make([]byte, BIOSROMSize)
-	buildACPITables(shadow)
-
-	const rsdpShadowOff = acpiBase - BIOSROMAddr + acpiRSDPOff
-	rsdp := shadow[rsdpShadowOff : rsdpShadowOff+20]
-	if string(rsdp[0:8]) != "RSD PTR " {
-		t.Fatalf("RSDP signature not at expected offset: got %q want %q",
-			rsdp[0:8], "RSD PTR ")
+// TestRSDPBlob_SignatureAndLayout pins the load-bearing invariants of
+// the RSDP blob handed to SeaBIOS via fw_cfg:
+//   - "RSD PTR " at offset 0 (firmware scan key)
+//   - 36-byte length
+//   - revision = 0 (drives Pure64/legacy down the RSDT path)
+//   - RsdtAddress field is *zero* (BiosLinker patches it; pre-baked
+//     values would lock us to a specific allocation address)
+func TestRSDPBlob_SignatureAndLayout(t *testing.T) {
+	r := rsdpBlob()
+	if len(r) != rsdpLen {
+		t.Fatalf("rsdpBlob length = %d, want %d", len(r), rsdpLen)
 	}
-	// 16-byte alignment is implicit in acpiBase + acpiRSDPOff but
-	// pin it anyway so a refactor doesn't accidentally break it.
-	if (acpiBase+acpiRSDPOff)%16 != 0 {
-		t.Fatalf("RSDP not 16-byte aligned (loaders scan on 16-byte boundaries): %#x", acpiBase+acpiRSDPOff)
+	if string(r[0:8]) != "RSD PTR " {
+		t.Errorf("signature = %q, want %q", r[0:8], "RSD PTR ")
 	}
-	var sum byte
-	for _, b := range rsdp {
-		sum += b
+	if r[15] != 0 {
+		t.Errorf("revision = %d, want 0 (ACPI v1.0 / RSDT path)", r[15])
 	}
-	if sum != 0 {
-		t.Fatalf("RSDP v1 checksum is %d, want 0 (first 20 bytes must sum to zero)", sum)
+	rsdtAddr := binary.LittleEndian.Uint32(r[rsdpRsdtAddrOff : rsdpRsdtAddrOff+4])
+	if rsdtAddr != 0 {
+		t.Errorf("RsdtAddress = %#x, want 0 (BiosLinker patches it; pre-baked values lie)",
+			rsdtAddr)
 	}
 }
 
-// TestBuildACPITables_RSDTPointsAtSubTables verifies the RSDT entry
-// pointers actually point at the tables we wrote. A loader walks RSDT,
-// reads each entry's signature, and dispatches — if a pointer is wrong,
-// the loader either bails or treats garbage as a table header.
-func TestBuildACPITables_RSDTPointsAtSubTables(t *testing.T) {
-	shadow := make([]byte, BIOSROMSize)
-	buildACPITables(shadow)
-
-	rsdpOff := acpiBase - BIOSROMAddr + acpiRSDPOff
-	rsdtAddr := binary.LittleEndian.Uint32(shadow[rsdpOff+16 : rsdpOff+20])
-	if rsdtAddr != guestAddr(acpiRSDTOff) {
-		t.Fatalf("RSDP.RsdtAddress = %#x, want %#x", rsdtAddr, guestAddr(acpiRSDTOff))
+// TestTablesBlob_SignaturesAtExpectedOffsets verifies the
+// concatenated blob is laid out the way the BiosLinker script
+// expects: RSDT at 0, FADT after, then MADT, then HPET. If a sub-
+// table grows and the offset constants drift, this catches it.
+func TestTablesBlob_SignaturesAtExpectedOffsets(t *testing.T) {
+	b := tablesBlob()
+	if len(b) != tablesBlobLen {
+		t.Fatalf("tablesBlob length = %d, want %d", len(b), tablesBlobLen)
 	}
-	rsdtShadow := rsdtAddr - BIOSROMAddr
-	if string(shadow[rsdtShadow:rsdtShadow+4]) != "RSDT" {
-		t.Fatalf("RSDT signature missing at shadow offset %#x", rsdtShadow)
+	checks := []struct {
+		name string
+		off  int
+		sig  string
+	}{
+		{"RSDT", rsdtBlobOff, "RSDT"},
+		{"FADT", fadtBlobOff, "FACP"},
+		{"MADT", madtBlobOff, "APIC"},
+		{"HPET", hpetBlobOff, "HPET"},
 	}
-	// Three entries (FADT, MADT, HPET) starting at offset 36.
-	wantSigs := map[uint32]string{
-		guestAddr(acpiFADTOff): "FACP",
-		guestAddr(acpiMADTOff): "APIC",
-		guestAddr(acpiHPETOff): "HPET",
-	}
-	for i := 0; i < 3; i++ {
-		entryAddr := binary.LittleEndian.Uint32(shadow[rsdtShadow+36+uint32(i)*4 : rsdtShadow+40+uint32(i)*4])
-		sig := string(shadow[entryAddr-BIOSROMAddr : entryAddr-BIOSROMAddr+4])
-		if wantSigs[entryAddr] != sig {
-			t.Errorf("RSDT entry %d at %#x: sig=%q, want %q", i, entryAddr, sig, wantSigs[entryAddr])
+	for _, c := range checks {
+		got := string(b[c.off : c.off+4])
+		if got != c.sig {
+			t.Errorf("%s signature at offset %#x: got %q, want %q",
+				c.name, c.off, got, c.sig)
 		}
-		delete(wantSigs, entryAddr)
-	}
-	if len(wantSigs) != 0 {
-		t.Errorf("missing RSDT entries: %v", wantSigs)
 	}
 }
 
-// TestBuildACPITables_MADTLapicBase verifies the MADT carries the
-// expected Local APIC base. BareMetal reads this from Pure64's
-// InfoMap; without it BareMetal's APIC init reads from address 0 and
-// faults.
-func TestBuildACPITables_MADTLapicBase(t *testing.T) {
-	shadow := make([]byte, BIOSROMSize)
-	buildACPITables(shadow)
-	off := acpiBase - BIOSROMAddr + acpiMADTOff
-	got := binary.LittleEndian.Uint32(shadow[off+36 : off+40])
+// TestTablesBlob_RSDTPointersAreRelative makes sure the RSDT entry
+// pointers carry *file-relative offsets*, not absolute addresses.
+// The BiosLinker reads these, adds the allocated base, and writes
+// back the absolute. Pre-baked absolutes would point at random
+// memory after SeaBIOS allocates the blob.
+func TestTablesBlob_RSDTPointersAreRelative(t *testing.T) {
+	b := tablesBlob()
+	want := []struct {
+		field string
+		off   int
+		val   uint32
+	}{
+		{"FADT", rsdtFadtPtrOff, uint32(fadtBlobOff)},
+		{"MADT", rsdtMadtPtrOff, uint32(madtBlobOff)},
+		{"HPET", rsdtHpetPtrOff, uint32(hpetBlobOff)},
+	}
+	for _, w := range want {
+		got := binary.LittleEndian.Uint32(b[w.off : w.off+4])
+		if got != w.val {
+			t.Errorf("RSDT->%s pointer at offset %#x = %#x, want %#x (file-relative)",
+				w.field, w.off, got, w.val)
+		}
+	}
+}
+
+// TestTablesBlob_MADTLapicBase verifies the LAPIC base in MADT
+// matches the LAPIC stub we register in PC.New.
+func TestTablesBlob_MADTLapicBase(t *testing.T) {
+	b := tablesBlob()
+	got := binary.LittleEndian.Uint32(b[madtBlobOff+36 : madtBlobOff+40])
 	if got != uint32(lapicBase) {
 		t.Errorf("MADT.LocalApicAddress = %#x, want %#x", got, lapicBase)
 	}
 }
 
-// TestBuildACPITables_TableChecksums is the catch-all guard against
-// stamp-and-forget header drift. Every ACPI table's first `length`
-// bytes must byte-sum to zero; if a future change adds a field but
-// forgets to re-finalize, this catches it.
-func TestBuildACPITables_TableChecksums(t *testing.T) {
-	shadow := make([]byte, BIOSROMSize)
-	buildACPITables(shadow)
-	tests := []struct {
-		name string
-		off  int
-	}{
-		{"RSDT", acpiRSDTOff},
-		{"FADT", acpiFADTOff},
-		{"MADT", acpiMADTOff},
-		{"HPET", acpiHPETOff},
+// TestTableLoaderScript_HasRequiredOps decodes the BiosLinker script
+// and confirms it contains the commands we expect SeaBIOS to need:
+//   - ALLOCATE for both file names
+//   - ADD_POINTER for the RSDP's RsdtAddress (size 4)
+//   - ADD_CHECKSUM for the RSDP at offset 8 covering 20 bytes
+// Tests that fail here mean SeaBIOS will either skip our tables or
+// finalize them wrong.
+func TestTableLoaderScript_HasRequiredOps(t *testing.T) {
+	script := tableLoaderScript()
+	if len(script)%biosLinkerEntrySize != 0 {
+		t.Fatalf("script length %d not a multiple of entry size %d",
+			len(script), biosLinkerEntrySize)
 	}
-	for _, tc := range tests {
-		shadowOff := acpiBase - BIOSROMAddr + tc.off
-		length := binary.LittleEndian.Uint32(shadow[shadowOff+4 : shadowOff+8])
-		var sum byte
-		for _, b := range shadow[shadowOff : shadowOff+int(length)] {
-			sum += b
+	var (
+		sawAllocateRSDP, sawAllocateTables bool
+		sawRSDPRsdtPointer, sawRSDPChecksum bool
+	)
+	for i := 0; i < len(script); i += biosLinkerEntrySize {
+		e := script[i : i+biosLinkerEntrySize]
+		cmd := binary.LittleEndian.Uint32(e[0:4])
+		// First file-name field always lives at offset 4.
+		name := nullTerm(e[4 : 4+biosLinkerFileSize])
+		switch cmd {
+		case biosLinkerCmdAllocate:
+			if name == "etc/acpi/rsdp" {
+				sawAllocateRSDP = true
+			}
+			if name == "etc/acpi/tables" {
+				sawAllocateTables = true
+			}
+		case biosLinkerCmdAddPointer:
+			if name == "etc/acpi/rsdp" {
+				off := binary.LittleEndian.Uint32(e[4+2*biosLinkerFileSize : 4+2*biosLinkerFileSize+4])
+				size := e[4+2*biosLinkerFileSize+4]
+				if off == rsdpRsdtAddrOff && size == 4 {
+					sawRSDPRsdtPointer = true
+				}
+			}
+		case biosLinkerCmdAddChecksum:
+			if name == "etc/acpi/rsdp" {
+				off := binary.LittleEndian.Uint32(e[4+biosLinkerFileSize : 4+biosLinkerFileSize+4])
+				start := binary.LittleEndian.Uint32(e[4+biosLinkerFileSize+4 : 4+biosLinkerFileSize+8])
+				length := binary.LittleEndian.Uint32(e[4+biosLinkerFileSize+8 : 4+biosLinkerFileSize+12])
+				if off == rsdpChecksumOff && start == 0 && length == 20 {
+					sawRSDPChecksum = true
+				}
+			}
 		}
-		if sum != 0 {
-			t.Errorf("%s checksum nonzero (sum=%d) — header probably out of sync with body", tc.name, sum)
-		}
+	}
+	if !sawAllocateRSDP {
+		t.Error("missing ALLOCATE etc/acpi/rsdp")
+	}
+	if !sawAllocateTables {
+		t.Error("missing ALLOCATE etc/acpi/tables")
+	}
+	if !sawRSDPRsdtPointer {
+		t.Error("missing ADD_POINTER for RSDP.RsdtAddress (size=4, off=16)")
+	}
+	if !sawRSDPChecksum {
+		t.Error("missing ADD_CHECKSUM for RSDP (off=8, length=20)")
 	}
 }
 
+func nullTerm(b []byte) string {
+	for i, c := range b {
+		if c == 0 {
+			return string(b[:i])
+		}
+	}
+	return string(b)
+}
