@@ -3,13 +3,23 @@
 # under our SeaBIOS shim.
 #
 # Usage:
-#   ./run_baremetal.sh                          # plain boot
-#   ./run_baremetal.sh trace                    # boot with bios+rip debug knobs on
+#   ./run_baremetal.sh                                  # plain boot, no payload
+#   ./run_baremetal.sh trace                            # bios+rip debug knobs on
+#   ./run_baremetal.sh "" bin/baremetal/hello.bin       # boot with a user payload
+#   ./run_baremetal.sh trace bin/baremetal/hello.bin    # both
+#
+# A payload is a flat binary linked at ORG 0x1E0000 (where BareMetal's
+# init_sys copies it before jumping). Maximum payload size: 16 KiB
+# (init_sys copies 2048 qwords). The payload calls into the kernel
+# via the fixed pointer slots at 0x100010 onwards — see
+# `cat ~/Dev/Assembler/BareMetal.git/api/libBareMetal.asm` for the
+# table, and bin/baremetal/hello.asm for a worked example.
 #
 # Artefact layout in bin/baremetal/:
 #   bios-novideo.sys           MBR boot sector (512 B; reads sectors 16..63)
 #   pure64-bios-novideo.sys    second-stage loader at sector 16 (4 KiB)
-#   kernel.sys                 BareMetal payload, appended to pure64.sys
+#   kernel.sys                 BareMetal kernel (padded to exactly 20 KiB)
+#   <your-payload.bin>         appended to kernel.sys on the disk image
 #
 # We assemble these into a flat 1 MiB disk image at runtime so SeaBIOS
 # sees a sane CHS geometry (s=2048; anything below ~1000 sectors makes
@@ -39,6 +49,20 @@ for f in "$MBR" "$LOADER" "$KERNEL"; do
     [ -r "$f" ] || { echo "missing $f -- build Pure64 + BareMetal and copy into bin/baremetal/" >&2; exit 1; }
 done
 
+# Optional second arg: a flat-binary payload to append after kernel.sys.
+# BareMetal's init_sys checks the first qword past KERNELSIZE; non-zero
+# triggers the copy to 0x1E0000 and the start_payload jump.
+PAYLOAD="${2:-}"
+if [ -n "$PAYLOAD" ]; then
+    [ -r "$PAYLOAD" ] || { echo "missing payload: $PAYLOAD" >&2; exit 1; }
+    psize=$(wc -c <"$PAYLOAD" | tr -d ' ')
+    if [ "$psize" -gt 16384 ]; then
+        echo "payload $PAYLOAD is ${psize} bytes; init_sys copies only 16 KiB" >&2
+        exit 1
+    fi
+    echo "[run_baremetal] payload: $PAYLOAD ($psize bytes)"
+fi
+
 # Build the disk image at /tmp so we don't dirty the working tree. The
 # layout matches Pure64's MBR DAP defaults: sector 0 = MBR, sector 16 =
 # loader, sector 24 = kernel; padded out to 1 MiB so SeaBIOS computes a
@@ -49,6 +73,9 @@ IMG="/tmp/temu-baremetal.img"
     dd if=/dev/zero bs=512 count=15 status=none
     cat "$LOADER"
     cat "$KERNEL"
+    if [ -n "$PAYLOAD" ]; then
+        cat "$PAYLOAD"
+    fi
     dd if=/dev/zero bs=512 count=2000 status=none
 ) > "$IMG"
 # Truncate to exactly 1 MiB
@@ -74,7 +101,7 @@ case "${1:-}" in
     "")
         ;;
     *)
-        echo "Usage: $0 [trace]" >&2
+        echo "Usage: $0 [trace] [payload-binary]" >&2
         exit 1
         ;;
 esac
