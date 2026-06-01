@@ -72,6 +72,7 @@ type PC struct {
 	biosROM    *mem.PhysMemoryRange
 	biosHigh   *mem.PhysMemoryRange
 	fwCfg      *fwCfg
+	ps2        *PS2Controller
 	console    *virtio.CharacterDevice
 	consoleDev *virtio.Console
 
@@ -320,6 +321,14 @@ func New(cfg Config) (*PC, error) {
 	p.fwCfg.addFile("etc/acpi/tables", tablesBlob())
 	p.fwCfg.addFile("etc/table-loader", tableLoaderScript())
 	p.fwCfg.Register(p.io)
+
+	// 8042 PS/2 controller stub — enough of the protocol to keep guests
+	// that POST a real keyboard controller (BareMetal's init_hid,
+	// SeaBIOS keyboard probe, Linux's i8042 driver) from spinning on
+	// port 0x64 status polls. See machine/pc/ps2.go for what we do and
+	// don't model.
+	p.ps2 = NewPS2Controller()
+	p.ps2.Register(p.io)
 
 	// Wire CPU I/O to board I/O dispatcher
 	p.cpu.SetIOHandlers(
