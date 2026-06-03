@@ -136,7 +136,18 @@ case $VARIANT in
         # Keep the ISO attached so you can insmod virtio_blk and mount
         # /dev/vda manually from the shell — useful for debugging the
         # I/O path in isolation.
-        echo "[run64_iso] bare mode: rdinit=/bin/sh (no Alpine init, raw busybox shell)"
+        echo "[run64_iso] bare mode: rdinit=/bin/sh (no init scripts, raw busybox shell)"
+        ;;
+    shell)
+        # TinyCore-specific: TinyCore's inittab respawns getty/login on
+        # tty1 only — without a VGA console there's no way to reach the
+        # shell over the serial line, so the boot looks "hung" after
+        # "login[…]: root login on 'tty1'". rdinit=/bin/sh sidesteps
+        # the whole TinyCore init chain (udev probes, extension
+        # loading, etc.) and gives an immediate busybox shell on
+        # ttyS0 = stdin/stdout. ~2.5 minutes to the `/ #` prompt.
+        APPEND="$APPEND rdinit=/bin/sh"
+        echo "[run64_iso] shell mode: rdinit=/bin/sh (no TinyCore init, raw busybox shell on serial)"
         ;;
     single)
         # Drop into Alpine's single-user shell early in /init, BEFORE
@@ -185,7 +196,7 @@ case $VARIANT in
         fi
         ;;
     *)
-        echo "Unknown variant '$VARIANT' (expected: upstream|bare|single|nonlplug|nohw|nomodloop|fast|superfast|nonlplug-fast)" >&2
+        echo "Unknown variant '$VARIANT' (expected: upstream|bare|shell|single|nonlplug|nohw|nomodloop|fast|superfast|nonlplug-fast)" >&2
         exit 1
         ;;
 esac
