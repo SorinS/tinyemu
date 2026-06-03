@@ -171,6 +171,39 @@ func TestBoot64_TinyCore_ReachesKernelBanner(t *testing.T) {
 	}
 }
 
+// TestBoot64_TinyCore_ReachesUserspace is the deepest TinyCore smoke
+// test: the kernel mounts the initrd as initramfs, runs /init, and
+// busybox prints its boot banner. Reaching this marker means the full
+// PVH boot path — including the PVH module → initrd handoff — works
+// end-to-end. The userspace side is fast (TinyCore boots to "init
+// started" in a couple of minutes on a slow host) so the budget is
+// generous rather than tight.
+//
+// The marker we look for is "init started: BusyBox" — printed by
+// busybox-init early in the userspace boot. Before this test landed
+// the PVH loader had `_ = initrdData // TODO …` and TinyCore booted
+// to "Unable to mount root fs"; this is the regression guard that
+// catches a future drop of the PVH module wiring.
+func TestBoot64_TinyCore_ReachesUserspace(t *testing.T) {
+	skipIfBootTestsDisabled(t)
+	root := repoRoot(t)
+	kernel := filepath.Join(root, "bin/tinycore64/vmlinux64")
+	initrd := filepath.Join(root, "bin/tinycore64/corepure64.gz")
+	requireFile(t, kernel)
+	requireFile(t, initrd)
+	args := []string{
+		"-machine", "x86_64", "-m", "128", "-kernel", kernel, "-initrd", initrd, "-append",
+		"console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp " +
+			"nokaslr tsc=reliable",
+	}
+	const budget = 5 * time.Minute
+	out, ok := runTemuExpect(t, args, "init started", budget)
+	if !ok {
+		t.Fatalf("tinycore did not reach busybox-init within %v.\nLast output:\n%s",
+			budget, tail(out, 2000))
+	}
+}
+
 // TestBoot64_TinyCore_ReachesInitramfs takes the next step: the kernel
 // has printed its banner AND unpacked an initramfs. The marker is the
 // kernel's "Unpacking initramfs" / "Freeing initrd memory" pair. This

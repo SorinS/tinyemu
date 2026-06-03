@@ -129,9 +129,10 @@ func (p *PC) loadPVH64(kernelData, initrdData []byte, cmdLine string) error {
 		}
 	}
 
-	const startInfoAddr uint32 = 0x9000
-	const memmapAddr uint32 = 0x9100
-	const cmdLineAddr uint32 = 0x9400
+	const startInfoAddr uint32 = 0x9000 // hvm_start_info struct (56 bytes)
+	const memmapAddr uint32 = 0x9100   // E820-style entries (24 bytes each)
+	const modlistAddr uint32 = 0x9300  // hvm_modlist_entry array (32 bytes each)
+	const cmdLineAddr uint32 = 0x9400  // null-terminated boot cmdline
 
 	// Build the memmap. A single RAM entry covering all of physical RAM
 	// is enough for most kernels; OSv and FreeBSD only care that RAM is
@@ -149,11 +150,40 @@ func (p *PC) loadPVH64(kernelData, initrdData []byte, cmdLine string) error {
 	// required — OSv parses the table and uses what it sees.
 	addMemmap(0, uint64(p.ramSize), 1)
 
-	// Command line (immediately follows the memmap area, far enough that
-	// 32-entry memmaps wouldn't collide).
+	// Command line (immediately follows the memmap + modlist areas).
 	cmdLineBuf := append([]byte(cmdLine), 0)
 	for i, b := range cmdLineBuf {
 		p.writePhys8(cmdLineAddr+uint32(i), b)
+	}
+
+	// Initrd → PVH module 0. The PVH spec lets the loader pass
+	// arbitrary modules via modlist_paddr; Linux's pvh_start_xen
+	// treats the first one as the initramfs and points
+	// boot_params.hdr.ramdisk_{image,size} at it. Place the bytes
+	// just below the top of RAM so the kernel's later high-memory
+	// initialisation doesn't trample them, then build a single
+	// hvm_modlist_entry describing the region.
+	nrModules := uint32(0)
+	if len(initrdData) > 0 {
+		initrdAddr := uint32(p.ramSize) - uint32(len(initrdData))
+		initrdAddr &^= 0xFFF
+		if initrdAddr < 0x100000 {
+			return fmt.Errorf("initrd doesn't fit below the kernel load region (%d bytes, %d MiB RAM)",
+				len(initrdData), p.ramSize>>20)
+		}
+		for i, b := range initrdData {
+			p.writePhys8(initrdAddr+uint32(i), b)
+		}
+		// hvm_modlist_entry:
+		//   0x00  uint64 paddr          — module bytes in guest RAM
+		//   0x08  uint64 size           — bytes
+		//   0x10  uint64 cmdline_paddr  — optional per-module cmdline (0 = none)
+		//   0x18  uint64 reserved       — must be zero
+		p.patchBootParam64(modlistAddr+0x00, uint64(initrdAddr))
+		p.patchBootParam64(modlistAddr+0x08, uint64(len(initrdData)))
+		p.patchBootParam64(modlistAddr+0x10, 0)
+		p.patchBootParam64(modlistAddr+0x18, 0)
+		nrModules = 1
 	}
 
 	// hvm_start_info: magic, version, flags, nr_modules, modlist_paddr,
@@ -161,8 +191,12 @@ func (p *PC) loadPVH64(kernelData, initrdData []byte, cmdLine string) error {
 	p.patchBootParam32(startInfoAddr+0x00, 0x336ec578) // magic "xEn3"
 	p.patchBootParam32(startInfoAddr+0x04, 1)          // version
 	p.patchBootParam32(startInfoAddr+0x08, 0)          // flags
-	p.patchBootParam32(startInfoAddr+0x0C, 0)          // nr_modules
-	p.patchBootParam64(startInfoAddr+0x10, 0)          // modlist_paddr
+	p.patchBootParam32(startInfoAddr+0x0C, nrModules)  // nr_modules
+	if nrModules > 0 {
+		p.patchBootParam64(startInfoAddr+0x10, uint64(modlistAddr))
+	} else {
+		p.patchBootParam64(startInfoAddr+0x10, 0)
+	}
 	p.patchBootParam64(startInfoAddr+0x18, uint64(cmdLineAddr))
 	p.patchBootParam64(startInfoAddr+0x20, 0) // rsdp_paddr — no ACPI
 	p.patchBootParam64(startInfoAddr+0x28, uint64(memmapAddr))
@@ -207,6 +241,5 @@ func (p *PC) loadPVH64(kernelData, initrdData []byte, cmdLine string) error {
 	cpu64.SetRIP(uint64(entry))
 	cpu64.SetRFLAGS(2)
 
-	_ = initrdData // TODO: PVH modules via modlist_paddr if/when we need it
 	return nil
 }
