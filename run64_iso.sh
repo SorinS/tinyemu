@@ -46,12 +46,19 @@ case $NAME in
         else
             KERNEL="$ROOT/bin/tinycore64/vmlinuz64"
         fi
-        # corepure64.gz is the upstream initramfs. Pass it through the
-        # PVH module list (machine/pc/pvh64.go) so the kernel finds it
-        # via boot_params and mounts it as the initial root. Without
-        # this the kernel boots all the way through device init then
-        # panics with "Unable to mount root fs on unknown-block(0,0)".
-        INITRD="$ROOT/bin/tinycore64/corepure64.gz"
+        # Prefer the patched initramfs that adds a ttyS0 auto-login
+        # getty (see scripts/extract_tinycore64.sh). Without it
+        # upstream's inittab only respawns getty on tty1, so the
+        # shell ends up on a VGA console we don't model and the
+        # boot looks "hung" after "login[…]: root login on 'tty1'".
+        # Falls back to the upstream corepure64.gz if the extract
+        # script hasn't been run yet.
+        "$ROOT/scripts/extract_tinycore64.sh"
+        if [ -r "$ROOT/bin/tinycore64/corepure64-serial.gz" ]; then
+            INITRD="$ROOT/bin/tinycore64/corepure64-serial.gz"
+        else
+            INITRD="$ROOT/bin/tinycore64/corepure64.gz"
+        fi
         MEM=128
         # Match the isolinux.cfg default with output redirected to
         # COM1, no APIC/ACPI/SMP/KASLR. loglevel=8 maximises early
