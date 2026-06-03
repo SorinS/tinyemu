@@ -667,6 +667,23 @@ func (c *CPU) opRETF(operandSize uint8) error {
 			// Real mode: only base rebuilds; limit + access preserved
 			// to support big-real-mode (see opMOVtoSreg comment).
 			c.segBase[CS] = uint64(newCS) << 4
+		} else {
+			// Protected mode (pm16, pm32, compat32): walk the GDT/LDT
+			// and refresh the cached base/limit/access from the new
+			// descriptor. Without this the descriptor's L bit (and
+			// D, base, limit) stay frozen at the previous selector's
+			// values — and a RETF that intentionally crosses from
+			// compat32 to long64 by pushing a CS selector whose new
+			// GDT slot has L=1 silently stays in compat32.
+			//
+			// That was the TinyCorePure64 wall: Linux's PVH entry
+			// builds a one-shot transition GDT, pushes (long64-CS, IP)
+			// and `retf`s into 64-bit code. Without this descriptor
+			// reload the next instruction (assembled for long mode
+			// with RIP-relative addressing) decodes as compat32
+			// absolute-disp32 and the read of [disp32] page-faults
+			// before the kernel installs its IDT.
+			c.loadProtSegment(CS, newCS)
 		}
 		c.cpl = int(newCS & 3)
 		c.recomputeMode()

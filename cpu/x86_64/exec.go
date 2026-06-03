@@ -326,6 +326,15 @@ func (c *CPU) Step() (err error) {
 			// walker bug ("SeaBIOS (version rrrrrrrr..." because INC
 			// EBX never advanced).
 			rex = b
+			// REX prefix. Encodings 0x40..0x4F are REX prefixes ONLY in
+			// long mode (CS.L=1). In real / pm16 / pm32 / compat32 they
+			// are `INC reg` (0x40..0x47) and `DEC reg` (0x48..0x4F) —
+			// real instructions, not prefixes. Capturing them as REX
+			// outside long mode would silently mis-decode every INC/DEC
+			// in a 32-bit BIOS or kernel, which was the SeaBIOS-format-
+			// walker bug ("SeaBIOS (version rrrrrrrr..." because INC
+			// EBX never advanced).
+			rex = b
 		default:
 			// Apply prefix overrides relative to the mode-derived
 			// defaults set above. 0x66 flips operand size between 16
