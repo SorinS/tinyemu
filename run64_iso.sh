@@ -46,7 +46,12 @@ case $NAME in
         else
             KERNEL="$ROOT/bin/tinycore64/vmlinuz64"
         fi
-        INITRD=""  # try kernel-only first
+        # corepure64.gz is the upstream initramfs. Pass it through the
+        # PVH module list (machine/pc/pvh64.go) so the kernel finds it
+        # via boot_params and mounts it as the initial root. Without
+        # this the kernel boots all the way through device init then
+        # panics with "Unable to mount root fs on unknown-block(0,0)".
+        INITRD="$ROOT/bin/tinycore64/corepure64.gz"
         MEM=128
         # Match the isolinux.cfg default with output redirected to
         # COM1, no APIC/ACPI/SMP/KASLR. loglevel=8 maximises early
