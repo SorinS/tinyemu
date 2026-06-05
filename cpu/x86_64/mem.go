@@ -10,6 +10,24 @@ import (
 // into a returned error (and, in Phase 5, into actual #PF delivery).
 type pageFaultPanic struct{ Err *PageFaultError }
 
+// exceptionPanic is raised by instruction handlers that need to deliver a
+// processor exception computed during execution — e.g. #DE from DIV/IDIV
+// (divide-by-zero or quotient overflow). It is delivered as a FAULT: the
+// saved RIP must point at the faulting instruction, which Step()'s recover
+// restores from origRIP before vectoring through the IDT, exactly like the
+// pageFaultPanic path. HasErr/ErrorCode carry an error code for the
+// vectors that push one (#DF, #TS, #NP, #SS, #GP, #PF); #DE pushes none.
+type exceptionPanic struct {
+	Vec       uint8
+	HasErr    bool
+	ErrorCode uint32
+}
+
+// raiseDE raises #DE (vector 0), the divide-error fault. Never returns.
+func (c *CPU) raiseDE() {
+	panic(exceptionPanic{Vec: 0})
+}
+
 // physWatch{Lo,Hi} bracket a physical address range whose writes get
 // logged with RIP context. Diagnostic for "where does this PML4 entry
 // get written?" investigations. Set TINYEMU_X64_PHYSWATCH=<lo>-<hi>.

@@ -2,6 +2,7 @@ package x86_64
 
 import (
 	"fmt"
+	"math"
 	"math/bits"
 	"math/rand/v2"
 	"os"
@@ -2966,14 +2967,30 @@ func (c *CPU) opIMULImm(rex, operandSize uint8, imm8 bool) error {
 func (c *CPU) opDIV(src uint64, operandSize uint8) error {
 	src &= mask(operandSize)
 	if src == 0 {
-		return unimplemented("#DE on division by zero — IDT delivery pending")
+		c.raiseDE() // divide by zero
+	}
+	if operandSize == 1 {
+		// Byte form (F6 /6) is special: the dividend is the 16-bit AX
+		// register (NOT DL:AL), the quotient goes to AL and the remainder
+		// to AH. The DX:AX / EDX:EAX / RDX:RAX shape below applies only to
+		// the 16/32/64-bit forms.
+		dividend := uint16(c.reg64[RAX])
+		q := dividend / uint16(src)
+		r := dividend % uint16(src)
+		if q > 0xFF {
+			c.raiseDE() // quotient doesn't fit AL
+		}
+		c.SetReg8(AL, uint8(q))
+		c.SetReg8(AH, uint8(r))
+		c.setArithFlags(flagBits{})
+		return nil
 	}
 	switch operandSize {
 	case 8:
 		hi := c.GetReg64(RDX)
 		lo := c.GetReg64(RAX)
 		if hi >= src {
-			return unimplemented("#DE on quotient overflow — IDT delivery pending")
+			c.raiseDE() // quotient would overflow 64 bits
 		}
 		q, r := bits.Div64(hi, lo, src)
 		c.SetReg64(RAX, q)
@@ -2986,7 +3003,7 @@ func (c *CPU) opDIV(src uint64, operandSize uint8) error {
 		q := dividend / src
 		r := dividend % src
 		if q > mask(operandSize) {
-			return unimplemented("#DE on quotient overflow")
+			c.raiseDE() // quotient would overflow the destination width
 		}
 		c.writeReg(RAX, q, operandSize)
 		c.writeReg(RDX, r, operandSize)
@@ -3000,7 +3017,21 @@ func (c *CPU) opDIV(src uint64, operandSize uint8) error {
 func (c *CPU) opIDIV(src uint64, operandSize uint8) error {
 	srcS := signExtend(src&mask(operandSize), operandSize)
 	if srcS == 0 {
-		return unimplemented("#DE on signed division by zero")
+		c.raiseDE() // signed divide by zero
+	}
+	if operandSize == 1 {
+		// Byte form (F6 /7): dividend is signed AX, quotient→AL,
+		// remainder→AH. Valid quotient range is [-128, 127].
+		dividend := int64(int16(uint16(c.reg64[RAX])))
+		q := dividend / srcS
+		r := dividend % srcS
+		if q < -128 || q > 127 {
+			c.raiseDE()
+		}
+		c.SetReg8(AL, uint8(int8(q)))
+		c.SetReg8(AH, uint8(int8(r)))
+		c.setArithFlags(flagBits{})
+		return nil
 	}
 	switch operandSize {
 	case 8:
@@ -3014,6 +3045,11 @@ func (c *CPU) opIDIV(src uint64, operandSize uint8) error {
 			return unimplemented("IDIV with non-trivial RDX hi half")
 		}
 		dividend := int64(lo)
+		// INT64_MIN / -1 overflows the 64-bit signed quotient (and would
+		// panic Go's runtime divide); raise #DE as real hardware does.
+		if dividend == math.MinInt64 && srcS == -1 {
+			c.raiseDE()
+		}
 		q := dividend / srcS
 		r := dividend % srcS
 		c.SetReg64(RAX, uint64(q))
@@ -3025,6 +3061,13 @@ func (c *CPU) opIDIV(src uint64, operandSize uint8) error {
 		dividend := (hi << (uint(operandSize) * 8)) | int64(lo)
 		q := dividend / srcS
 		r := dividend % srcS
+		// #DE if the signed quotient doesn't fit the destination width
+		// (e.g. INT_MIN / -1). bound = 2^(n-1); valid range is
+		// [-bound, bound-1].
+		bound := int64(1) << (uint(operandSize)*8 - 1)
+		if q < -bound || q > bound-1 {
+			c.raiseDE()
+		}
 		c.writeReg(RAX, uint64(q), operandSize)
 		c.writeReg(RDX, uint64(r), operandSize)
 	}

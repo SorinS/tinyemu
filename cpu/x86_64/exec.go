@@ -221,6 +221,20 @@ func (c *CPU) Step() (err error) {
 					}
 				}
 				err = ex.Err
+			case exceptionPanic:
+				// Computed processor fault (#DE today; reusable for the
+				// other vectors). RIP points at the faulting instruction.
+				c.rip = origRIP
+				if c.segLimit[IDTR] > 0 {
+					if derr := c.deliverInterrupt(ex.Vec, ex.HasErr, ex.ErrorCode); derr == nil {
+						err = nil
+						return
+					} else {
+						fmt.Fprintf(os.Stderr, "[exc-deliver] FAILED vec=%d hasErr=%v ec=%#x RIP=%#x: %v\n",
+							ex.Vec, ex.HasErr, ex.ErrorCode, origRIP, derr)
+					}
+				}
+				err = fmt.Errorf("x86_64: unhandled exception vec=%d at RIP=%#x (no usable IDT)", ex.Vec, origRIP)
 			default:
 				panic(r)
 			}
