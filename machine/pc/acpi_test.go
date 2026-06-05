@@ -260,10 +260,15 @@ func TestInstallACPIDirect_ChecksumsAndPointers(t *testing.T) {
 	if string(read(dsdtPtr32, 4)) != "DSDT" {
 		t.Errorf("DSDT pointer %#x does not point to DSDT signature", dsdtPtr32)
 	}
-	// FADT.Flags HW_REDUCED_ACPI bit must be set, otherwise Linux
-	// errors on the missing PM1a_EVT_BLK / PM1a_CNT_BLK fields.
+	// FADT.Flags HW_REDUCED_ACPI bit must stay CLEAR. Setting it makes
+	// x86 Linux treat the platform as having no 8259 PIC
+	// (acpi_generic_reduced_hw_init → null_legacy_pic), so the 16 legacy
+	// IRQ descriptors are never preallocated and every request_irq() on a
+	// legacy line (i8042/IRQ1, rtc_cmos/IRQ8, virtio_blk via PCI INTx)
+	// fails with -EINVAL — the box can't mount root. temu emulates a real
+	// PIC/PIT/8042/RTC, so it is not hardware-reduced.
 	flags := binary.LittleEndian.Uint32(fadt[fadtFlagsOff : fadtFlagsOff+4])
-	if flags&fadtHwReduced == 0 {
-		t.Errorf("FADT.Flags = %#x, want HW_REDUCED_ACPI bit set", flags)
+	if flags&fadtHwReduced != 0 {
+		t.Errorf("FADT.Flags = %#x, HW_REDUCED_ACPI must be clear (breaks legacy IRQ routing)", flags)
 	}
 }

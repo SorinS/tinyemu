@@ -286,7 +286,14 @@ func TestBoot64_Alpine_ReachesUserspace(t *testing.T) {
 		"-drive", iso, "-ro",
 		"-net-user",
 		"-append",
-		"console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp " +
+		// NOTE: acpi=off is deliberately NOT passed. This boots with the
+		// full ACPI table set installed by installACPIDirect (RSDP/RSDT/
+		// FADT/DSDT/MADT/HPET). It is the end-to-end regression guard for
+		// the FADT HW_REDUCED_ACPI fix: with that bit set, x86 Linux tears
+		// down the legacy IRQ domain and every legacy-IRQ driver
+		// (i8042, rtc_cmos, virtio_blk via PCI INTx) fails request_irq with
+		// -EINVAL, so the box never mounts root / reaches OpenRC.
+		"console=ttyS0,115200 noapic nolapic pci=noacpi nosmp " +
 			"nokaslr tsc=reliable libata.force=disable ide=disable " +
 			"alpine_dev=vda:iso9660 usbdelay=1 " +
 			"modules=virtio_pci,virtio_blk,virtio_net,loop,squashfs " +

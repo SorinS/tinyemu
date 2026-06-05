@@ -73,7 +73,7 @@ const (
 	fadtDsdtOff   = 40  // 32-bit DSDT pointer
 	fadtFlagsOff  = 112 // 32-bit Flags bitmap; bit 20 = HW_REDUCED_ACPI
 	fadtXDsdtOff  = 140 // 64-bit DSDT pointer (ACPI 2.0+)
-	fadtHwReduced = 1 << 20
+	fadtHwReduced = 1 << 20 // HW_REDUCED_ACPI — must stay CLEAR (see FADT note in tablesBlob)
 )
 
 // writeACPITableHeader writes the standard 36-byte ACPI table header
@@ -139,18 +139,27 @@ func tablesBlob() []byte {
 
 	// --- FADT ---
 	// IAPC_BOOT_ARCH legacy-device flags at offset 109 (legacy
-	// devices present + 8042 present). HW_REDUCED_ACPI flag at
-	// offset 112 exempts us from having to provide functional PM1a
-	// event/control I/O blocks — Linux otherwise warns
-	// "Required FADT field Pm1aEventBlock has zero address". DSDT
-	// pointer (32-bit at offset 40, 64-bit X_Dsdt at offset 140)
-	// references the in-blob DSDT; installACPIDirect rewrites them
-	// to absolute addresses when the blob is placed.
+	// devices present + 8042 present).
+	//
+	// Flags (offset 112) is left ZERO — in particular HW_REDUCED_ACPI
+	// (bit 20) must NOT be set. temu is a legacy PC: it emulates an
+	// 8259 PIC, PIT, 8042, and CMOS RTC. Setting HW_REDUCED tells
+	// Linux the opposite, and on x86 acpi_generic_reduced_hw_init()
+	// responds by pointing legacy_pic at null_legacy_pic and noop'ing
+	// pre_vector_init — so the 16 legacy IRQ descriptors are never
+	// preallocated ("preallocated irqs: 0"). Every driver that then
+	// calls request_irq() on a legacy line (i8042/IRQ1, rtc_cmos/IRQ8,
+	// virtio_blk via PCI INTx) fails with -EINVAL and the box can't
+	// mount root. The PM1a-zero-address message HW_REDUCED used to
+	// suppress is only a warning; ACPICA continues without it.
+	//
+	// DSDT pointer (32-bit at offset 40, 64-bit X_Dsdt at offset 140)
+	// references the in-blob DSDT; installACPIDirect rewrites them to
+	// absolute addresses when the blob is placed.
 	fadt := buf[fadtBlobOff : fadtBlobOff+fadtLen]
 	writeACPITableHeader(fadt, "FACP", fadtLen, 6)
 	binary.LittleEndian.PutUint32(fadt[fadtDsdtOff:fadtDsdtOff+4], uint32(dsdtBlobOff))
 	binary.LittleEndian.PutUint16(fadt[109:111], 0x03)
-	binary.LittleEndian.PutUint32(fadt[fadtFlagsOff:fadtFlagsOff+4], fadtHwReduced)
 	binary.LittleEndian.PutUint64(fadt[fadtXDsdtOff:fadtXDsdtOff+8], uint64(dsdtBlobOff))
 
 	// --- MADT ---
