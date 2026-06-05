@@ -2,7 +2,6 @@
 package pc
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -28,8 +27,15 @@ const (
 	VGAApertureAddr = 0x000A0000
 	VGAApertureSize = 0x00020000 // 128KB VGA memory
 	BIOSROMAddr     = 0x000C0000 // low BIOS shadow window
-	BIOSROMSize     = 0x00040000 // 256 KB — fits SeaBIOS
-	HighBIOSAddr    = 0xFFFC0000 // high BIOS window (last 256 KB of 4 GiB)
+	BIOSROMSize     = 0x00040000 // 256 KB low shadow — fits SeaBIOS's legacy alias
+	// High BIOS / firmware-flash window. Sized at 4 MiB so a full OVMF
+	// (UEFI) flash image fits with its reset vector at 0xFFFFFFF0; the
+	// region is RAM-backed and therefore writable, which doubles as the
+	// UEFI variable store's backing (non-persistent across runs). Smaller
+	// firmware (SeaBIOS = 256 KB, tiny custom BIOSes) is placed at the END
+	// of the window so the reset vector still lands at 0xFFFFFFF0.
+	HighBIOSSize = 0x00400000                 // 4 MiB
+	HighBIOSAddr = 0x100000000 - HighBIOSSize // 0xFFC00000
 
 	VirtIOBaseAddr = 0x00010000 // Fixed MMIO address for VirtIO devices
 	VirtIOSize     = 0x00001000 // 4KB per device
@@ -76,11 +82,11 @@ type PC struct {
 	console    *virtio.CharacterDevice
 	consoleDev *virtio.Console
 
-	virtioDevices      []*virtio.Device
-	virtioCount        int
-	virtioBlkPCICount  int
-	virtioNetPCICount  int
-	nextVirtIOIRQ int
+	virtioDevices     []*virtio.Device
+	virtioCount       int
+	virtioBlkPCICount int
+	virtioNetPCICount int
+	nextVirtIOIRQ     int
 
 	lastTickCycles uint64
 
@@ -127,7 +133,7 @@ func New(cfg Config) (*PC, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to register BIOS ROM: %w", err)
 	}
-	p.biosHigh, err = p.memMap.RegisterRAM(HighBIOSAddr, BIOSROMSize, 0)
+	p.biosHigh, err = p.memMap.RegisterRAM(HighBIOSAddr, HighBIOSSize, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to register high BIOS: %w", err)
 	}
@@ -421,17 +427,27 @@ func (p *PC) LoadBIOS(biosData []byte, kernelData []byte, initrdData []byte, cmd
 		// If both fail, fall through to BIOS ROM load
 	}
 
-	// Copy BIOS to both low and high ROM regions. Placement is at the END
-	// of the 256 KB window so the reset vector at file-offset (size-16)
-	// always lands at canonical 0xFFFFFFF0 (high alias) / 0xC0000+offset
-	// (low shadow), regardless of BIOS size.
+	// Copy the firmware into the high window and the low legacy shadow.
+	// Both are placed at the END of their window so the reset vector at
+	// file-offset (size-16) lands at canonical 0xFFFFFFF0 (high) and the
+	// top of the image aliases into 0xF0000..0xFFFFF (low shadow), exactly
+	// as real hardware aliases the top of the flash down to the legacy
+	// boot-block area.
+	//
+	// The high window is 4 MiB so a full OVMF flash fits; the low shadow
+	// is only 256 KB, so for an image larger than that we mirror just its
+	// top 256 KB there (all a legacy alias ever sees).
 	biosLen := uint64(len(biosData))
-	if biosLen > BIOSROMSize {
-		return errors.New("BIOS image too large (max 256 KB)")
+	if biosLen > HighBIOSSize {
+		return fmt.Errorf("firmware image too large: %d bytes (max %d)", biosLen, HighBIOSSize)
 	}
-	offset := BIOSROMSize - biosLen
-	copy(p.biosROM.PhysMem[offset:], biosData)
-	copy(p.biosHigh.PhysMem[offset:], biosData)
+	copy(p.biosHigh.PhysMem[HighBIOSSize-biosLen:], biosData)
+
+	lowLen := biosLen
+	if lowLen > BIOSROMSize {
+		lowLen = BIOSROMSize
+	}
+	copy(p.biosROM.PhysMem[BIOSROMSize-lowLen:], biosData[biosLen-lowLen:])
 
 	// Set CPU reset vector. x86 reset state has CS.base = 0xFFFF0000 with
 	// EIP = 0xFFF0, so the first fetch is at 0xFFFFFFF0 — the last 16

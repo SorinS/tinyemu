@@ -1,5 +1,16 @@
 package pc
 
+import (
+	"fmt"
+	"os"
+)
+
+// cmosDebug logs every CMOS register read (index → value) when
+// TINYEMU_CMOS_DEBUG=1. Used to see exactly which memory-sizing
+// registers (0x34/0x35 below-4GB, 0x5b/0x5c/0x5d above-4GB) firmware
+// reads and what it gets back.
+var cmosDebug = os.Getenv("TINYEMU_CMOS_DEBUG") == "1"
+
 // CMOSRTC implements a minimal CMOS/RTC device.
 type CMOSRTC struct {
 	index   uint8
@@ -78,7 +89,7 @@ func NewCMOSRTC(memSizeKB uint32) *CMOSRTC {
 // 0x14 bit 0 = "floppy present" and bits 6-7 = (count-1). SeaBIOS reads
 // these to decide whether to probe the FDC.
 func (c *CMOSRTC) SetFloppyType144() {
-	c.ram[0x10] = 0x40           // drive A = 1.44 MB, drive B = none
+	c.ram[0x10] = 0x40                        // drive A = 1.44 MB, drive B = none
 	c.ram[0x14] = (c.ram[0x14] & 0x3E) | 0x01 // floppy present, 1 drive
 }
 
@@ -88,7 +99,11 @@ func (c *CMOSRTC) Register(io *IOPortDispatcher) {
 		return 0xFF // Index port is write-only
 	})
 	io.RegisterRead(0x71, 0x71, func(port uint16) uint32 {
-		return uint32(c.readData())
+		v := c.readData()
+		if cmosDebug {
+			fmt.Fprintf(os.Stderr, "[cmos] idx=%#02x -> %#02x\n", c.index, v)
+		}
+		return uint32(v)
 	})
 	io.RegisterWrite(0x70, 0x70, func(port uint16, val uint32) {
 		c.index = uint8(val) & 0x7F
