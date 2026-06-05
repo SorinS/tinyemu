@@ -649,14 +649,36 @@ On real hardware, executing instruction sequences <em>after</em> step 5 but <em>
     csDBit = 1 &lt;&lt; 10
 )<span class="lang-tag">go</span></pre>
 
+<h2>pm32 vs compat32 — the trap that bit us</h2>
+<p>Two of the five mode values look almost identical from the outside: both run 32-bit code on a flat segment, both pop EBX = some pointer, both call <code>WRMSR</code>. The bit that separates them is <strong>EFER.LMA</strong>:</p>
+<table class="corr-table">
+  <tr><th>State</th><th>ModeProtected32</th><th>ModeCompat32</th></tr>
+  <tr><td>CR0.PE</td><td>1</td><td>1</td></tr>
+  <tr><td>CR0.PG</td><td>0 or 1</td><td>1 (paging required)</td></tr>
+  <tr><td>EFER.LMA</td><td>0</td><td>1 (long mode active)</td></tr>
+  <tr><td>CS.L</td><td>0</td><td>0</td></tr>
+  <tr><td>CS.D</td><td>1</td><td>1</td></tr>
+  <tr><td>Paging walker</td><td>32-bit PAE or non-PAE</td><td>4-level (PML4/PDPT/PD/PT)</td></tr>
+  <tr><td>0x40..0x4F bytes</td><td>INC/DEC reg</td><td>INC/DEC reg (still — REX needs CS.L=1)</td></tr>
+  <tr><td><code>mod=00, r/m=5</code></td><td>disp32 absolute</td><td>disp32 absolute</td></tr>
+</table>
+<p>Compat32 is the mode Linux's PVH stub uses to do its long-mode bring-up: it sets up paging in pm32, enables PG → LMA latches and we become compat32, then it pushes a long-mode CS selector + 64-bit RIP and <code>retf</code>s into ModeLong64. The same byte stream <code>2B 05 90 1F EE FF</code> means <code>SUB EAX, [0xFFEE1F90]</code> in compat32 (absolute disp32) and <code>SUB EAX, [RIP + 0xFFEE1F90]</code> in long64 (RIP-relative). Get stuck in compat32 when the kernel expects long64 and every instruction past that point lies about where it's reading from.</p>
+<p>The bug that taught us this lived in <code>opRETF</code>: the non-long-mode path was loading the new CS selector but not walking the GDT to refresh <code>c.segAccess[CS]</code>. <code>recomputeMode</code> then saw L=0 from the <em>old</em> selector and we silently stayed in compat32 even though the kernel's new GDT had L=1 in the slot it just selected. Lesson 20 has the full war story.</p>
+
 <div class="box box-think">
 <strong>Design rule</strong>
 Any time you find yourself reading <code>c.cr</code>, <code>c.efer</code>, and <code>c.segAccess[CS]</code> together to compute behaviour, ask: is this on the hot path, or once-per-instruction? If on the hot path, cache it. If once-per-event (e.g. only when delivering an interrupt), don't bother — the cache invalidation cost outweighs the lookup savings.
 </div>
+
+<div class="box box-warn">
+<strong>The recomputeMode call-site audit</strong>
+Every state mutation that changes the mode-derived bits must call <code>recomputeMode</code>. The current call sites are: <code>SetCR(0, ...)</code> on a PE/PG transition (writeCR), <code>SetEFER</code>, <code>opMOVtoSreg</code> on CS, <code>opRETF</code> on any mode, <code>opIRETQ</code> + <code>opIRETlegacy</code>. If you grep for <code>recomputeMode</code> and find a write to one of the listed bits without a paired call, that's a latent mode-drift bug — exactly the shape of the TinyCore RETF regression before we found it.
+</div>
 `,
   exercises: [
     "Add a regression test that proves <code>recomputeMode</code> is idempotent: calling it twice in a row with no state changes should leave c.mode unchanged.",
-    "Imagine a bug where some hypothetical SetCR0 forgot to call recomputeMode. Predict what would go wrong on the very next instruction. (Hint: lip() and parseModRM64 still see the old mode.)",
+    "Imagine a bug where a hypothetical SetCR0 forgot to call recomputeMode. Predict what would go wrong on the very next instruction. (Hint: lip() and parseModRM64 still see the old mode.)",
+    "Write a test that puts the CPU in compat32, executes a single <code>retf</code> that loads a CS with L=1, and asserts the mode transitions to long64. (Hint: this is <code>TestRETF_Compat32To64Long</code> in cpu/x86_64.)",
     "Real hardware re-evaluates the mode every cycle. The emulator caches it. Suppose we removed the cache and rebuilt the mode on every call. By how much would performance drop, roughly? Use cpu/x86's prefetch-buffer measurements as a baseline reference point."
   ]
 },
@@ -1278,42 +1300,56 @@ The kernel makes hundreds of millions of decisions per second based on these fiv
 }<span class="lang-tag">go</span></pre>
 <p>Why panic-and-recover instead of error returns everywhere? The memory accessors are called from dozens of places in the decoder. Threading <code>error</code> through every read and write would clutter the call sites and create dozens of opportunities for a forgotten check. Panic gives us "fault unwinding" cleanly — every accessor either succeeds or longjmps to Step's recover.</p>
 
-<h2>The prefix loop</h2>
-<p>The seven valid prefix bytes (excluding REX, which is special) are encoded as a switch:</p>
+<h2>The prefix loop — and the load-bearing REX gate</h2>
+<p>The seven valid prefix bytes (excluding REX) are encoded as a switch. REX needs special handling because bytes <code>0x40..0x4F</code> are a prefix <em>only</em> in long mode (CS.L=1). In real, pm16, pm32, and compat32 the same bytes are <code>INC reg</code> (0x40..0x47) and <code>DEC reg</code> (0x48..0x4F) — real instructions, not prefixes:</p>
 <pre><span class="kw">for</span> {
     b := c.<span class="fn">fetch8</span>()
     <span class="kw">switch</span> {
     <span class="kw">case</span> b == 0x66: operandOverride = <span class="kw">true</span>
-    <span class="kw">case</span> b == 0x67: addressSize = 4
-    <span class="kw">case</span> b == 0xF0, b == 0xF2, b == 0xF3:    <span class="cm">// LOCK / REPNE / REPE</span>
+    <span class="kw">case</span> b == 0x67: addressOverride = <span class="kw">true</span>
+    <span class="kw">case</span> b == 0xF0: <span class="cm">// LOCK — no-op for single-threaded emulation</span>
+    <span class="kw">case</span> b == 0xF2: repPrefix = 2
+    <span class="kw">case</span> b == 0xF3: repPrefix = 1
     <span class="kw">case</span> b == 0x2E: segOverride = CS
     <span class="kw">case</span> b == 0x36: segOverride = SS
     <span class="kw">case</span> b == 0x3E: segOverride = DS
     <span class="kw">case</span> b == 0x26: segOverride = ES
     <span class="kw">case</span> b == 0x64: segOverride = FS
     <span class="kw">case</span> b == 0x65: segOverride = GS
-    <span class="kw">case</span> b &gt;= 0x40 &amp;&amp; b &lt;= 0x4F:
-        rex = b
+    <span class="kw">case</span> b &gt;= 0x40 &amp;&amp; b &lt;= 0x4F &amp;&amp; c.mode == ModeLong64:
+        rex = b   <span class="cm">// ← the mode gate that distinguishes prefix from opcode</span>
     <span class="kw">default</span>:
-        <span class="kw">return</span> c.<span class="fn">executeOpcode</span>(b, rex, operandSize, addressSize, segOverride)
+        <span class="cm">// resolve operand / address size against mode + prefixes, then dispatch</span>
+        ...
+        <span class="kw">return</span> c.<span class="fn">executeOpcode</span>(b, rex, operandSize, addressSize, segOverride, repPrefix, operandOverride)
     }
 }<span class="lang-tag">go</span></pre>
+<p>Drop the <code>&amp;&amp; c.mode == ModeLong64</code> and every 32-bit BIOS or kernel breaks silently: SeaBIOS's POST loop has dozens of <code>INC EBX</code>'s in its byte-count walkers; treat one as a REX prefix and the loop never advances. The very-early symptom is a printk like "SeaBIOS (version rrrrrrrr..." because EBX never indexed past the version-string's <code>r</code>.</p>
+
+<h2>0x48 in compat32: DEC, not REX</h2>
+<p>Compat32 is the trap. We're in long mode (EFER.LMA=1) so the dispatcher would happily accept REX — but CS.L is 0, so 0x48 must still mean <code>DEC EAX</code>. The mode-aware gate above handles this; <code>TestCompat32_0x48IsDecNotREX</code> in <code>cpu/x86_64/compat32_rex_test.go</code> pins it. The test setup deliberately leaves CR0.PG off and pokes EFER directly to skip the LMA-latch guard — it's exercising the decoder, not the page walker.</p>
+<p>The bug shape if the gate ever regresses: a kernel's compat32 stub does <code>48 8D 05 disp32</code>. In long mode that decodes as <code>LEA RAX, [RIP + disp32]</code> (REX.W LEA, 7 bytes). In compat32 it's <code>DEC EAX</code> (1 byte) followed by <code>8D 05 disp32</code> = <code>LEA EAX, [disp32]</code> (6 bytes). Identical bytes, completely different meaning; the symptom is the kernel crashing one or two instructions later with state nobody recognises. That family of bugs is why the prefix loop gates REX on mode, and why the gate has a regression test.</p>
 
 <h2>Prefix interactions</h2>
 <p>Most prefixes can stack — you can have <code>67 65 48 8B</code> (address-override + GS-override + REX.W + MOV r,r/m). Some can't:</p>
 <ul>
-  <li>REP/REPE/REPNE are valid only on string instructions; on others they may have alternate meanings (e.g. REPNE BSF = TZCNT on BMI1+).</li>
+  <li>REP/REPE/REPNE are valid only on string instructions; on others they may have alternate meanings (e.g. <code>F3 0F BD</code> = LZCNT vs plain <code>0F BD</code> = BSR). Our dispatcher silently drops the prefix on non-string opcodes — accepted risk until it bites.</li>
   <li>0x66 and REX.W both target operand size; REX.W wins.</li>
-  <li>Segment override prefixes ignore CS/DS in 64-bit mode for memory operands (the segments are forced to base=0). FS and GS still work.</li>
+  <li>Segment override prefixes ignore CS/DS in 64-bit mode for memory operands (the segments are forced to base=0). FS and GS still work via their MSR-set bases.</li>
 </ul>
 
-<h2>Address size handling</h2>
-<p>In long mode the default address size is 64 bits. A 0x67 prefix shrinks it to 32 bits. There's no way to get 16-bit addressing — the 0x67 prefix in long mode means "32-bit," not "16-bit" as it would in i386.</p>
-<p>Our M1 decoder only handles 64-bit address-size mode (the default). 32-bit addressing under 0x67 will arrive when we wire up the compatibility-mode path in a later phase.</p>
+<h2>Address size handling — across modes</h2>
+<table class="corr-table">
+  <tr><th>Mode</th><th>Default operand</th><th>Default address</th><th>67 flips to</th></tr>
+  <tr><td>Real / pm16</td><td>16</td><td>16</td><td>32</td></tr>
+  <tr><td>pm32 / compat32</td><td>32</td><td>32</td><td>16</td></tr>
+  <tr><td>long64</td><td>32 (REX.W → 64)</td><td>64</td><td>32 — no 16-bit form exists</td></tr>
+</table>
+<p>The dispatcher resolves these to <code>operandSize</code> / <code>addressSize</code> bytes (1, 2, 4, 8) once and passes them through — every opcode handler picks up the right width without re-evaluating mode.</p>
 
 <div class="box box-note">
 <strong>Tip</strong>
-A surprising amount of x86_64 decoder logic is taken up by the prefix loop and the various "REX may or may not appear" branches. Once the opcode byte arrives, the rest is comparatively straightforward — the dispatch table.
+The prefix loop is also a great instrumentation point. Adding a <code>fmt.Fprintf(os.Stderr, ...)</code> at the dispatch site, gated on a RIP range, has caught more bugs in this emulator than any other single technique — half the war stories in this tutorial start with a tactical printk at the top of Step.
 </div>
 `,
   exercises: [
@@ -1563,46 +1599,76 @@ A CPU doesn't know whether you're using a register as a signed or an unsigned nu
 // ============================================================
 {
   id: 18, phase: 5,
-  title: "Long-Mode Interrupts and IRETQ (Planned)",
+  title: "Long-Mode Interrupts and IRETQ",
   subtitle: "Why the IDT got 50% bigger in 64-bit mode",
   content: `
-<h2>What this lesson will cover</h2>
-<p>This lesson lands when the long-mode interrupt path is implemented. The scope:</p>
-<ul>
-  <li>The 16-byte IDT gate. i386 uses 8-byte gates; long mode doubles them to hold a 64-bit offset plus the new IST (Interrupt Stack Table) index.</li>
-  <li>IST: a per-process array of seven alternate kernel stacks. Specific interrupts (NMI, double fault, machine check) can switch to a designated stack regardless of where the faulting context was running.</li>
-  <li>IRETQ: the long-mode interrupt return. Pops five 8-byte values from the stack (RIP, CS, RFLAGS, RSP, SS) — always all five, even within the same privilege level. This is different from i386's IRET which only pops the privilege-change words on a privilege transition.</li>
-  <li>The #PF, #GP, #UD, #DF handlers we'll wire up.</li>
-</ul>
+<h2>Three delivery paths, one entry point</h2>
+<p><code>cpu/x86_64/intr.go</code>'s <code>deliverInterrupt</code> dispatches on the current mode:</p>
+<pre><span class="kw">func</span> (c *<span class="kw">CPU</span>) <span class="fn">deliverInterrupt</span>(vec <span class="kw">uint8</span>, hasErr <span class="kw">bool</span>, errorCode <span class="kw">uint32</span>) <span class="kw">error</span> {
+    <span class="kw">if</span> c.mode != ModeLong64 {
+        <span class="kw">return</span> c.<span class="fn">deliverInterruptLegacy</span>(vec, hasErr, errorCode)
+    }
+    <span class="cm">// long-mode path: 16-byte gate, full IRETQ frame, optional IST</span>
+    ...
+}<span class="lang-tag">go</span></pre>
+<p>The legacy helper splits real mode (4-byte IVT, 16-bit IP+CS+FLAGS push) from protected mode (8-byte IDT gate, configurable operand width). Long mode is its own path because the gate format and the saved frame both change.</p>
 
-<h2>Why this is non-trivial</h2>
-<p>Interrupt delivery in long mode involves:</p>
-<ol>
-  <li>Vector lookup in the IDT (CR4.IDTR.base + vec*16).</li>
-  <li>Privilege check vs the gate's DPL.</li>
-  <li>Optional stack switch via IST.</li>
-  <li>Saving the interrupted context — RIP, CS, RFLAGS, RSP, SS, and optionally an error code — on the new stack.</li>
-  <li>Loading the handler's CS:RIP from the gate.</li>
-  <li>Clearing TF/RF (and IF for interrupt gates) in RFLAGS.</li>
-</ol>
-<p>Each step has its own failure modes (stack fault during context save, mismatched CS for the handler, IST index out of range). That's why this is its own phase.</p>
+<h2>The 16-byte gate</h2>
+<p>Long mode doubles the IDT gate size to hold a 64-bit handler RIP plus the IST index:</p>
+<table class="corr-table">
+  <tr><th>Offset</th><th>Field</th><th>Size</th></tr>
+  <tr><td>0x00</td><td>Offset bits 0..15</td><td>2 bytes</td></tr>
+  <tr><td>0x02</td><td>Segment selector</td><td>2 bytes</td></tr>
+  <tr><td>0x04</td><td>IST index (low 3 bits), reserved</td><td>1 byte</td></tr>
+  <tr><td>0x05</td><td>Type / DPL / P (the same access byte as i386)</td><td>1 byte</td></tr>
+  <tr><td>0x06</td><td>Offset bits 16..31</td><td>2 bytes</td></tr>
+  <tr><td>0x08</td><td>Offset bits 32..63</td><td>4 bytes</td></tr>
+  <tr><td>0x0C</td><td>Reserved</td><td>4 bytes</td></tr>
+</table>
+<p>So the lookup is <code>IDTR.base + vec*16</code>, not <code>vec*8</code> like i386. Our delivery code reads the 16 bytes, validates the P bit, splits the offset, and loads CS:RIP from the gate. Anything malformed surfaces as a hard error rather than a recursive #GP — we don't have double-fault delivery yet, and a guest-induced infinite #GP loop is a worse failure mode than a clear emulator error.</p>
 
-<h2>Today's status</h2>
-<p>In M1, page faults from Translate are surfaced as a returned <code>*PageFaultError</code> from Step. No interrupt is delivered. The Run loop sees the error and returns it. Future Linux boot code will need this:</p>
-<pre><span class="kw">case</span> pageFaultPanic:
-    c.rip = origRIP
-    err = ex.Err            <span class="cm">// M1: return as error</span>
-    <span class="cm">// Phase 4: deliver as INT 14 with CR2=Err.Addr, error-code on stack</span><span class="lang-tag">go</span></pre>
+<pre><span class="cm">// cpu/x86_64/intr.go</span>
+<span class="kw">if</span> typeAttr&amp;0x80 == 0 {
+    <span class="kw">return</span> fmt.<span class="fn">Errorf</span>(<span class="st">"prot-mode interrupt: gate %d not present "</span> +
+        <span class="st">"(typeAttr=%#x RIP=%#x CS=%#x)"</span>,
+        vec, typeAttr, c.rip, c.seg[CS])
+}<span class="lang-tag">go</span></pre>
+<p>The RIP+CS in the error message look like noise until you're chasing a "page fault before the IDT is installed" bug — at which point they're the single most useful line in the log. That commit (<code>d06885e</code>) was what told us the TinyCore #PF came from <code>0x235c07a</code>, which we then disassembled to find the bad addressing-mode decode.</p>
 
-<div class="box box-note">
-<strong>Not yet implemented</strong>
-This is a roadmap entry. The lesson body will be expanded when the long-mode interrupt path lands in the emulator. Until then, treat this as a preview of what's coming.
+<h2>The frame IRETQ expects</h2>
+<p>i386 IRET pops 3 doublewords (EIP, CS, EFLAGS) within the same privilege level, or 5 (adds ESP, SS) across rings. Long-mode IRETQ <em>always</em> pops 5 qwords:</p>
+<pre>RSP →  [RIP]      <span class="cm">// 8 bytes</span>
+       [CS]       <span class="cm">// 8 bytes — only the low 16 bits matter</span>
+       [RFLAGS]   <span class="cm">// 8 bytes</span>
+       [RSP_new]  <span class="cm">// 8 bytes</span>
+       [SS]       <span class="cm">// 8 bytes — only the low 16 bits matter</span><span class="lang-tag">stack</span></pre>
+<p>Always five, regardless of privilege change. That's because long mode dropped the i386 "if same ring, no SS/RSP" optimisation — the silicon needed to know <em>before</em> it pops whether to expect 3 or 5, and reading the saved CS to decide was a serialisation point nobody wanted. Always 5 is simpler.</p>
+<p>The flip side: kernel exception handlers <em>always</em> push to a known stack, even on intra-ring faults. The handler's prologue can rely on RSP being aligned and RFLAGS being its previous value, no special casing.</p>
+
+<h2>The CPL update — the bug we hit on Alpine</h2>
+<p>IRETQ to user (CS RPL = 3) must synchronise <code>c.cpl = 3</code> alongside loading the new CS. Without that, the emulator stays "in the kernel" while the architectural CS says "userspace." The next page fault then builds a <code>#PF</code> error code with X86_PF_USER cleared, Linux's <code>do_user_addr_fault</code> takes the <code>no_context</code> branch, and init dies with "BUG: unable to handle page fault." Our IRETQ derives the new CPL from CS[1:0] and synthesises a matching descriptor cache:</p>
+<pre>newCPL := <span class="kw">int</span>(newCS &amp; 3)
+c.cpl = newCPL
+<span class="kw">if</span> newCPL == 3 {
+    c.segAccess[CS] = csLBit | 0xFA   <span class="cm">// DPL=3</span>
+} <span class="kw">else</span> {
+    c.segAccess[CS] = csLBit | 0x9A   <span class="cm">// DPL=0</span>
+}<span class="lang-tag">go</span></pre>
+
+<h2>IST — the per-vector stack switch</h2>
+<p>The TSS in long mode carries seven alternate kernel stacks (<code>ist1</code>..<code>ist7</code>). An IDT gate's IST index (1..7) tells the CPU "regardless of whether we're crossing rings, switch RSP to <code>TSS.ist[N]</code> before pushing the frame." Linux uses this for NMI, #DF, #MC, and the debug stack — anything that must run on a guaranteed-good stack even if the kernel's RSP was poisoned.</p>
+<p>Our emulator reads the IST nibble during the gate-lookup and routes through the TSS when non-zero. The simpler "same RSP for everything" path was fine for early bring-up but breaks the first time Linux loads a kernel that puts NMI on IST 1.</p>
+
+<div class="box box-key">
+<strong>Why the error message format matters</strong>
+Interrupt-delivery errors are some of the only places you'd otherwise see no context at all — by the time delivery fails, the original fault has been swallowed and the emulator is just panicking. Carrying RIP+CS into the error string costs nothing and turns "page fault at X" into "page fault at X while RIP was Y in CS Z" — three orders of magnitude more debugging signal for one extra Sprintf arg.
 </div>
 `,
   exercises: [
     "Read the AMD APM Vol 2, Chapter 8 (Exceptions and Interrupts) — specifically the IDT gate format and IST mechanism. Note what differs from the i386 chapter.",
-    "Why does long-mode IRETQ always pop SS and RSP, even within the same privilege level? (Hint: it has to do with x86_64 dropping the implicit stack-switch rule.)",
-    "Sketch the layout of a 16-byte IDT gate. What's where? (Hint: 64-bit RIP split into 16+16+32 bits across the gate, plus selector, IST, type, DPL, P.)"
+    "Why does long-mode IRETQ always pop SS and RSP, even within the same privilege level?",
+    "Sketch the 16-byte IDT gate from memory. What's where?",
+    "If <code>deliverInterruptProt</code>'s gate-not-present error only printed the vector (not RIP+CS), what diagnostic sequence would you have to run instead to recover the same information?"
   ]
 },
 
@@ -1643,67 +1709,140 @@ msrKernelGSBase <span class="kw">uint64</span>   <span class="cm">// what SWAPGS
 </ol>
 <p>The interesting wrinkle: SYSCALL does <em>not</em> switch stacks. The kernel must do that itself via SWAPGS + RSP-load-from-GS, or — on PTI-enabled kernels — a more involved trampoline.</p>
 
+<h2>Status: SYSCALL works, FSGSBASE works, SWAPGS works</h2>
+<p>All three are implemented. The MSR slots (<code>msrStar</code>, <code>msrLstar</code>, <code>msrCstar</code>, <code>msrSFMask</code>, <code>msrFSBase</code>, <code>msrGSBase</code>, <code>msrKernelGSBase</code>) live in <code>cpu/x86_64/cpu.go</code>'s CPU struct and are read/written through <code>opRDMSR</code> / <code>opWRMSR</code> in <code>opcodes.go</code>. <code>opSWAPGS</code> atomically swaps <code>c.msrGSBase</code> and <code>c.msrKernelGSBase</code> (and updates <code>c.segBase[GS]</code> to match the new active base) — that's the entire instruction.</p>
+
+<h2>The Alpine boot trap that taught us about CPL drift</h2>
+<p>SYSCALL/SYSRET aren't the only entry/exit pair; IRETQ also returns to user. The hidden coupling: the architectural CPL is implied by <code>CS[1:0]</code> (the RPL), but our emulator caches it explicitly in <code>c.cpl</code> for paging-permission decisions. If IRETQ loads a new CS without updating c.cpl, the next page-fault delivery builds an error code with X86_PF_USER cleared, Linux's <code>do_user_addr_fault</code> takes the no-context branch, and init dies before <code>/sbin/init</code> ever runs.</p>
+<p>The fix in <code>opIRETQ</code> derives the new CPL from <code>newCS &amp; 3</code> and synthesises a matching descriptor cache. Same shape as the RETF descriptor reload from Lesson 20 — a fault-delivery instruction that loads CS must update <em>everything</em> the cache covers (base, limit, access bits, AND the cached CPL), not just the selector word.</p>
+
 <div class="box box-note">
-<strong>Not yet implemented</strong>
-Phase 6 in the implementation roadmap. The MSR slots are already in the CPU struct so the decoder can later hook into WRMSR cleanly.
+<strong>What we still need for full userspace</strong>
+SYSCALL works for the kernel→user→kernel round-trip Linux uses; <code>VDSO</code>-style optimised paths (FSGSBASE + gettimeofday-from-userspace) work because RDFSBASE / WRGSBASE are implemented. The piece we still skip is the IST mechanism for #DF / NMI on a guaranteed-good stack — fine for the single-CPU configs we boot, but a real multi-CPU kernel under heavy NMI load would hit it.
 </div>
 `,
   exercises: [
     "Read Linux's <code>arch/x86/entry/entry_64.S</code> — specifically <code>entry_SYSCALL_64</code>. Count the instructions executed between the SYSCALL and the C-level system-call dispatcher.",
-    "Why does SYSCALL save RIP to RCX and RFLAGS to R11 (rather than a kernel stack)? (Hint: speed; the kernel doesn't trust the user stack and won't touch it until SWAPGS gets per-CPU data accessible.)",
-    "If a user process executes SWAPGS directly (not via SYSCALL), what happens? (Hint: SWAPGS is a privileged instruction; #GP on CPL=3.)"
+    "Why does SYSCALL save RIP to RCX and RFLAGS to R11 (rather than a kernel stack)?",
+    "If a user process executes SWAPGS directly (not via SYSCALL), what happens? (Hint: SWAPGS is privileged; #GP on CPL=3.)",
+    "The IRETQ CPL-derivation fix is one line. Sketch a regression test that would have caught the original Alpine bug — what state do you set up, what do you assert?"
   ]
 },
 
 {
   id: 20, phase: 5,
-  title: "Booting a 64-bit Linux Kernel (Planned)",
-  subtitle: "The end goal — and what stands between us and it",
+  title: "Booting a 64-bit Linux Kernel",
+  subtitle: "Three loaders, one bug, and the full path to a login prompt",
   content: `
-<h2>The end state</h2>
-<p>Run <code>./bin/temu -machine x86_64 -kernel vmlinux-x86_64 -initrd initrd.cpio.gz</code> and get a shell prompt. The kernel does the real-mode → protected-mode → long-mode walk under our emulator, mounts the initrd, runs <code>/init</code>, and lands you at busybox.</p>
-
-<h2>What's in the way</h2>
-<p>Working from the bottom up:</p>
+<h2>Three loader paths for three kinds of "kernel"</h2>
+<p><code>./bin/temu -machine x86_64 -kernel &lt;file&gt;</code> doesn't know in advance what kind of binary you handed it. It probes, in order:</p>
 <ol>
-  <li><strong>Real-mode + protected-mode opcodes (Phase 3 of implementation).</strong> The Linux x86_64 boot path runs real-mode code briefly before going protected → long. We need to handle all the 16- and 32-bit opcodes the boot stub uses. Most of these can be ported almost verbatim from cpu/x86's exec.go.</li>
-  <li><strong>Long-mode interrupts and IRETQ (Phase 4).</strong> The kernel will program the IDT and trigger #PF / #GP / NMI on the boot path. Without working delivery, the first page fault hangs the boot.</li>
-  <li><strong>SYSCALL/SYSRET (Phase 5).</strong> Userspace init needs system-call delivery.</li>
-  <li><strong>FSGSBASE + SWAPGS.</strong> Per-CPU data; required for any meaningful kernel execution.</li>
-  <li><strong>SSE/SSE2 widening.</strong> glibc + musl use SSE memcpy/memset variants. The XMM register file extension (XMM8..XMM15 via REX.R) is mechanical work; SSE2 itself is mostly portable from cpu/x86/mmx.go.</li>
-  <li><strong>The PC chassis interface.</strong> machine/pc currently constructs <code>*x86.CPU</code>. We need a knob (or factory parameter) to select either backend at machine creation time.</li>
+  <li><strong>PVH</strong> (<code>machine/pc/pvh64.go</code>) — does the ELF carry an <code>XEN_ELFNOTE_PHYS32_ENTRY</code> note? If yes, this is a PVH-aware kernel and we enter at the PHYS32_ENTRY in 32-bit protected mode per the PVH spec.</li>
+  <li><strong>vmlinux64</strong> (<code>machine/pc/vmlinux64.go</code>) — plain x86_64 ELF, no PVH note. We synthesize a minimal long-mode environment ourselves: identity-mapped 1 GiB pages, a tiny GDT, EFER.LMA latched, and jump straight to <code>f.Entry</code> in 64-bit code.</li>
+  <li><strong>bzImage64</strong> (<code>machine/pc/bzimage64.go</code>) — a compressed Linux bzImage. Parses the setup header, finds the protected-mode payload past the real-mode stub, and enters in 32-bit code at the bzImage's <code>protected_mode_start + 0x200</code> (the <code>startup_64</code> conventional entry).</li>
 </ol>
+<p>The PVH path is the most interesting one and the one TinyCorePure64 + OSv use. Walk through it carefully — it touches almost every Phase IV feature we built.</p>
 
-<h2>The interface in place</h2>
-<p><code>cpu.X86Core</code> is already the contract machine/pc programs against. The factory in <code>machine/factory.go</code> needs one new case:</p>
-<pre><span class="kw">case</span> <span class="st">"x86_64"</span>:
-    pcCfg := pc.<span class="kw">Config</span>{...}
-    <span class="kw">return</span> pc.<span class="fn">New64</span>(pcCfg)   <span class="cm">// constructs *x86_64.CPU instead of *x86.CPU</span><span class="lang-tag">go</span></pre>
-<p>That small refactor is the only chassis-side change.</p>
+<h2>What the PVH loader sets up</h2>
+<p>PVH boot is the QEMU / Xen DomU spec for "you've been loaded into RAM, here's where state lives, go." <code>loadPVH64</code> places exactly four artefacts:</p>
+<ul>
+  <li>The kernel's PT_LOAD segments at their physical addresses (vaddrs are high-half kernel-VAs but the kernel runs through its own paging once it sets it up; we land it where the linker put the paddrs).</li>
+  <li>An <code>hvm_start_info</code> struct at <code>0x9000</code> (magic <code>0x336EC578 = "xEn3"</code>, version 1, cmdline_paddr, memmap_paddr, modlist_paddr, nr_modules).</li>
+  <li>An e820-style memmap (24-byte entries, type 1 = RAM) at <code>0x9100</code>. Linux's <code>pvh_start_xen</code> walks these to build its early page tables.</li>
+  <li>A tiny GDT at <code>0x80000</code> with a single 32-bit code segment (D=1, L=0) and a flat data segment.</li>
+</ul>
+<p>State at entry — exactly per the PVH spec:</p>
+<table class="corr-table">
+  <tr><th>Register / bit</th><th>Value</th><th>Why</th></tr>
+  <tr><td>CR0</td><td>PE=1, PG=0</td><td>32-bit protected mode, paging off</td></tr>
+  <tr><td>CR4 / CR3 / EFER</td><td>all zero</td><td>Kernel sets up its own paging + long-mode state</td></tr>
+  <tr><td>CS</td><td>0x08, base 0, limit 4 GiB, D=1, L=0</td><td>Flat 32-bit code segment</td></tr>
+  <tr><td>EBX</td><td>0x9000</td><td>Pointer to hvm_start_info</td></tr>
+  <tr><td>RIP</td><td>PHYS32_ENTRY note value</td><td>Linux/OSv's hand-written PVH stub</td></tr>
+</table>
 
-<h2>What survives unchanged</h2>
-<p>Every device — UART, PIT, PIC, RTC, ATA, virtio-blk, virtio-net, slirp, VGA — is CPU-agnostic. They take an X86Core, register I/O ports through the dispatcher, and raise IRQs through the PIC. None of them need to know whether the CPU running them is i386 or AMD64. That's the entire point of the chassis design we settled on in Lesson 5.</p>
+<h2>What the PVH stub does next — and where it breaks</h2>
+<p>The kernel's PVH stub runs entirely in 32-bit pm:</p>
+<ol>
+  <li>Sets up minimal page tables (PML4, PDPT, PD) covering the kernel's load region.</li>
+  <li>Enables CR4.PAE, loads CR3, sets EFER.LME via WRMSR.</li>
+  <li>Enables CR0.PG. This latches EFER.LMA — we're now in <strong>long mode active</strong>. But CS still has L=0, so the CPU is in <strong>ModeCompat32</strong>, not ModeLong64.</li>
+  <li>Builds a new GDT in RAM and <code>lgdt</code>s it. The new GDT has a CS slot with L=1.</li>
+  <li>Pushes the new CS selector + a 64-bit RIP onto the stack and runs <code>retf</code>. Real silicon reloads CS via the GDT, the L=1 bit reaches the segAccess cache, and the CPU transitions to ModeLong64.</li>
+</ol>
+<p>That last step is where TinyCorePure64 broke our emulator until the day this lesson was written. The symptom: <code>vec=14 addr=0xffee1f90</code> page fault about 50 instructions into the kernel, on an IDT that didn't exist yet, with no way to deliver. The fault's RIP was <code>0x235c07a</code>; disassembling the seven bytes there showed <code>2B 05 90 1F EE FF</code> — which in <em>long mode</em> is <code>SUB EAX, [RIP + 0xFFEE1F90]</code> (RIP-relative). The kernel was assembled for long mode but our CPU was decoding it as compat32, where the same bytes mean <code>SUB EAX, [0xFFEE1F90]</code> absolute. The absolute address was unmapped — fault.</p>
 
-<h2>What you'll be looking at when it works</h2>
-<pre>$ ./bin/temu -machine x86_64 -kernel vmlinuz-6.6-x86_64 -initrd alpine-initrd
-[    0.000000] Linux version 6.6.x (build@host) (gcc 12.2.0)
-[    0.000000] Command line: console=ttyS0
-[    0.000123] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
-[    0.000245] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+<h2>The bug: RETF must reload the descriptor cache</h2>
+<p>The non-long-mode path of <code>opRETF</code> was loading the new selector into <code>c.seg[CS]</code> but only rebuilding <code>c.segBase[CS]</code> for real mode (sel&lt;&lt;4). In protected/compat32 it skipped the descriptor walk entirely; <code>recomputeMode</code> then used the <em>previous</em> selector's cached <code>segAccess[CS]</code>, where L was still 0, and we stayed stuck in compat32.</p>
+<pre><span class="cm">// cpu/x86_64/intr.go — the fix</span>
+<span class="kw">if</span> c.mode != ModeLong64 {
+    newRIP := c.<span class="fn">popStack</span>(slotSize)
+    newCS  := <span class="kw">uint16</span>(c.<span class="fn">popStack</span>(slotSize))
+    c.rip = newRIP
+    c.seg[CS] = newCS
+    <span class="kw">if</span> c.cr[0]&amp;CR0_PE == 0 {
+        c.segBase[CS] = <span class="kw">uint64</span>(newCS) &lt;&lt; 4   <span class="cm">// real mode</span>
+    } <span class="kw">else</span> {
+        <span class="cm">// pm16 / pm32 / compat32: walk the GDT/LDT and</span>
+        <span class="cm">// refresh base/limit/access from the new descriptor.</span>
+        <span class="cm">// Skipping this leaves the L bit frozen at the old</span>
+        <span class="cm">// selector's value — a compat32→long64 retf silently</span>
+        <span class="cm">// stays in compat32 and every kernel instruction</span>
+        <span class="cm">// after it mis-decodes.</span>
+        c.<span class="fn">loadProtSegment</span>(CS, newCS)
+    }
+    c.cpl = <span class="kw">int</span>(newCS &amp; 3)
+    c.<span class="fn">recomputeMode</span>()
+    <span class="kw">return</span> <span class="kw">nil</span>
+}<span class="lang-tag">go</span></pre>
+<p>The same pattern applies to far call, far jmp, and IRET in non-long modes. <code>opMOVtoSreg</code> always did it correctly — we just hadn't propagated the call site to RETF.</p>
+
+<div class="box box-warn">
+<strong>Pitfall</strong>
+Big-real-mode (real mode with CS.D=1 from a brief pm32 excursion) requires the <em>opposite</em> behaviour: on a real-mode RETF the cached limit/access must <em>survive</em> the selector reload. SeaBIOS's 16↔32-bit transition thunks depend on this. <code>TestRETF_RealModePreservesBigRealAccess</code> in <code>cpu/x86_64/retf_descriptor_test.go</code> pins the invariant.
+</div>
+
+<h2>From kernel-banner to /init</h2>
+<p>Past the RETF fix, the kernel ran through everything: device init, ACPI parsing (we provide tables via fw_cfg — see Lesson 18), driver probes, then a clean panic:</p>
+<pre>Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)<span class="lang-tag">log</span></pre>
+<p>No initrd. The PVH spec says auxiliary blobs (initrd, microcode, modules) live in the <strong>module list</strong> — an array of <code>hvm_modlist_entry</code> { paddr, size, cmdline_paddr, reserved } records pointed at by <code>hvm_start_info.modlist_paddr</code>, with <code>nr_modules</code> giving the count. Linux's <code>pvh_start_xen</code> walks the list and treats the first entry it finds as the initramfs blob, copying its paddr/size into <code>boot_params.hdr.ramdisk_image</code> / <code>ramdisk_size</code> before invoking the regular bzImage bring-up.</p>
+<p>Our loader had a TODO where module wiring should have been:</p>
+<pre>_ = initrdData   <span class="cm">// TODO: PVH modules via modlist_paddr if/when we need it</span><span class="lang-tag">go</span></pre>
+<p>Filling it in: copy initrd bytes just below the top of guest RAM (page-aligned down), stamp one 32-byte modlist entry at <code>0x9300</code> describing it, set <code>hvm_start_info.nr_modules = 1</code> and <code>modlist_paddr = 0x9300</code>. That's all Linux needs to find the initramfs.</p>
+
+<h2>The end state</h2>
+<pre>$ ./run64_iso.sh tinycore
 ...
-Welcome to Alpine Linux 3.19
-Kernel 6.6.x on an x86_64 (/dev/ttyS0)
-localhost login: _<span class="lang-tag">future</span></pre>
+[    0.000000] Linux version 6.18.2-tinycore64 (gcc 15.2.0)
+...
+Freeing initrd memory: 17560K
+Freeing unused kernel image (initmem) memory: 2640K
+Run /init as init process
+init started: BusyBox v1.36.1
+Booting Core 17.0
+...
+login[290]: root login on 'ttyS0'
+tc@box:~$ _<span class="lang-tag">log</span></pre>
+<p>Three commits got us from "Unable to mount root fs" to that prompt: the RETF descriptor fix (<code>cpu/x86_64/intr.go</code>), the PVH module wiring (<code>machine/pc/pvh64.go</code>), and a 600-byte cpio overlay (<code>scripts/extract_tinycore64.sh</code>) that adds a ttyS0 getty so the shell lands on the serial console we can talk to. <code>./run64_iso.sh tinycore</code> wraps all of it; no flags needed.</p>
+
+<h2>The two helper boot paths we didn't take</h2>
+<p>If a kernel has no PVH note, the loader falls through:</p>
+<ul>
+  <li><strong>vmlinux64.go</strong> — plain ELF64. We set up paging ourselves (1 GiB identity map at <code>0x70000</code>, kernel-VA high-half at PML4[511], Linux direct-map at PML4[0x111]), load EFER.LMA before the jump, and enter directly in long64. Used by tests and by any pre-decompressed Linux vmlinux that doesn't carry the Xen note. RSI is set to the boot_params paddr (Linux's documented x86_64 ABI).</li>
+  <li><strong>bzImage64.go</strong> — full bzImage with the legacy real-mode setup header. We parse the header, locate the protected-mode kernel past <code>setup_size * 512</code>, and enter at <code>0x100000 + 0x200</code> (the conventional <code>startup_64</code> offset). Inside the kernel it's the same long-mode bring-up as the ELF path.</li>
+</ul>
+<p>All three converge once the kernel reaches its own <code>startup_64</code>. From there it's a normal Linux boot — just running on our CPU instead of QEMU's TCG.</p>
 
 <div class="box box-key">
-<strong>The shape of the work</strong>
-None of the remaining phases require new algorithms — every piece is well-specified in the AMD APM and Intel SDM. The challenge is the long tail: each phase has dozens of edge cases, and you discover them by trying to boot. Same way Alpine i386 was brought up: pick the next failure, fix it, repeat. Every phase ends when a real binary stops crashing.
+<strong>What "real" boot debugging looks like</strong>
+The TinyCore RETF bug is a textbook example of how emulator boot bugs surface: not as a panic message but as a wrong opcode decoded a few instructions later. The fault address (0xFFEE1F90), the bytes at the faulting RIP, and the kernel's intended addressing mode (long64 RIP-relative vs compat32 absolute disp32) gave away the root cause once you decoded the instruction by hand. The mode field is the single load-bearing variable; mis-update it once and every subsequent instruction lies.
 </div>
 `,
   exercises: [
-    "Walk through the Linux x86_64 boot protocol (Documentation/x86/boot.rst). What state must the boot loader (us, the emulator's machine/pc) leave the kernel in before jumping to the entry point?",
-    "Compare the M1 status to <code>project_x86_boot_achieved.md</code>'s account of the i386 bring-up. Estimate effort to reach the same end state for x86_64. What's the same? What's different?",
-    "If a Phase X bug shows up that none of the existing tests catch, what's the value of writing a regression test before fixing it? Reflect on how the i386 bring-up tracked bugs in its memory files."
+    "Disassemble the seven bytes <code>2B 05 90 1F EE FF</code> in both compat32 and long64 modes. What does each say about <code>mod=00, r/m=101</code>?",
+    "Read <code>cpu/x86_64/retf_descriptor_test.go</code>. The test sets EFER.LMA directly to skip the SetEFER guard — why is that necessary, and what would happen if you removed that line and tried to set EFER via SetEFER instead?",
+    "The PVH module list points at <code>0x9300</code>. What would go wrong if you placed it at <code>0x9100</code> (where the memmap lives) instead?",
+    "Compare PVH boot to Linux's traditional bzImage boot (Documentation/x86/boot.rst). What does PVH skip? What did you give up to gain that simplification?"
   ]
 },
 

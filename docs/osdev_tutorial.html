@@ -722,19 +722,71 @@ Port I/O is a legacy quirk that hasn't died because the legacy chips it talks to
   id: 7, phase: 2,
   title: "The ISA Bus and Legacy I/O",
   subtitle: "Why some port numbers are universal across every PC",
-  stub: true,
   content: `
-<h2>Coming soon</h2>
-<p>This lesson will cover:</p>
-<ul>
-  <li>What "ISA" means historically</li>
-  <li>Why specific port numbers (0x60, 0x70, 0x1F0, 0x3F8) are fixed and universal</li>
-  <li>How DMA worked on the ISA bus (8237 DMA controller)</li>
-  <li>What "Plug and Play ISA" was (and why we forget it)</li>
-  <li>How emulators model the legacy ISA address space</li>
-</ul>
+<h2>Where ISA came from</h2>
+<p>The Industry Standard Architecture bus was IBM's 16-bit expansion bus, introduced with the PC/AT in 1984. It defined slots, signal timings, an interrupt-line numbering scheme, and a DMA-controller pair. It died as a physical bus in the late 90s — PCI ate it — but its <em>address layout</em> survived in PC firmware and chipsets to this day, because shipping a 1996 BIOS that talked to a 1984 keyboard controller meant freezing the I/O map forever.</p>
+<p>Modern chipsets ship a "LPC" (Low Pin Count) bridge that pretends to be the ISA bus for legacy peripherals: the keyboard controller, the CMOS RTC, the floppy controller (if present), the serial ports. The legacy bus is dead; its port numbers live on.</p>
+
+<h2>The famous port numbers</h2>
+<table class="corr-table">
+  <tr><th>Port</th><th>Device</th><th>Programmed by</th></tr>
+  <tr><td>0x20–0x21</td><td>Master 8259 PIC (interrupt controller)</td><td>kernel, on every IRQ ack</td></tr>
+  <tr><td>0x40–0x43</td><td>PIT (8253/8254 programmable interval timer)</td><td>kernel timer setup</td></tr>
+  <tr><td>0x60, 0x64</td><td>PS/2 keyboard / mouse controller (8042)</td><td>keyboard driver</td></tr>
+  <tr><td>0x70, 0x71</td><td>CMOS / RTC (MC146818)</td><td>RTC + NMI mask</td></tr>
+  <tr><td>0x80</td><td>POST diagnostic port</td><td>BIOS during boot</td></tr>
+  <tr><td>0xA0–0xA1</td><td>Slave 8259 PIC</td><td>kernel, for IRQs 8–15</td></tr>
+  <tr><td>0x1F0–0x1F7</td><td>Primary IDE/ATA</td><td>disk driver</td></tr>
+  <tr><td>0x2F8</td><td>COM2 (UART 16550)</td><td>serial driver</td></tr>
+  <tr><td>0x3F0–0x3F7</td><td>Floppy controller</td><td>floppy driver</td></tr>
+  <tr><td>0x3F8</td><td>COM1 (UART 16550)</td><td>serial driver (this is where -serial stdio lands)</td></tr>
+</table>
+<p>These ports are universal because Linux, BSDs, DOS, and Windows all hardcoded them in the 80s and 90s. An emulator must model them at exactly these addresses or the OS won't see the devices.</p>
+
+<h2>How an emulator models them</h2>
+<p>tinyemu-go's <code>machine/pc/pc.go</code> registers each legacy device's I/O port range with the CPU's port dispatcher:</p>
+<pre>p.<span class="fn">registerPIO</span>(0x20, 2, p.pic1.<span class="fn">read</span>, p.pic1.<span class="fn">write</span>)
+p.<span class="fn">registerPIO</span>(0x40, 4, p.pit.<span class="fn">read</span>, p.pit.<span class="fn">write</span>)
+p.<span class="fn">registerPIO</span>(0x60, 1, p.kbd.<span class="fn">data</span>, p.kbd.<span class="fn">data</span>)
+p.<span class="fn">registerPIO</span>(0x64, 1, p.kbd.<span class="fn">status</span>, p.kbd.<span class="fn">cmd</span>)
+p.<span class="fn">registerPIO</span>(0x3F8, 8, p.com1.<span class="fn">read</span>, p.com1.<span class="fn">write</span>)<span class="lang-tag">machine/pc/pc.go</span></pre>
+<p>The CPU's IN/OUT instructions look up the port range, call the registered handler, and return the value (or take the side effect). No bus model is needed — the dispatcher is a flat array.</p>
+
+<h2>ISA IRQs and the 8259 pair</h2>
+<p>ISA defined 15 hardware interrupt lines, numbered IRQ0–IRQ15. Each device is wired (in software, by chipset routing) to one line. The two cascaded 8259 PICs (master at 0x20, slave at 0xA0) collect lines, prioritise them, and signal the CPU's INTR pin.</p>
+<table class="corr-table">
+  <tr><th>IRQ</th><th>Device</th></tr>
+  <tr><td>0</td><td>PIT — system timer tick</td></tr>
+  <tr><td>1</td><td>Keyboard</td></tr>
+  <tr><td>2</td><td>Cascade to slave (not a device on modern systems)</td></tr>
+  <tr><td>3</td><td>COM2 + COM4</td></tr>
+  <tr><td>4</td><td>COM1 + COM3</td></tr>
+  <tr><td>6</td><td>Floppy</td></tr>
+  <tr><td>8</td><td>RTC alarm</td></tr>
+  <tr><td>12</td><td>PS/2 mouse</td></tr>
+  <tr><td>14</td><td>Primary IDE</td></tr>
+  <tr><td>15</td><td>Secondary IDE</td></tr>
+</table>
+<p>Linux's startup queries the PIC, reprograms its vector offsets (default is conflict-y with CPU exceptions), and from then on treats IRQ-N as "INT (32+N)". The PIC handles edge/level triggering, masking, and end-of-interrupt acknowledgement.</p>
+
+<h2>The 8237 DMA controller</h2>
+<p>ISA had a built-in DMA controller — the 8237 — capable of moving data between a fixed I/O port and a contiguous region of RAM without CPU involvement. The floppy controller depended on it (the FDC could not bus-master), as did the original Sound Blaster, and as does the legacy parallel-port ECP mode. Each ISA-DMA channel had a 16-bit transfer count and an address register, programmed before kicking off a transfer.</p>
+<p>The legacy DMA controller is bus-mastering's grandfather — limited to a 16 MB physical-address window (hence the <em>ISA DMA bounce buffer</em> Linux maintains for low-memory I/O). PCI bus-mastering devices later took over for everything performance-sensitive.</p>
+
+<h2>Plug-and-Play ISA</h2>
+<p>Original ISA had no enumeration: a card's port range was set by hardware jumpers. Two cards claiming 0x300 fought. Plug-and-Play ISA (1993) added a software protocol to assign port ranges at boot, but it ran far too late in PC evolution — PCI was already arriving. Linux mostly ignored it. It's of mainly historical interest now.</p>
+
+<div class="box box-key">
+<strong>Why the layout outlived the bus</strong>
+A modern chipset must answer to port 0x60 with keyboard-controller semantics not because anyone wants the architecture but because Windows NT 4.0's keyboard driver still ships and still hits 0x60. Backward compatibility freezes more details than people realise — and emulators inherit the freeze, because the OS they run is the one that needs to see the freeze.
+</div>
 `,
-  exercises: ["(filled in when this lesson is expanded)"]
+  exercises: [
+    "Why does the master 8259 have its data register at 0x21 (one byte above 0x20)? Look up the 8259 datasheet.",
+    "What does writing 0x80 to port 0x70 do, and why is it the standard NMI-disable mechanism?",
+    "Read <code>machine/pc/pic.go</code>. How does our emulator model the master/slave cascade?",
+    "What would a kernel see if we forgot to register a handler for 0x80? Linux writes to 0x80 as a no-op delay — what's the consequence?"
+  ]
 },
 
 {
@@ -889,16 +941,72 @@ The BAR mechanism is the OS's only way to know what address space a device needs
   id: 11, phase: 2,
   title: "The IRQ Routing Problem",
   subtitle: "From 8 IRQ lines to thousands",
-  stub: true,
   content: `
-<h2>Coming soon</h2>
-<p>The legacy 8259 pair gives 15 IRQ lines for the entire system. Modern systems with many PCI devices need many more. Topics: shared IRQs, the IOAPIC, MSI (Message-Signalled Interrupts), MSI-X (per-vector), the IRQ-router-on-Intel chipsets, the kernel's IRQ-domain abstraction.</p>
-<div class="box box-stub">
-<strong>Stub</strong>
-Paired with the eventual LAPIC/IOAPIC implementation in <code>machine/pc/</code>.
+<h2>The size of the problem</h2>
+<p>The original PC's 8259 PIC had 8 IRQ lines. The AT cascaded two of them for 15 usable lines. A modern server has a hundred PCI(e) functions, each potentially wanting its own interrupt vector. The gap is so large that the kernel has accumulated four mechanisms for IRQ delivery, each more flexible than the last.</p>
+<table class="corr-table">
+  <tr><th>Mechanism</th><th>Lines</th><th>Era</th><th>How a device requests it</th></tr>
+  <tr><td>8259 PIC pair</td><td>15</td><td>1984–</td><td>Wired to a fixed line by the motherboard</td></tr>
+  <tr><td>IOAPIC</td><td>24 per chip, multiple chips</td><td>1996–</td><td>Wired pin → IOAPIC redirection entry</td></tr>
+  <tr><td>MSI</td><td>32 per function</td><td>2000–</td><td>Device does PCI memory write to the LAPIC's "I'm interrupted" address</td></tr>
+  <tr><td>MSI-X</td><td>2048 per function</td><td>2003–</td><td>Same as MSI, with per-vector table in device's BAR</td></tr>
+</table>
+
+<h2>Shared IRQs (the 8259 era)</h2>
+<p>With 15 lines and dozens of cards, sharing was inevitable. Two devices wired to the same line both interrupt the CPU; the kernel walks a chain of registered handlers, each one checking "was that me?" against its own status register. Sharing requires <em>level-triggered</em> interrupts (the line stays asserted until acked) so the kernel can re-poll. Edge-triggered shared IRQs lose interrupts if both devices fire simultaneously.</p>
+<p>The cost is straightforward: dispatch latency scales linearly with chain length, and "spurious" interrupts (line asserted but no handler claims it) often log a "irq N: nobody cared" warning.</p>
+
+<h2>IOAPIC: more lines, programmable routing</h2>
+<p>The Intel IOAPIC (and AMD equivalent) is a separate chip with 24 input pins, each programmable to deliver any one of 256 possible interrupt vectors to any CPU. A modern motherboard has one IOAPIC per chipset; large servers have several. Each input pin has a "redirection entry" in the IOAPIC's MMIO config:</p>
+<pre>RT entry (64 bits):
+  [7:0]   vector to deliver to the LAPIC
+  [10:8]  delivery mode (fixed, NMI, SMI, INIT, …)
+  [11]    destination format (physical / logical CPU IDs)
+  [12]    delivery status (read-only)
+  [13]    polarity (high-active vs low-active)
+  [14]    remote IRR (level acked or not)
+  [15]    trigger mode (edge / level)
+  [16]    mask
+  [63:56] destination (CPU APIC ID / set of IDs)<span class="lang-tag">IOAPIC</span></pre>
+<p>The kernel programs each entry once at boot. A pin asserts → the IOAPIC looks up the entry → sends a vector + destination message to the LAPIC of the targeted CPU(s). The LAPIC delivers an INT to the running thread; the dispatcher routes through the IDT.</p>
+
+<h2>MSI: bypass the wires entirely</h2>
+<p>The clever trick of MSI (Message-Signalled Interrupts): the device asserts an interrupt by performing a PCI memory write to a magic address. The LAPIC has a memory-mapped "interrupt-inject" register at 0xFEE00000; any write to it with the right vector in the low bits raises that vector on a target CPU. The wire is replaced by a memory transaction. Every PCI device can do memory writes, so the wiring layer disappears.</p>
+<p>The driver-side handshake:</p>
+<ol>
+  <li>OS asks PCI core for an unused vector (32–255 minus reserved). The IRQ-domain code allocates one and returns the (address, data) pair that means "raise that vector on CPU N".</li>
+  <li>OS writes the (address, data) pair to the device's PCI MSI Capability registers.</li>
+  <li>Device, when it wants to interrupt, does a PCI memory write of <em>data</em> to <em>address</em>. The chipset routes it to the LAPIC. The LAPIC raises the vector. The CPU runs the IDT entry.</li>
+</ol>
+<p>No shared wires. No "irq N: nobody cared" — the vector is owned by exactly one device.</p>
+
+<h2>MSI-X: per-queue interrupts</h2>
+<p>MSI lets one device own up to 32 vectors. MSI-X lifts it to 2048 and adds a per-vector table in one of the device's BARs. Modern NICs use this for receive-side scaling — one vector per RX queue, each pinned to a different CPU — and modern NVMe SSDs use it for per-CPU submission/completion queues.</p>
+<p>The table is a flat array of (address, data, mask) triplets. Driver picks vector N, programs its (address, data) for "raise vector V on CPU C", clears the mask. Done.</p>
+
+<h2>The kernel's IRQ-domain abstraction</h2>
+<p>Linux's IRQ domain is the bridge between these mechanisms. Each interrupt controller (PIC, IOAPIC, MSI, plus GIC on ARM, PLIC on RISC-V) is a domain. Drivers don't talk to mechanisms directly; they say "I want an interrupt for this device" and the domain handles the rest. The same driver runs on an x86 PCI device using MSI-X and on an ARM SoC using GIC translation, with no code changes.</p>
+
+<h2>tinyemu-go's situation</h2>
+<p>For RISC-V virt we model the PLIC (Platform-Level Interrupt Controller — the RISC-V equivalent of IOAPIC) and one CLINT (software/timer interrupts to the local hart). For PC we model:</p>
+<ul>
+  <li>The legacy 8259 pair (<code>machine/pc/pic.go</code>) — used by Linux until it switches to APIC, and forever if booted with <code>noapic</code>.</li>
+  <li>The LAPIC (<code>cpu/x86_64/lapic.go</code>) for per-CPU timer + IPI + MSI delivery.</li>
+  <li>No IOAPIC yet — we ship with <code>noapic nolapic</code> on the kernel command line so the PIC carries every IRQ. With one CPU and slow guests, the PIC's overhead is invisible.</li>
+</ul>
+<p>For PC bring-up the PIC was sufficient to drive the PIT (timer), keyboard, serial console, IDE, and virtio-pci (which falls back to legacy INTx when MSI isn't available). Adding IOAPIC + MSI is on the list once SMP enters the picture.</p>
+
+<div class="box box-key">
+<strong>Why the layered design works</strong>
+The kernel's IRQ-domain abstraction lets the same driver run on a PC with PIC-only, a PC with IOAPIC + MSI-X, a RISC-V virt with PLIC, and an ARM server with GIC, without code branches. Each platform's "what's a vector?" definition is wrapped behind a per-domain alloc/translate/dispatch interface. The whole hierarchy is one of Linux's most elegant pieces of plumbing.
 </div>
 `,
-  exercises: ["(filled in when this lesson is expanded)"]
+  exercises: [
+    "Why does MSI need a 32-bit address (or 64-bit, with the relevant feature)? What does the chipset do with it?",
+    "Read <code>cpu/x86_64/lapic.go</code>. Where does it handle the MMIO write at 0xFEE00000 that injects a vector?",
+    "Linux boots with <code>noapic nolapic</code> in our run scripts. What would change in the IRQ dispatch path if we removed those flags and modelled IOAPIC?",
+    "Why are IRQs 14 and 15 (primary/secondary IDE) safe to share-or-not-share by convention, but IRQs 9 and 11 historically a nightmare?"
+  ]
 },
 
 {
@@ -1159,13 +1267,96 @@ Reference lesson; we won't implement NVMe in tinyemu-go.
 {
   id: 20, phase: 3,
   title: "initramfs and Early-Userspace",
-  subtitle: "What runs before your real root filesystem",
-  stub: true,
+  subtitle: "Cpio, gzip, /init, and the overlay trick",
   content: `
-<h2>Coming soon</h2>
-<p>Topics: why initramfs exists (load drivers needed to mount real root); how the kernel unpacks a cpio archive into a tmpfs; the <code>/init</code> contract; switch_root vs pivot_root; how dracut/mkinitcpio build distro-specific initramfses.</p>
+<h2>Why initramfs exists</h2>
+<p>A Linux kernel knows how to drive RAM and the CPU at boot. It does <em>not</em> know how to drive your root filesystem — that's a job for a filesystem driver and a block-device driver, both of which live somewhere on the root filesystem you can't yet mount. The chicken-and-egg fix is the <strong>initramfs</strong>: a tiny in-RAM root filesystem the kernel knows how to unpack on its own, containing just enough binaries and drivers to find and mount the real root.</p>
+<p>The shape of the deal:</p>
+<ol>
+  <li>The bootloader hands the kernel a blob alongside the kernel image (Linux: <code>boot_params.hdr.ramdisk_image</code> / <code>ramdisk_size</code>; PVH: a module-list entry).</li>
+  <li>The kernel's init code unpacks that blob — a gzip-compressed cpio archive — into a tmpfs mounted at <code>/</code>.</li>
+  <li>The kernel exec's <code>/init</code> as PID 1.</li>
+  <li><code>/init</code> loads whatever modules it needs, mounts the real root, and <code>switch_root</code>s to it.</li>
+</ol>
+<p>That's it. The initramfs is just a userspace program; the contract is just "be a gzip-cpio with a runnable <code>/init</code> inside."</p>
+
+<h2>The on-the-wire format</h2>
+<p>cpio is the simplest archive format that still understands directories, hard links, device nodes, and symlinks. "newc" is the only variant Linux's <code>init/initramfs.c</code> reads:</p>
+<pre>070701       <span class="cm">// magic ("newc")</span>
+00000001     <span class="cm">// inode number (hex ASCII, 8 chars)</span>
+000081A4     <span class="cm">// mode (octal-ish, 8 chars)</span>
+00000000     <span class="cm">// uid</span>
+00000000     <span class="cm">// gid</span>
+00000001     <span class="cm">// nlink</span>
+6794AABC     <span class="cm">// mtime</span>
+00000003     <span class="cm">// filesize</span>
+... more 8-char hex fields (devmajor, devminor, rdevmajor, rdevminor,
+... namesize, check) ...
+"init\0"     <span class="cm">// name, NUL-terminated, padded to 4-byte boundary</span>
+"abc"        <span class="cm">// data, padded to 4-byte boundary</span><span class="lang-tag">format</span></pre>
+<p>Records concatenate end-to-end; the archive terminates with a record whose name is <code>"TRAILER!!!"</code>. The whole stream then gets gzip'd. Linux's unpacker handles concatenated gzip-cpio streams natively — that's the key for the overlay trick below.</p>
+
+<h2>The overlay trick — without unpacking</h2>
+<p>To patch a single file in a stock initramfs (say, add a line to <code>/etc/inittab</code>), the obvious approach is "gunzip, cpio -i, edit, cpio -o, gzip." Linux gives us a much cheaper option: <strong>concatenate a second gzip-cpio stream</strong> after the first. The unpacker iterates streams in order; later writes shadow earlier ones, so the second stream's <code>/etc/inittab</code> wins.</p>
+<p>For TinyCorePure64's serial-getty patch (<code>scripts/extract_tinycore64.sh</code>):</p>
+<pre><span class="cm"># Build a 600-byte overlay that's just etc/inittab</span>
+mkdir -p tmp/etc
+cat &gt; tmp/etc/inittab &lt;&lt; 'INITTAB'
+::sysinit:/etc/init.d/rcS
+tty1::respawn:/sbin/getty -nl /sbin/autologin 38400 tty1
+ttyS0::respawn:/sbin/getty -nl /sbin/autologin -L 115200 ttyS0 vt100
+::ctrlaltdel:/sbin/reboot
+::shutdown:/etc/init.d/rc.shutdown
+INITTAB
+(cd tmp &amp;&amp; find etc | cpio -o -H newc) | gzip &gt; overlay.gz
+
+<span class="cm"># Concatenate. 17 MB upstream + 600 B overlay = patched initramfs.</span>
+cat corepure64.gz overlay.gz &gt; corepure64-serial.gz<span class="lang-tag">sh</span></pre>
+<p>The output is bit-for-bit identical to "unpack, edit, repack" but skips the entire unpack/repack cost. It also stays unaffected by upstream churn — if corepure64.gz adds new files, our overlay still only modifies <code>/etc/inittab</code>.</p>
+
+<h2>The PVH boot path's module mechanism</h2>
+<p>Traditional bzImage boot puts the initramfs paddr in <code>boot_params.hdr.ramdisk_image</code>. PVH boot uses a different mechanism: the <strong>module list</strong>, an array of <code>hvm_modlist_entry</code> records pointed at by <code>hvm_start_info.modlist_paddr</code>. Each entry is 32 bytes:</p>
+<pre><span class="kw">struct</span> hvm_modlist_entry {
+    uint64_t paddr;          <span class="cm">// where the module bytes live</span>
+    uint64_t size;           <span class="cm">// length in bytes</span>
+    uint64_t cmdline_paddr;  <span class="cm">// optional per-module cmdline (0 = none)</span>
+    uint64_t reserved;       <span class="cm">// must be zero</span>
+};<span class="lang-tag">c</span></pre>
+<p>Linux's <code>pvh_start_xen</code> walks the list, treats the first entry as the initramfs blob, and copies its paddr/size into <code>boot_params.hdr.ramdisk_image</code> / <code>ramdisk_size</code> before invoking the regular x86_64 bring-up. From the kernel's perspective the PVH detour is invisible past that handoff — everything after it is identical to a bzImage boot.</p>
+<p>Our loader (<code>machine/pc/pvh64.go</code>) builds the single-entry list at guest physical 0x9300 once <code>initrdData</code> is non-empty; the bytes themselves land just below the top of guest RAM, page-aligned down.</p>
+
+<h2>What /init does</h2>
+<p>The kernel exec's <code>/init</code> with PID 1, real UID 0, no parent. Conventional duties:</p>
+<ol>
+  <li>Mount <code>/proc</code>, <code>/sys</code>, <code>/dev</code> (devtmpfs auto-populates if CONFIG_DEVTMPFS_MOUNT is set).</li>
+  <li>Load any driver modules needed to see the real root (storage controller drivers, filesystem modules).</li>
+  <li>Find the root device (UUID lookup, hardcoded path, or a synthesised one — initramfs scripts often parse <code>/proc/cmdline</code>).</li>
+  <li>Mount the real root, usually at <code>/sysroot</code>.</li>
+  <li><code>switch_root /sysroot /sbin/init</code> — replaces <code>/</code> with <code>/sysroot</code>, frees the initramfs tmpfs, exec's the real init.</li>
+</ol>
+<p>For "stationary" initramfs distros (TinyCore, Alpine in some configs) step 5 doesn't happen — the system just keeps running on the initramfs. That's what we see in <code>./run64_iso.sh tinycore</code>: TinyCore's <code>/init</code> sets up the system in place and never switches root, because the whole OS lives in RAM by design.</p>
+
+<h2>switch_root vs pivot_root</h2>
+<table class="corr-table">
+  <tr><th></th><th>switch_root</th><th>pivot_root</th></tr>
+  <tr><td>Purpose</td><td>Replace / with a new root, throwing away the initramfs</td><td>Swap / with another mount; both remain reachable</td></tr>
+  <tr><td>Old root</td><td>Freed</td><td>Moved to a directory in the new root</td></tr>
+  <tr><td>Use case</td><td>initramfs → real root (one-way)</td><td>Container runtimes, sandboxing</td></tr>
+  <tr><td>Failure mode</td><td>Old root gone — must succeed first</td><td>Reversible</td></tr>
+</table>
+<p><code>switch_root</code> is a busybox-and-systemd convention built on top of three syscalls: <code>mount --move /sysroot /</code>, <code>chroot .</code>, <code>exec /sbin/init</code>. The kernel doesn't enforce that pattern; <code>pivot_root</code> is the real syscall and <code>switch_root</code> is a userspace wrapper that happens to be the most common shape.</p>
+
+<div class="box box-key">
+<strong>The two-byte CPIO trick</strong>
+The reason <em>any</em> patch we want to make to an upstream initramfs costs us 600 bytes and one <code>cat</code> is that the cpio newc format's record framing is byte-stream-friendly: there's no central directory, no offset table, no chunk index. Each record is self-describing and ends with the next record's start. Concatenating two streams is just stream-of-records ++ stream-of-records. Modern archive formats (zip, tar with sparse files) lost this property — and lost overlay-cheap edits with it.
+</div>
 `,
-  exercises: ["(filled in when this lesson is expanded)"]
+  exercises: [
+    "Write a one-line shell command that unpacks an initramfs.gz into a directory tree. (Hint: <code>gunzip -c initramfs.gz | cpio -idmv</code>.)",
+    "Read <code>init/initramfs.c</code> in the Linux source. Where does the unpacker handle the concatenated-streams case?",
+    "Imagine you wanted to override <code>/usr/bin/login</code> in TinyCore via the overlay trick. What's the smallest cpio.gz you can build that does it?",
+    "<code>switch_root</code> removes everything under <code>/</code> except the new root. What stops it from freeing the still-executing busybox binary that called it?"
+  ]
 },
 
 // ============================================================
@@ -1226,13 +1417,64 @@ Will be expanded when we add NE2000 (or virtio-net) to tinyemu-go.
 {
   id: 25, phase: 4,
   title: "User-Mode Networking",
-  subtitle: "Slirp and how emulators give VMs internet without root",
-  stub: true,
+  subtitle: "Slirp, NAT-in-userspace, and the POLLPRI tarpit",
   content: `
-<h2>Coming soon</h2>
-<p>Topics: slirp's user-mode TCP/IP stack; why VMs can have networking without TAP devices or root privileges; the cost (TCP-over-TCP if a VPN is in the way); how QEMU / tinyemu-go integrate it.</p>
+<h2>What slirp solves</h2>
+<p>The textbook way to give a VM network access is to create a TAP device on the host (a virtual NIC the kernel owns one end of, the emulator owns the other), bridge it to a real interface, and let traffic flow at L2. Three problems with that approach:</p>
+<ul>
+  <li>Creating a TAP device requires root or CAP_NET_ADMIN.</li>
+  <li>Bridging requires reconfiguring the host's network.</li>
+  <li>None of it works inside a corporate VPN or behind another NAT.</li>
+</ul>
+<p><strong>slirp</strong> sidesteps all three by implementing a complete TCP/IP stack <em>inside the emulator</em>. The guest sees what looks like a router on its LAN; the slirp stack terminates the guest's TCP connections and originates fresh ones from the host using regular socket(2) calls. The host kernel never sees Ethernet frames — just a process making outbound connections, which any unprivileged user can do.</p>
+
+<h2>The model</h2>
+<pre>Guest 10.0.2.15      slirp (in emulator)        Host kernel
+    │                       │                         │
+    │ TCP SYN → 1.2.3.4 ─→  │ tcp_input() decodes     │
+    │                       │ ↓                        │
+    │                       │ socket(AF_INET, …) ───→  │
+    │                       │                         │ → real internet
+    │                       │ ←──── connect() ack ──  │
+    │ ← TCP SYN/ACK ────────│                         │<span class="lang-tag">diagram</span></pre>
+<p>Every TCP connection on the guest corresponds to a real socket on the host. UDP is similar but stateless (a single socket per guest-side flow, cached for a few seconds). ICMP needs raw sockets (which DO need privilege), so slirp typically fakes ping with a UDP "echo" or just drops it.</p>
+
+<h2>Network layout</h2>
+<table class="corr-table">
+  <tr><th>IP</th><th>Role</th></tr>
+  <tr><td>10.0.2.0/24</td><td>The fake LAN slirp serves</td></tr>
+  <tr><td>10.0.2.2</td><td>The slirp gateway (default route from the guest's perspective)</td></tr>
+  <tr><td>10.0.2.3</td><td>slirp's fake DNS resolver (forwards to the host's resolver)</td></tr>
+  <tr><td>10.0.2.15</td><td>Default DHCP address assigned to the guest</td></tr>
+</table>
+<p>tinyemu-go's slirp (under <code>devices/slirp/</code>) follows this layout exactly, matching QEMU's default. The guest gets a DHCP lease, ARPs for 10.0.2.2 (slirp answers with a fake MAC), routes everything outbound to 10.0.2.2 — and slirp's TCP stack takes it from there.</p>
+
+<h2>The poll(2) edge: the OOB→URG bug</h2>
+<p>slirp drives I/O with poll(2): the main loop builds an array of pollfd entries — one per active host socket — and waits for events. The events of interest are POLLIN (data to read), POLLOUT (room to write), POLLHUP (peer closed). slirp also asks for <strong>POLLPRI</strong>, which on TCP sockets means out-of-band data has arrived (the TCP URG mechanism — rare in practice, basically only telnet ^C and FTP abort use it).</p>
+<p>The intended flow when POLLPRI fires:</p>
+<ol>
+  <li>Call recv(MSG_OOB) on the socket — pulls the one-byte OOB segment.</li>
+  <li>Set the guest-side socket's <code>SndUp</code> field, marking "next TCP segment should carry URG."</li>
+  <li>The next outbound segment to the guest has TH_URG set with the urgent pointer aimed at that byte.</li>
+</ol>
+<p>The bug we hit (commit referenced in <a href="#" data-jump="32">L32</a>): on Darwin, poll() returns POLLPRI <em>spuriously</em> on a number of socket events that aren't actually OOB. The slirp loop dutifully called SoRecvOOB, set SndUp, and then every subsequent data segment from that connection to the guest carried TH_URG — because SndUp was sticky and never got cleared by a real urgent byte. Linux's TCP receiver saw URG on apk's HTTPS data segments, kicked them up to "urgent data" handling, and the HTTPS session hung waiting for an inband byte the host had never sent.</p>
+<p>Symptom: <code>apk update</code> hung after fetching exactly one MTU. Diagnosis required dumping segment headers (TH_URG on every TX → "why?") and tracing back to SoRecvOOB. Fix: require POLLPRI alongside POLLIN/POLLHUP before treating it as a real OOB event. Two lines of code; weeks of confusion saved.</p>
+
+<h2>The performance picture</h2>
+<p>slirp's worst case is TCP-over-TCP: the guest opens a TCP connection that traverses slirp's TCP stack to a host TCP socket. If you then put the host inside a VPN that itself uses TCP-over-TCP (some corporate VPNs do), you stack three TCP stacks with three independent retransmit timers, three congestion windows, three flow controls. Throughput collapses; latency spikes on any packet loss.</p>
+<p>For local dev, slirp is fast enough — the host loop runs at hundreds of microseconds per packet, the guest's TCP stack doesn't notice. For sustained throughput (multi-GB ISO download, package install), expect roughly 10-50 MB/s through slirp vs near-line-rate on TAP+bridge. Trade comfort for throughput.</p>
+
+<div class="box box-key">
+<strong>slirp's social contract</strong>
+slirp gives unprivileged emulators the same default-route experience real machines get. It does so by implementing TCP, UDP, ARP, DHCP, and DNS — a full L2-L7 stack — in a few thousand lines of plain C/Go. Every subtle TCP behavior the guest expects (delayed ACK, fast retransmit, urgent data) has to be modeled at least minimally, and getting those minor features wrong (POLLPRI/URG) breaks otherwise-working flows in ways that take days to track down.
+</div>
 `,
-  exercises: ["(filled in when this lesson is expanded)"]
+  exercises: [
+    "Why does slirp need a fake DNS at 10.0.2.3? Couldn't the guest just hit the host's real DNS?",
+    "What changes if the guest wants to bind a listening port that the outside world can reach? (Hint: hostfwd in QEMU.)",
+    "Read <code>devices/slirp/socket.go</code>'s poll-event handler. After our fix, what's the exact predicate that triggers SoRecvOOB?",
+    "Suppose a guest TCP receiver requests selective-ACK (SACK) on its SYN. Does slirp need to model SACK to interoperate? Why or why not?"
+  ]
 },
 
 // ============================================================
@@ -1386,41 +1628,231 @@ virtio-blk shows the strength of the layered design: one wire format works over 
 {
   id: 29, phase: 5,
   title: "virtio-net",
-  subtitle: "Ethernet without the Ethernet card",
-  stub: true,
+  subtitle: "Ethernet without the Ethernet card — and the two-byte header bug",
   content: `
-<h2>Coming soon</h2>
-<p>Topics: virtio-net's two virtqueues (TX and RX); the per-packet 12-byte virtio header; offload features (TSO, checksum offload); the receive-buffer-pool model.</p>
-<div class="box box-stub">
-<strong>Stub</strong>
-tinyemu-go already has virtio-net for RISC-V; will be expanded when documenting it and porting to PC.
+<h2>The shape of a virtio-net device</h2>
+<p>virtio-net is the simplest virtio class for which the protocol's tradeoffs are most visible. The device has two virtqueues by default:</p>
+<table class="corr-table">
+  <tr><th>Queue</th><th>Index</th><th>Direction</th><th>Driver puts in</th></tr>
+  <tr><td>RX</td><td>0</td><td>device → driver</td><td>Empty buffers ready to receive a frame</td></tr>
+  <tr><td>TX</td><td>1</td><td>driver → device</td><td>Frames to transmit</td></tr>
+</table>
+<p>(Control queue at index 2 is optional, used for setting MAC, multicast filter, link-status query, MQ enable; we don't model it.)</p>
+
+<p>Each buffer is a list of descriptors that, glued together, hold:</p>
+<pre>┌──────────────────────────┐
+│ virtio_net_hdr  (12 B)   │   <span class="cm">// per-packet metadata</span>
+├──────────────────────────┤
+│ Ethernet frame           │   <span class="cm">// dest MAC, src MAC, ethertype, payload, no FCS</span>
+└──────────────────────────┘<span class="lang-tag">layout</span></pre>
+
+<h2>The virtio_net_hdr</h2>
+<pre><span class="kw">struct</span> virtio_net_hdr_v1 {
+    uint8_t  flags;          <span class="cm">// VIRTIO_NET_HDR_F_NEEDS_CSUM, …</span>
+    uint8_t  gso_type;       <span class="cm">// VIRTIO_NET_HDR_GSO_TCPV4, …</span>
+    uint16_t hdr_len;        <span class="cm">// header bytes (L2 + L3 + L4)</span>
+    uint16_t gso_size;       <span class="cm">// MSS for segmentation</span>
+    uint16_t csum_start;     <span class="cm">// offset of byte to checksum</span>
+    uint16_t csum_offset;    <span class="cm">// offset of where csum goes</span>
+    uint16_t num_buffers;    <span class="cm">// ONLY if VIRTIO_NET_F_MRG_RXBUF negotiated</span>
+};<span class="lang-tag">c</span></pre>
+<p>That trailing <code>num_buffers</code> field is what the rest of this lesson is about.</p>
+
+<h2>The 10 vs 12 byte trap (a real tinyemu-go bug)</h2>
+<p>The header is <strong>10 bytes if VIRTIO_NET_F_MRG_RXBUF is not negotiated</strong>, and <strong>12 bytes if it is</strong>. The feature is independent of every other feature; it determines, by itself, whether the trailing two bytes exist. The header size is fixed at feature-negotiation time and applies to every queue, every direction, forever.</p>
+<p>Our virtio-net implementation originally hardcoded a 12-byte header on TX and only advertised VIRTIO_NET_F_MAC. Linux's driver, seeing no MRG_RXBUF bit, used 10 bytes. Result: every TX frame from the guest was 2 bytes longer than the host believed, and every RX frame the host queued was 2 bytes shorter than the driver expected. The driver saw 0 packets received, the host saw mangled Ethernet headers on TX, and apk reported <code>BAD signature</code> on every package — because the network "worked enough" to negotiate TLS but corrupted the body.</p>
+<p>Fix (commit referenced in <a href="#" data-jump="32">L32</a>): advertise <code>VIRTIO_NET_F_MRG_RXBUF</code> in the device-features bitmap and write <code>num_buffers = 1</code> into every RX header. One line each, both sides agree, network packets flow.</p>
+
+<div class="box box-key">
+<strong>Why MRG_RXBUF exists</strong>
+A jumbo frame (~64 KB after TCP segmentation offload) doesn't fit in a single guest page. Without MRG_RXBUF, the driver has to pre-allocate one descriptor per packet sized for the largest possible frame — 64 KB per RX slot, mostly wasted. With MRG_RXBUF, the device chains N descriptors per packet and writes <code>num_buffers = N</code> into the header. RX rings can use 1500-byte (or smaller) buffers and the device merges. Worth the 2 bytes.
 </div>
+
+<h2>Queue-size and the wake threshold</h2>
+<p>Linux's virtio_net.c maintains a TX free-slot threshold of <code>2 + MAX_SKB_FRAGS</code> — currently 19. If the queue's free slot count drops below that, the driver stops adding packets and waits for a TX-complete interrupt to free slots.</p>
+<p>If the device's queue is too small, the driver hits the threshold immediately and never wakes. tinyemu-go's first virtio-net had <code>MaxQueueNum = 16</code> — copy-pasted from virtio-blk where it works fine because Linux's blk driver has different sizing. virtio-net froze after the very first packet. Boosted to 256 and the queue runs steady.</p>
+<p>The lesson is generic: <strong>queue sizes are device-specific contracts</strong>. Each device class has its own driver-side assumptions; the spec gives a minimum but the practical minimum is whatever Linux's driver actually demands.</p>
+
+<h2>Offload features</h2>
+<p>virtio-net's full feature list goes deep: VIRTIO_NET_F_CSUM, GUEST_CSUM, GUEST_TSO4, HOST_TSO4, HOST_UFO, MAC, GUEST_HDR_LEN, etc. Each one lets the driver and device skip work — checksum compute, segmentation, header rewriting — by delegating it to the other side. The net effect is enormous (10× throughput is normal). For an emulator that talks to a user-mode TCP stack (see <a href="#" data-jump="25">L25</a>) most of these are no-ops; you just want MAC and MRG_RXBUF.</p>
+
+<h2>TX path (driver → device)</h2>
+<ol>
+  <li>Driver allocates an skb, prepends a zeroed virtio_net_hdr.</li>
+  <li>Driver adds it as a descriptor chain on virtqueue 1 (TX).</li>
+  <li>Driver writes the queue notify register; device wakes.</li>
+  <li>Device strips the virtio_net_hdr, hands the Ethernet frame to its backend (slirp, TAP, or a raw socket).</li>
+  <li>Device puts the buffer onto the used ring, raises interrupt or sets a used-event bit.</li>
+  <li>Driver sees used-ring movement, frees the skb.</li>
+</ol>
+
+<h2>RX path (device → driver)</h2>
+<ol>
+  <li>Driver pre-fills the RX queue with empty descriptors big enough for a frame + header.</li>
+  <li>A packet arrives at the device's backend.</li>
+  <li>Device pulls an available descriptor (or several, with MRG_RXBUF), writes header + frame into them, sets <code>num_buffers</code>, marks them used.</li>
+  <li>Device raises RX interrupt.</li>
+  <li>Driver dequeues, hands the frame up the stack, recycles the buffer.</li>
+</ol>
 `,
-  exercises: ["(filled in when this lesson is expanded)"]
+  exercises: [
+    "Look at <code>devices/virtio/net.go</code>. Where does the device write <code>num_buffers</code>? Why is hardcoding it to 1 safe?",
+    "Read the Linux driver's RX path. What happens if the device writes <code>num_buffers = 0</code>?",
+    "How would the feature-negotiation flow look if we wanted to support GSO offload? (Hint: VIRTIO_NET_F_HOST_TSO4 + the gso_type and gso_size header fields.)",
+    "Why does virtio-net not negotiate the data-plane TCP segmentation by default? What does the kernel see on the wire when offload is off?"
+  ]
 },
 
 {
   id: 30, phase: 5,
   title: "Transport: virtio-mmio vs virtio-pci",
   subtitle: "Same protocol, two ways to mount it",
-  stub: true,
   content: `
-<h2>Coming soon</h2>
-<p>Topics: virtio-mmio (one device per fixed memory region; used on virt-platform boards like RISC-V virt, ARM virt); virtio-pci (devices appear in PCI config space; used on PC and modern hypervisors); how the same driver works over both via a small transport adapter; the legacy-vs-modern (virtio 0.95 vs 1.0+) split and why it matters.</p>
+<h2>Why two transports</h2>
+<p>The virtio protocol defines a set of registers (status, feature bitmap, queue notify, queue size, queue address, …) and rules for talking to them. <em>How</em> the driver reaches those registers is the transport's job. There are two mainstream choices:</p>
+<table class="corr-table">
+  <tr><th></th><th>virtio-mmio</th><th>virtio-pci</th></tr>
+  <tr><td>Discovery</td><td>Device-tree node (RISC-V/ARM) or a hardcoded base address</td><td>PCI enumeration (vendor 0x1AF4, device 0x1000-0x107F)</td></tr>
+  <tr><td>Register access</td><td>Memory-mapped at a fixed base; one device per 4 KiB region</td><td>PCI BARs; capabilities for modern, IOspace for legacy</td></tr>
+  <tr><td>Where used</td><td>Embedded SoCs, RISC-V virt, ARM virt</td><td>PCs (i440FX, q35), cloud VMs (AWS, GCE)</td></tr>
+  <tr><td>Hot-plug</td><td>No</td><td>Yes (PCI hot-plug)</td></tr>
+  <tr><td>Interrupt</td><td>One interrupt line per device, level-triggered</td><td>MSI-X (modern) or shared INTx (legacy)</td></tr>
+</table>
+
+<h2>virtio-mmio register layout</h2>
+<p>A virtio-mmio device exposes a 256-byte register window. The driver pokes registers with plain MMIO loads/stores.</p>
+<pre>0x000  MagicValue       <span class="cm">// "virt" (0x74726976)</span>
+0x004  Version          <span class="cm">// 1 = legacy, 2 = modern</span>
+0x008  DeviceID         <span class="cm">// 1=net, 2=blk, 3=console, …</span>
+0x00C  VendorID
+0x010  DeviceFeatures   <span class="cm">// 32 bits; DeviceFeaturesSel picks high/low</span>
+0x014  DeviceFeaturesSel
+0x020  DriverFeatures
+0x024  DriverFeaturesSel
+0x030  QueueSel
+0x034  QueueNumMax
+0x038  QueueNum
+0x040  QueueReady       <span class="cm">// modern only</span>
+0x050  QueueNotify
+0x060  InterruptStatus
+0x064  InterruptACK
+0x070  Status
+0x080  QueueDescLow     <span class="cm">// modern: descriptor area phys addr</span>
+0x084  QueueDescHigh
+0x090  QueueDriverLow   <span class="cm">// modern: available ring phys addr</span>
+0x094  QueueDriverHigh
+0x0A0  QueueDeviceLow   <span class="cm">// modern: used ring phys addr</span>
+0x0A4  QueueDeviceHigh
+0x100+ Device-class-specific config<span class="lang-tag">virtio-mmio</span></pre>
+<p>Legacy mode (Version=1) collapses the three queue-address registers into a single <code>QueuePFN</code> that holds a page-aligned address for the whole ring as one contiguous block. Modern mode lets the rings be in separate physical pages — useful when the host wants the used-ring to be in host-shared memory while the available ring is in guest-only memory.</p>
+
+<h2>virtio-pci layout</h2>
+<p>A modern virtio-pci device is a PCI function whose configuration is exposed through PCI <em>capabilities</em>. The driver walks the capability list, finds entries of type VIRTIO_PCI_CAP_*, and learns where in some BAR the register block lives. Five mandatory cap types:</p>
+<table class="corr-table">
+  <tr><th>Cap type</th><th>Holds</th></tr>
+  <tr><td>COMMON_CFG</td><td>Generic registers — Status, DeviceFeatures, QueueSelect, etc.</td></tr>
+  <tr><td>NOTIFY_CFG</td><td>Queue-notify register (one per queue; multiplied by NotifyOffMultiplier)</td></tr>
+  <tr><td>ISR_CFG</td><td>InterruptStatus byte; cleared on read (latched-clear semantics)</td></tr>
+  <tr><td>DEVICE_CFG</td><td>Device-class-specific registers</td></tr>
+  <tr><td>PCI_CFG</td><td>Tunnel that lets a driver poke at the others through PCI cfg space (for very old paths)</td></tr>
+</table>
+<p>Each cap entry says "block of type T lives in BAR N at offset O, length L." The driver mmap's that range, reads/writes registers through the resulting pointer.</p>
+<p>Legacy virtio-pci (the pre-1.0 design that QEMU's <code>-device virtio-blk-pci-non-transitional</code> avoids) uses I/O space — port reads/writes — and a fixed register layout. It works but is constrained to the I/O space's 64 KB and to physical addresses below 4 GB.</p>
+
+<h2>BAR relocation: the gotcha</h2>
+<p>PCI BARs are programmable. The PC firmware (SeaBIOS) assigns initial BAR values, but the OS can rewrite them — Linux often does, to pack devices more tightly or move them out of low memory. Our virtio-blk-pci had a subtle bug for years: on the SeaBIOS path, the firmware reassigned the BAR before handing control to the kernel, and we kept dispatching I/O on the original BAR. Result: every disk read went into a void.</p>
+<p>Fix: when a write to PCI cfg-space BAR registers lands, recompute the I/O / MMIO routing immediately so the next access goes to the new home. <code>machine/pc/pit.go</code>+<code>virtio-blk-pci.go</code> sees the BAR write and re-registers its port handlers in the new range.</p>
+
+<h2>The unified driver</h2>
+<p>Linux's virtio core (<code>drivers/virtio/virtio.c</code>) doesn't know which transport it's on. Each transport (virtio_mmio.c, virtio_pci.c) exposes a <code>struct virtio_config_ops</code> with a few methods: <code>get_features</code>, <code>set_features</code>, <code>set_status</code>, <code>find_vqs</code>, <code>config_get</code>, <code>config_set</code>. The class-specific drivers (virtio_net.c, virtio_blk.c) call these methods. Transport swap is one config-ops vtable away.</p>
+<p>tinyemu-go mirrors this. <code>devices/virtio/</code> contains the protocol layer (queues, descriptors, status state machine); <code>devices/virtio/mmio.go</code> and <code>machine/pc/virtio_pci.go</code> are the two transports. Each device type (block.go, net.go) is transport-agnostic.</p>
+
+<div class="box box-key">
+<strong>One protocol, two homes</strong>
+The reason a virtio-net driver works unchanged on RISC-V virt, AWS, and a PC is that the transport split is real: the driver speaks "virtio protocol" and the transport translates to whatever the underlying bus understands. Adding ARM virtio support to tinyemu-go would mean writing one more transport — the device classes stay put.
+</div>
 `,
-  exercises: ["(filled in when this lesson is expanded)"]
+  exercises: [
+    "Read <code>devices/virtio/mmio.go</code>. What happens if the driver writes <code>QueueSel = 99</code> on a 2-queue device?",
+    "Trace a Linux modprobe of virtio_net.ko on a virtio-mmio system. Where does it learn it's on mmio vs pci?",
+    "MSI-X enables per-queue interrupt vectors. For a virtio-pci device with 4 queues, how many MSI-X table entries does Linux allocate?",
+    "What would a virtio-mmio device need to do to support hot-plug? Why does virtio-mmio not bother?"
+  ]
 },
 
 {
   id: 31, phase: 5,
   title: "Features Negotiation and Versioning",
   subtitle: "How drivers and devices agree on what they can do",
-  stub: true,
   content: `
-<h2>Coming soon</h2>
-<p>Topics: feature bits as a 64-bit (now 128-bit) bitmap; the negotiation handshake on device startup; per-class features (e.g. virtio-blk's GEOMETRY, BLK_SIZE, MQ); backwards compatibility and "transitional" devices.</p>
+<h2>Feature bits</h2>
+<p>Every virtio device advertises a bitmap of <strong>device features</strong> — capabilities it can perform. The driver picks a subset it understands and writes back a bitmap of <strong>driver features</strong> — capabilities it wants to use. The intersection is what the session actually uses.</p>
+<p>Bits are split into ranges by the spec:</p>
+<table class="corr-table">
+  <tr><th>Bits</th><th>Owner</th></tr>
+  <tr><td>0–23</td><td>Device-type specific (virtio-blk's BLK_SIZE = bit 6, virtio-net's MAC = bit 5, …)</td></tr>
+  <tr><td>24–37</td><td>Reserved for queue / feature-bit / vring extensions</td></tr>
+  <tr><td>38–63</td><td>Device-independent (VERSION_1 = bit 32, ACCESS_PLATFORM = bit 33, RING_PACKED = bit 34, …)</td></tr>
+  <tr><td>64+</td><td>Reserved for future use (modern transports support 128 bits)</td></tr>
+</table>
+<p>The bitmap is read 32 bits at a time through a "select index" + "value" register pair (see <a href="#" data-jump="30">L30</a>). The driver reads index 0 (low 32), index 1 (high 32), assembles, masks down to what it knows, writes back.</p>
+
+<h2>The state machine</h2>
+<p>A virtio device transitions through a sequence of status bits the driver writes one at a time. The hypervisor watches the writes and refuses transitions that violate ordering.</p>
+<pre>0
+└── ACKNOWLEDGE (bit 0)     <span class="cm">// driver saw the device exists</span>
+    └── DRIVER (bit 1)      <span class="cm">// driver has a matching driver loaded</span>
+        └── FEATURES_OK (bit 3)  <span class="cm">// post features-write, driver says "I accepted the subset"</span>
+            └── DRIVER_OK (bit 2)  <span class="cm">// driver finished setup, queues are live</span>
+                  ↓
+                FAILED (bit 7) — set by either side on giving up
+                NEEDS_RESET (bit 6) — device says "reset me, please"<span class="lang-tag">state</span></pre>
+<p>The FEATURES_OK step is the one to know: after the driver writes its feature bitmap, it sets FEATURES_OK and reads the status back. If the device cleared FEATURES_OK, the driver requested an unsupported combination and must give up or try a smaller subset. The two sides are pinned at that moment — no later feature changes.</p>
+
+<h2>The MRG_RXBUF moment (per-class consequence)</h2>
+<p>In L29 we saw how VIRTIO_NET_F_MRG_RXBUF (bit 15, virtio-net specific) changes header size from 10 to 12 bytes. The driver decides at FEATURES_OK time whether to push 10 or 12; the device must agree. If the bitmap-negotiation phase is buggy or the device lies about its features, the size mismatch silently corrupts every packet — no error, no log, the device just stops working.</p>
+<p>This pattern recurs across virtio classes:</p>
+<table class="corr-table">
+  <tr><th>Class</th><th>Feature</th><th>Effect of negotiating it</th></tr>
+  <tr><td>blk</td><td>BLK_F_SIZE_MAX</td><td>Device promises max single-descriptor size; driver uses larger requests</td></tr>
+  <tr><td>blk</td><td>BLK_F_MQ</td><td>Multiple queues; per-CPU steering</td></tr>
+  <tr><td>blk</td><td>BLK_F_RO</td><td>Driver mounts read-only, refuses writes</td></tr>
+  <tr><td>net</td><td>NET_F_MAC</td><td>Driver reads MAC from config space; otherwise random</td></tr>
+  <tr><td>net</td><td>NET_F_CSUM</td><td>Driver skips L4 checksum compute on TX</td></tr>
+  <tr><td>net</td><td>NET_F_HOST_TSO4</td><td>Driver hands oversized frames to device; device segments</td></tr>
+  <tr><td>(generic)</td><td>F_VERSION_1</td><td>Modern virtio; if absent, "transitional" legacy mode</td></tr>
+  <tr><td>(generic)</td><td>F_RING_PACKED</td><td>Single-ring layout instead of separate avail/used</td></tr>
+</table>
+
+<h2>VERSION_1 and "transitional" devices</h2>
+<p>virtio 1.0 (2014) cleaned up endianness (little-endian everywhere, not "guest-endian") and added the status state machine. To stay compatible with Linux 3.x drivers, the spec defined <em>transitional</em> devices: they support both the legacy and modern modes, selected by whether the driver negotiates F_VERSION_1. If yes, modern; if not, legacy.</p>
+<p>tinyemu-go's virtio-mmio is transitional. The big difference visible to the driver is the legacy queue-pfn (Page Frame Number) register vs the modern queue-addr split (descriptor / driver / device area separately). Legacy mode treats the rings as one contiguous block; modern mode lets you allocate the three rings independently. Modern Linux always negotiates VERSION_1 if offered.</p>
+
+<h2>The lifecycle in code</h2>
+<pre><span class="cm">// Driver-side, simplified.</span>
+write_status(0)                    <span class="cm">// reset</span>
+write_status(ACK)
+write_status(ACK | DRIVER)
+features = read_device_features()
+features &amp;= my_supported_features  <span class="cm">// subset we want</span>
+write_driver_features(features)
+write_status(ACK | DRIVER | FEATURES_OK)
+<span class="kw">if</span> (read_status() &amp; FEATURES_OK == 0)
+    <span class="kw">return</span> -ENODEV;       <span class="cm">// device rejected our subset</span>
+setup_queues();
+write_status(ACK | DRIVER | FEATURES_OK | DRIVER_OK)<span class="lang-tag">driver flow</span></pre>
+
+<div class="box box-key">
+<strong>Why the handshake matters</strong>
+The pre-virtio model was "device offers X, driver uses X." Negotiation lets a single device serve drivers of different vintages without breaking either, and lets drivers tune for what they can actually parse. The cost is a half-dozen extra register pokes at startup — paid once, never again.
+</div>
 `,
-  exercises: ["(filled in when this lesson is expanded)"]
+  exercises: [
+    "What state should a virtio device be in if a driver writes status with bits going backwards (e.g. clears DRIVER_OK to 0)?",
+    "Read <code>devices/virtio/mmio.go</code>: where does it gate writes to <code>queue_pfn</code> on the legacy-vs-modern feature bits?",
+    "Walk through what happens if the device advertises VIRTIO_NET_F_MAC but the driver doesn't ask for it. What's the MAC on the link?",
+    "F_RING_PACKED is a major restructuring. Why does the spec leave it as a feature bit instead of just versioning to virtio 2.0?"
+  ]
 },
 
 // ============================================================
