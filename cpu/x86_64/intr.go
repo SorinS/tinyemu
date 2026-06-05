@@ -544,7 +544,9 @@ func (c *CPU) opCPUID() error {
 		d = 1<<0 | 1<<4 | 1<<5 | 1<<6 | 1<<8 | 1<<11 |
 			1<<13 | 1<<15 | 1<<16 | 1<<17 | 1<<23 | 1<<24 | 1<<25 | 1<<26
 	case 0x80000000:
-		a = 0x80000004
+		// Max extended leaf = 0x80000008 so the address-size leaf below
+		// is reachable.
+		a = 0x80000008
 	case 0x80000001:
 		// EDX: SYSCALL(11), NX(20), Page1GB(26), LM(29). The LM bit
 		// is the "long mode supported" advertisement Linux uses to
@@ -562,6 +564,14 @@ func (c *CPU) opCPUID() error {
 		b = leUint32(brand, off+4)
 		cx = leUint32(brand, off+8)
 		d = leUint32(brand, off+12)
+	case 0x80000008:
+		// Address sizes. EAX[7:0] = physical-address bits,
+		// EAX[15:8] = linear (virtual) address bits. Firmware (OVMF)
+		// reads this to size its GCD memory space and the coverage of
+		// its identity page tables; a zero here (the old default for an
+		// unadvertised leaf) makes those two disagree. 40/48 matches the
+		// QEMU default vCPU.
+		a = (48 << 8) | 40
 	default:
 		// Unrecognised leaves return zero, matching what real CPUs do
 		// for invalid leaves above the advertised maximums.

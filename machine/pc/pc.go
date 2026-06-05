@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/jtolio/tinyemu-go/cpu"
 	"github.com/jtolio/tinyemu-go/cpu/x86"
@@ -40,6 +41,12 @@ const (
 	VirtIOBaseAddr = 0x00010000 // Fixed MMIO address for VirtIO devices
 	VirtIOSize     = 0x00001000 // 4KB per device
 	VirtIOIRQ      = 8          // First VirtIO IRQ (after PIC internal uses)
+
+	// acpiPMBase is the I/O base of the PIIX4 ACPI Power-Management block
+	// (PM1a event/control at +0x00, PM_TMR at +0x08). 0x600 is OVMF's
+	// PcdAcpiPmBaseAddress default; we present the PIIX4 PM function
+	// pre-enabled at this base.
+	acpiPMBase = 0x0600
 )
 
 // Config holds configuration for creating a new PC.
@@ -174,6 +181,38 @@ func New(cfg Config) (*PC, error) {
 	// (IDE) too.
 	isaBridge := NewPCIDevice("PIIX3 ISA Bridge", 0x8086, 0x7000, 0x060100, 0x80)
 	p.pciHost.Bus().AddDevice(1, 0, isaBridge)
+
+	// (0,1,3): PIIX4 ACPI / Power-Management function. OVMF's PlatformPei
+	// probes this immediately after the host bridge — it reads PMBA
+	// (reg 0x40, the ACPI PM I/O base) and PMREGMISC (reg 0x80, bit 0 =
+	// PMIOSE "PM I/O space enable") to locate and enable the ACPI PM I/O
+	// block. With no device here, the read returns all-ones, and OVMF's
+	// platform init silently diverges down a non-QEMU path that never
+	// reaches fw_cfg memory detection — booting with a garbage memory
+	// map (allocations land in a phantom region above 4 GiB). We present
+	// it pre-enabled with the PM block at acpiPMBase, and let firmware
+	// reprogram PMBA / PMREGMISC if it chooses.
+	pmDev := NewPCIDevice("PIIX4 ACPI", 0x8086, 0x7113, 0x068000, 0x00)
+	pmDev.setU32(0x40, uint32(acpiPMBase)|0x01) // PMBA: base + I/O-space indicator
+	pmDev.setU8(0x80, 0x01)                     // PMREGMISC: PM I/O space enabled
+	pmDev.onWrite = func(d *PCIDevice, off uint32, val uint32, size int) {
+		switch {
+		case off >= 0x40 && off < 0x44: // PMBA — power-management I/O base
+			applyWrite(d, off, val, size)
+			d.config[0x40] |= 0x01 // bit 0 hardwired (I/O space)
+		case off == 0x80: // PMREGMISC — bit 0 = PMIOSE
+			applyWrite(d, off, val, size)
+		default:
+			defaultWrite(d, off, val, size)
+		}
+	}
+	p.pciHost.Bus().AddDevice(1, 3, pmDev)
+
+	// ACPI PM timer (PM_TMR) at PMBASE+8: a 24-bit up-counter ticking at
+	// 3.579545 MHz. Firmware (OVMF) and the kernel read it for timed
+	// delays; if it never advances, delay loops hang. Derived from the
+	// host clock so Stall() actually waits.
+	p.registerACPIPMTimer(acpiPMBase + 0x08)
 
 	// (0,1,1): IDE controller. Class 0x010180 = "IDE, ProgIF 0x80
 	// (legacy ports, bus-master capable)". Reports IRQ 14, INT A. The
@@ -689,6 +728,19 @@ func (p *PC) GetCPU() cpu.Core {
 
 func (p *PC) MemMap() *mem.PhysMemoryMap {
 	return p.memMap
+}
+
+// registerACPIPMTimer wires the ACPI Power-Management Timer (PM_TMR) at
+// `port` (PMBASE+8): a 24-bit up-counter ticking at the architectural
+// 3.579545 MHz. Firmware (OVMF) and the kernel poll it for calibrated
+// delays, so it must actually advance — a stuck value hangs delay loops.
+// Backed by the host monotonic clock so Stall() elapses real time.
+func (p *PC) registerACPIPMTimer(port uint16) {
+	start := time.Now()
+	p.io.RegisterRead32(port, port, func(uint16) uint32 {
+		ticks := uint64(time.Since(start).Seconds() * 3579545.0)
+		return uint32(ticks & 0xFFFFFF) // 24-bit PM timer
+	})
 }
 
 func (p *PC) Close() {
