@@ -43,10 +43,12 @@ const (
 	VirtIOIRQ      = 8          // First VirtIO IRQ (after PIC internal uses)
 
 	// acpiPMBase is the I/O base of the PIIX4 ACPI Power-Management block
-	// (PM1a event/control at +0x00, PM_TMR at +0x08). 0x600 is OVMF's
-	// PcdAcpiPmBaseAddress default; we present the PIIX4 PM function
-	// pre-enabled at this base.
-	acpiPMBase = 0x0600
+	// (PM1a event/control at +0x00, PM_TMR at +0x08). 0xB000 is OVMF's
+	// PcdAcpiPmBaseAddress default and QEMU's PIIX4 default. The PIIX4 PM
+	// function starts DISABLED with PMBA unprogrammed; firmware writes
+	// this base into PMBA (reg 0x40) and sets PMIOSE (reg 0x80) to enable
+	// it — matching QEMU exactly.
+	acpiPMBase = 0xB000
 )
 
 // Config holds configuration for creating a new PC.
@@ -193,8 +195,8 @@ func New(cfg Config) (*PC, error) {
 	// it pre-enabled with the PM block at acpiPMBase, and let firmware
 	// reprogram PMBA / PMREGMISC if it chooses.
 	pmDev := NewPCIDevice("PIIX4 ACPI", 0x8086, 0x7113, 0x068000, 0x00)
-	pmDev.setU32(0x40, uint32(acpiPMBase)|0x01) // PMBA: base + I/O-space indicator
-	pmDev.setU8(0x80, 0x01)                     // PMREGMISC: PM I/O space enabled
+	pmDev.setU32(0x40, 0x00000001) // PMBA: I/O-space indicator, base unprogrammed
+	pmDev.setU8(0x80, 0x00)        // PMREGMISC: PM I/O space disabled (firmware enables)
 	pmDev.onWrite = func(d *PCIDevice, off uint32, val uint32, size int) {
 		switch {
 		case off >= 0x40 && off < 0x44: // PMBA — power-management I/O base
