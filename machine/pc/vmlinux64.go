@@ -103,6 +103,12 @@ func (p *PC) loadVMLinux64(kernelData, initrdData []byte, cmdLine string) error 
 	// E820 map.
 	p.writeE820Map(setupAddr)
 
+	// ACPI: install tables + publish RSDP via boot_params.acpi_rsdp_addr
+	// (offset 0x070, u64). Same plumbing as bzimage64.
+	rsdpAddr := installACPIDirect(p)
+	p.patchBootParam32(setupAddr+0x070, rsdpAddr)
+	p.patchBootParam32(setupAddr+0x074, 0)
+
 	// initrd at top of RAM.
 	if len(initrdData) > 0 {
 		initrdAddr := uint32(p.ramSize) - uint32(len(initrdData))

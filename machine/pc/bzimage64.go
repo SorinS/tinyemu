@@ -117,6 +117,15 @@ func (p *PC) loadBZImage64(kernelData, initrdData []byte, cmdLine string) error 
 	// E820 memory map (RAM available to the kernel).
 	p.writeE820Map(setupAddr)
 
+	// ACPI: install RSDP + tables at fixed low-memory addresses and
+	// publish the RSDP via boot_params.acpi_rsdp_addr (offset 0x070,
+	// u64; field added in Linux 5.0). Belt-and-braces — kernels that
+	// ignore this field still discover the RSDP via the F-segment
+	// scan because directRSDPAddr lives at 0xE0000.
+	rsdpAddr := installACPIDirect(p)
+	p.patchBootParam32(setupAddr+0x070, rsdpAddr)
+	p.patchBootParam32(setupAddr+0x074, 0)
+
 	// initrd: place just below top of RAM (page-aligned). The 64-bit
 	// boot protocol allows initrd above 4 GiB if XLF_CAN_BE_LOADED_ABOVE_4G
 	// is set; we stay below to keep the addr32 fields valid.

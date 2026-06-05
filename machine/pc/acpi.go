@@ -39,28 +39,41 @@ const (
 // agrees with both the builder and the tests.
 const (
 	rsdpLen   = 36
-	rsdtLen   = 36 + 4*3    // header + 3 entries (FADT, MADT, HPET)
+	rsdtLen   = 36 + 4*4    // header + 4 entries (FADT, MADT, HPET, DSDT)
 	fadtLen   = 276
 	madtLen   = 44 + 8 + 12 // header + Local-APIC entry + I/O-APIC entry
 	hpetLen   = 56
+	// DSDT minimum: 36-byte header + a 7-byte AML "Scope(\_SB_) {}"
+	// definition block so Linux's namespace loader has something
+	// valid to parse. Empty body wasn't enough — the AML interpreter
+	// dereferenced a zero-length result and killed kernel-init.
+	dsdtLen = 36 + 7
 
 	// Offsets of each sub-table inside the tables blob.
 	rsdtBlobOff = 0
 	fadtBlobOff = rsdtBlobOff + rsdtLen
 	madtBlobOff = fadtBlobOff + fadtLen
 	hpetBlobOff = madtBlobOff + madtLen
+	dsdtBlobOff = hpetBlobOff + hpetLen
 
-	tablesBlobLen = hpetBlobOff + hpetLen
+	tablesBlobLen = dsdtBlobOff + dsdtLen
 
 	// Where SeaBIOS will need to patch pointers into the RSDT.
 	rsdtFadtPtrOff = 36 // points to FADT
 	rsdtMadtPtrOff = 40 // points to MADT
 	rsdtHpetPtrOff = 44 // points to HPET
+	rsdtDsdtPtrOff = 48 // points to DSDT (so AcpiInitializeTables sees it)
 
 	// The RSDP's RsdtAddress field — SeaBIOS patches this to the
 	// absolute address where it allocates the tables blob.
 	rsdpRsdtAddrOff = 16
 	rsdpChecksumOff = 8
+
+	// FADT fields we care about beyond the header.
+	fadtDsdtOff   = 40  // 32-bit DSDT pointer
+	fadtFlagsOff  = 112 // 32-bit Flags bitmap; bit 20 = HW_REDUCED_ACPI
+	fadtXDsdtOff  = 140 // 64-bit DSDT pointer (ACPI 2.0+)
+	fadtHwReduced = 1 << 20
 )
 
 // writeACPITableHeader writes the standard 36-byte ACPI table header
@@ -122,14 +135,23 @@ func tablesBlob() []byte {
 	binary.LittleEndian.PutUint32(rsdt[rsdtFadtPtrOff-rsdtBlobOff:], uint32(fadtBlobOff))
 	binary.LittleEndian.PutUint32(rsdt[rsdtMadtPtrOff-rsdtBlobOff:], uint32(madtBlobOff))
 	binary.LittleEndian.PutUint32(rsdt[rsdtHpetPtrOff-rsdtBlobOff:], uint32(hpetBlobOff))
+	binary.LittleEndian.PutUint32(rsdt[rsdtDsdtPtrOff-rsdtBlobOff:], uint32(dsdtBlobOff))
 
 	// --- FADT ---
-	// Zero body except the IAPC_BOOT_ARCH legacy-device flags at
-	// offset 109 (bits: legacy devices present + 8042 present). The
-	// BiosLinker fills the checksum.
+	// IAPC_BOOT_ARCH legacy-device flags at offset 109 (legacy
+	// devices present + 8042 present). HW_REDUCED_ACPI flag at
+	// offset 112 exempts us from having to provide functional PM1a
+	// event/control I/O blocks — Linux otherwise warns
+	// "Required FADT field Pm1aEventBlock has zero address". DSDT
+	// pointer (32-bit at offset 40, 64-bit X_Dsdt at offset 140)
+	// references the in-blob DSDT; installACPIDirect rewrites them
+	// to absolute addresses when the blob is placed.
 	fadt := buf[fadtBlobOff : fadtBlobOff+fadtLen]
 	writeACPITableHeader(fadt, "FACP", fadtLen, 6)
+	binary.LittleEndian.PutUint32(fadt[fadtDsdtOff:fadtDsdtOff+4], uint32(dsdtBlobOff))
 	binary.LittleEndian.PutUint16(fadt[109:111], 0x03)
+	binary.LittleEndian.PutUint32(fadt[fadtFlagsOff:fadtFlagsOff+4], fadtHwReduced)
+	binary.LittleEndian.PutUint64(fadt[fadtXDsdtOff:fadtXDsdtOff+8], uint64(dsdtBlobOff))
 
 	// --- MADT ---
 	madt := buf[madtBlobOff : madtBlobOff+madtLen]
@@ -158,7 +180,88 @@ func tablesBlob() []byte {
 	hpet[41] = 64
 	binary.LittleEndian.PutUint64(hpet[44:52], uint64(hpetBase))
 
+	// --- DSDT ---
+	// Linux's ACPI loader insists on a parseable DSDT — empty body
+	// triggers AE_NULL_OBJECT during namespace load and kills
+	// kernel-init. The minimum that survives is a Scope(\_SB_) {}
+	// definition block:
+	//   0x10        ScopeOp
+	//   0x06        PkgLength (6 bytes follow inside the package)
+	//   0x5C        rootchar '\' prefix
+	//   '_SB_'      4-char NameSeg
+	// 7 bytes total after the standard 36-byte header.
+	dsdt := buf[dsdtBlobOff : dsdtBlobOff+dsdtLen]
+	writeACPITableHeader(dsdt, "DSDT", dsdtLen, 2)
+	copy(dsdt[36:43], []byte{0x10, 0x06, 0x5C, '_', 'S', 'B', '_'})
+
 	return buf
+}
+
+// Fixed low-memory addresses used by installACPIDirect. Both fall
+// inside the legacy "F-segment" RSDP-scan range (0xE0000..0xFFFFF),
+// so a Linux kernel that ignores boot_params.acpi_rsdp_addr (or a
+// PVH kernel that ignores hvm_start_info.rsdp_paddr) still finds the
+// RSDP via the standard scan. The SeaBIOS path picks its own
+// addresses via the BiosLinker; only the direct-kernel-boot paths
+// (bzImage64, vmlinux64, PVH) use these.
+const (
+	directRSDPAddr   uint32 = 0xE0000
+	directTablesAddr uint32 = 0xE0080
+)
+
+// installACPIDirect writes a self-contained, finalised RSDP + tables
+// blob to guest memory at the fixed direct-boot addresses and returns
+// the physical address of the RSDP. Unlike the BiosLinker path which
+// hands SeaBIOS unresolved pointers and zero checksums, this builds
+// the tables with absolute addresses and computed checksums already
+// in place — the direct-kernel-boot paths have no BIOS to do the
+// relocation step for them.
+//
+// Callers should also write the returned RSDP address into the
+// kernel's appropriate boot-protocol field (boot_params.acpi_rsdp_addr
+// for bzImage64/vmlinux64, hvm_start_info.rsdp_paddr for PVH). The
+// fixed low-memory placement is a belt-and-braces fallback for
+// kernels that scan instead.
+func installACPIDirect(p *PC) uint32 {
+	tables := tablesBlob()
+
+	// Patch the RSDT entries from blob-relative offsets to absolute
+	// guest-physical addresses. tablesBlob() left these as offsets
+	// because the SeaBIOS path needs that shape; the direct path
+	// knows where the blob is going.
+	binary.LittleEndian.PutUint32(tables[rsdtFadtPtrOff:], directTablesAddr+fadtBlobOff)
+	binary.LittleEndian.PutUint32(tables[rsdtMadtPtrOff:], directTablesAddr+madtBlobOff)
+	binary.LittleEndian.PutUint32(tables[rsdtHpetPtrOff:], directTablesAddr+hpetBlobOff)
+	binary.LittleEndian.PutUint32(tables[rsdtDsdtPtrOff:], directTablesAddr+dsdtBlobOff)
+
+	// Patch the DSDT pointers inside FADT (32-bit Dsdt at offset 40,
+	// 64-bit X_Dsdt at offset 140) from blob-relative to absolute.
+	dsdtAbs := directTablesAddr + dsdtBlobOff
+	binary.LittleEndian.PutUint32(tables[fadtBlobOff+fadtDsdtOff:], dsdtAbs)
+	binary.LittleEndian.PutUint64(tables[fadtBlobOff+fadtXDsdtOff:], uint64(dsdtAbs))
+
+	// Finalise the checksum of each sub-table. ACPI requires that
+	// the byte-sum across (length) bytes equal zero; the BiosLinker
+	// would do this after relocation but here we do it ourselves.
+	finalizeChecksum(tables[rsdtBlobOff:rsdtBlobOff+rsdtLen], rsdtLen, 9)
+	finalizeChecksum(tables[fadtBlobOff:fadtBlobOff+fadtLen], fadtLen, 9)
+	finalizeChecksum(tables[madtBlobOff:madtBlobOff+madtLen], madtLen, 9)
+	finalizeChecksum(tables[hpetBlobOff:hpetBlobOff+hpetLen], hpetLen, 9)
+	finalizeChecksum(tables[dsdtBlobOff:dsdtBlobOff+dsdtLen], dsdtLen, 9)
+
+	// RSDP: ACPI 1.0 layout, checksum over the first 20 bytes.
+	rsdp := rsdpBlob()
+	binary.LittleEndian.PutUint32(rsdp[rsdpRsdtAddrOff:], directTablesAddr)
+	finalizeChecksum(rsdp, 20, rsdpChecksumOff)
+
+	// Write both blobs to guest physical memory.
+	for i, b := range rsdp {
+		p.writePhys8(directRSDPAddr+uint32(i), b)
+	}
+	for i, b := range tables {
+		p.writePhys8(directTablesAddr+uint32(i), b)
+	}
+	return directRSDPAddr
 }
 
 // BiosLinker (table-loader) command layout. Each entry is exactly
@@ -225,12 +328,17 @@ func tableLoaderScript() []byte {
 
 	// Patch RSDP.RsdtAddress to point at the start of the tables blob.
 	addPointer(rsdp, tables, rsdpRsdtAddrOff, 4)
-	// Patch RSDT entries to point at FADT / MADT / HPET inside the
-	// tables blob. The destFile is tables itself — SeaBIOS resolves
-	// "src == dest" to "patch relative to my own base".
+	// Patch RSDT entries to point at FADT / MADT / HPET / DSDT inside
+	// the tables blob. The destFile is tables itself — SeaBIOS
+	// resolves "src == dest" to "patch relative to my own base".
 	addPointer(tables, tables, rsdtFadtPtrOff, 4)
 	addPointer(tables, tables, rsdtMadtPtrOff, 4)
 	addPointer(tables, tables, rsdtHpetPtrOff, 4)
+	addPointer(tables, tables, rsdtDsdtPtrOff, 4)
+	// Patch FADT's Dsdt (32-bit) and X_Dsdt (64-bit) so the kernel's
+	// namespace loader has a valid pointer to follow.
+	addPointer(tables, tables, uint32(fadtBlobOff+fadtDsdtOff), 4)
+	addPointer(tables, tables, uint32(fadtBlobOff+fadtXDsdtOff), 8)
 
 	// Checksums. RSDP uses the ACPI 1.0 first-20-bytes form; every
 	// other table uses the standard "sum all length bytes to zero".
@@ -239,6 +347,7 @@ func tableLoaderScript() []byte {
 	addChecksum(tables, fadtBlobOff+9, fadtBlobOff, fadtLen)
 	addChecksum(tables, madtBlobOff+9, madtBlobOff, madtLen)
 	addChecksum(tables, hpetBlobOff+9, hpetBlobOff, hpetLen)
+	addChecksum(tables, dsdtBlobOff+9, dsdtBlobOff, dsdtLen)
 
 	out := make([]byte, 0, len(entries)*biosLinkerEntrySize)
 	for _, e := range entries {

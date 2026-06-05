@@ -198,7 +198,12 @@ func (p *PC) loadPVH64(kernelData, initrdData []byte, cmdLine string) error {
 		p.patchBootParam64(startInfoAddr+0x10, 0)
 	}
 	p.patchBootParam64(startInfoAddr+0x18, uint64(cmdLineAddr))
-	p.patchBootParam64(startInfoAddr+0x20, 0) // rsdp_paddr — no ACPI
+	// rsdp_paddr — installACPIDirect lays out RSDP + tables at the
+	// fixed direct-boot addresses (0xE0000 / 0xE0080) and returns the
+	// RSDP physical address. Linux's PVH entry path prefers this
+	// field over an F-segment scan when it's non-zero.
+	rsdpAddr := installACPIDirect(p)
+	p.patchBootParam64(startInfoAddr+0x20, uint64(rsdpAddr))
 	p.patchBootParam64(startInfoAddr+0x28, uint64(memmapAddr))
 	p.patchBootParam32(startInfoAddr+0x30, memmapEntries)
 	p.patchBootParam32(startInfoAddr+0x34, 0) // reserved
