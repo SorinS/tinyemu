@@ -285,13 +285,25 @@ func (c *CPU) Reset() {
 	c.rip = 0xFFF0
 	c.rflags = 2
 
+	// EDX holds the processor signature (family/model/stepping = the value
+	// CPUID leaf 1 returns in EAX) after reset; everything else is zero.
+	// Firmware (OVMF's SEC) reads EDX at the reset vector to identify the
+	// CPU before CPUID is usable — a zero here sent OVMF's platform init
+	// down a wrong path.
+	c.reg64[RDX] = 0x600
+
 	for i := range c.cr {
 		c.cr[i] = 0
 	}
 	for i := range c.dr {
 		c.dr[i] = 0
 	}
-	c.cr[0] = CR0_ET
+	// CR0 power-on value is 0x60000010: ET (FPU present) plus CD and NW
+	// (caches disabled — the architectural reset state). We don't model
+	// caches, but firmware reads CR0 at reset and uses the value (OVMF's
+	// SEC copies it into the temporary stack pointer); resetting to just
+	// ET (0x10) diverged from real hardware / QEMU.
+	c.cr[0] = CR0_ET | CR0_CD | CR0_NW
 
 	c.cpl = 0
 	c.powerDown = false

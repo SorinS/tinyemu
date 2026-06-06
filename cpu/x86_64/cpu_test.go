@@ -32,15 +32,21 @@ func TestReset_DefaultState(t *testing.T) {
 	if c.GetRFLAGS() != 2 {
 		t.Errorf("RFLAGS = %#x, want 2 (reserved bit 1)", c.GetRFLAGS())
 	}
-	if c.GetCR64(0) != CR0_ET {
-		t.Errorf("CR0 = %#x, want CR0_ET", c.GetCR64(0))
+	// CR0 power-on value is ET | CD | NW (caches disabled), per Intel SDM.
+	if c.GetCR64(0) != CR0_ET|CR0_CD|CR0_NW {
+		t.Errorf("CR0 = %#x, want %#x (ET|CD|NW)", c.GetCR64(0), CR0_ET|CR0_CD|CR0_NW)
 	}
 	if c.GetEFER() != 0 {
 		t.Errorf("EFER = %#x, want 0", c.GetEFER())
 	}
+	// EDX resets to the processor signature (family 6); all other GPRs zero.
 	for i := 0; i < 16; i++ {
-		if v := c.GetReg64(i); v != 0 {
-			t.Errorf("reg64[%d] = %#x, want 0", i, v)
+		want := uint64(0)
+		if i == RDX {
+			want = 0x600
+		}
+		if v := c.GetReg64(i); v != want {
+			t.Errorf("reg64[%d] = %#x, want %#x", i, v, want)
 		}
 	}
 	if c.GetCycles() != 0 {
@@ -91,8 +97,12 @@ func TestReset_AfterMutation(t *testing.T) {
 		t.Errorf("powerDown not reset")
 	}
 	for i := 0; i < 16; i++ {
-		if c.GetReg64(i) != 0 {
-			t.Errorf("reg64[%d] not reset after Reset: %#x", i, c.GetReg64(i))
+		want := uint64(0)
+		if i == RDX {
+			want = 0x600 // EDX resets to the processor signature
+		}
+		if c.GetReg64(i) != want {
+			t.Errorf("reg64[%d] not reset after Reset: %#x, want %#x", i, c.GetReg64(i), want)
 		}
 	}
 }
