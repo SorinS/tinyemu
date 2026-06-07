@@ -513,7 +513,11 @@ func (c *CPU) opCPUID() error {
 	case 1:
 		// Signature: family 6, model 0, stepping 0.
 		a = 0x00000600
-		b = 0
+		// EBX: bits 15:8 = CLFLUSH line size in 8-byte units (8 → 64 bytes),
+		// matching the QEMU vCPU. Brand index / APIC ID / max-logical-procs
+		// (the other bytes) stay 0 for our single, unbranded CPU. Firmware
+		// reads this early; a zero CLFLUSH size diverges from real hardware.
+		b = 0x00000800
 		// ECX features:
 		//   bit  0  SSE3 — advertised for the rare cases that expect it.
 		//   bit 30  RDRAND — load-bearing for Linux's crng_init. Without

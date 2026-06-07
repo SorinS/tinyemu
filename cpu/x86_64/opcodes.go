@@ -2128,7 +2128,9 @@ func (c *CPU) writeCR(n int, v uint64) {
 		newPG := v&CR0_PG != 0
 		oldWP := c.cr[0]&CR0_WP != 0
 		newWP := v&CR0_WP != 0
-		c.cr[0] = v
+		// CR0.ET is hardwired to 1 on P6+ CPUs — writes that clear it are
+		// ignored. Firmware reads CR0 back expecting ET set.
+		c.cr[0] = v | CR0_ET
 		// LMA latches when paging is enabled with LME set; clears when
 		// paging turns off.
 		if !oldPG && newPG && c.efer&EFER_LME != 0 {
@@ -2223,6 +2225,12 @@ func (c *CPU) opWRMSR() error {
 
 func (c *CPU) readMSR(num uint32) uint64 {
 	switch num {
+	case 0x1B: // IA32_APIC_BASE
+		// We don't model a local APIC, but the BSP bit (8) must be set —
+		// this is the bootstrap processor. Matches the QEMU vCPU (which
+		// reports 0x100 here with the APIC otherwise disabled). Firmware
+		// reads this during early CPU setup.
+		return 0x100
 	case msrEFER:
 		return c.efer
 	case msrSTAR:

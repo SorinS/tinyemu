@@ -235,11 +235,12 @@ func TestSegBase64(t *testing.T) {
 func TestCRAccessors(t *testing.T) {
 	c := newTestCPU(t)
 	c.SetCR(0, CR0_PE|CR0_PG)
-	if c.GetCR(0) != CR0_PE|CR0_PG {
-		t.Errorf("CR0 32-bit accessor")
+	// CR0.ET is hardwired to 1 (P6+), so it reads back set regardless.
+	if c.GetCR(0) != CR0_PE|CR0_PG|CR0_ET {
+		t.Errorf("CR0 32-bit accessor = %#x", c.GetCR(0))
 	}
-	if c.GetCR64(0) != CR0_PE|CR0_PG {
-		t.Errorf("CR0 64-bit accessor")
+	if c.GetCR64(0) != CR0_PE|CR0_PG|CR0_ET {
+		t.Errorf("CR0 64-bit accessor = %#x", c.GetCR64(0))
 	}
 	c.SetCR64(3, 0x1_0000_2000)
 	if c.GetCR64(3) != 0x1_0000_2000 {
@@ -480,7 +481,7 @@ func TestSatisfiesX86Core(t *testing.T) {
 	core.SetEIP(0x1000)
 	core.SetReg32(EAX, 0xDEADBEEF)
 	core.SetCR(0, CR0_PE)
-	if core.GetCR(0) != CR0_PE {
-		t.Errorf("interface-level CR")
+	if core.GetCR(0) != CR0_PE|CR0_ET { // ET hardwired to 1
+		t.Errorf("interface-level CR = %#x", core.GetCR(0))
 	}
 }
