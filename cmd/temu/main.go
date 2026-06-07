@@ -62,6 +62,7 @@ var (
 	machineType = flag.String("machine", "riscv64", "machine type (riscv64, riscv32, x86, or x86_64)")
 	smpCount    = flag.Int("smp", 1, "number of CPUs (reserved for future use)")
 	netUser     = flag.Bool("net-user", false, "enable user-mode networking (slirp)")
+	apicFlag    = flag.Bool("apic", false, "wire a real local APIC (x86_64; off = legacy 8259 PIC)")
 	debugMode   = flag.Bool("debug", false, "enable debug output")
 
 	// Inject startup characters into the guest console BEFORE
@@ -76,9 +77,9 @@ var (
 	stdinPrefix = flag.String("stdin-prefix", "", "bytes to inject into guest console before forwarding host stdin (supports \\n \\xHH escapes)")
 
 	// Repeatable flags
-	driveFiles  stringSlice
-	cdromFiles  stringSlice
-	p9Shares    stringSlice
+	driveFiles stringSlice
+	cdromFiles stringSlice
+	p9Shares   stringSlice
 
 	fdaFile string
 )
@@ -180,9 +181,10 @@ func run() int {
 
 	// Create machine configuration
 	machineCfg := machine.Config{
-		RAMSize: cfg.MemorySize,
-		MaxXLEN: 64, // Default to RV64
-		Console: console.CharDevice(),
+		RAMSize:    cfg.MemorySize,
+		MaxXLEN:    64, // Default to RV64
+		Console:    console.CharDevice(),
+		EnableAPIC: *apicFlag,
 	}
 
 	// Create machine
@@ -384,7 +386,6 @@ func run() int {
 
 	return runEmulator(m, console, ethDevs, sigCh)
 }
-
 
 // buildConfigFromCLI creates a VMConfig from command-line arguments.
 // Returns an error if required arguments are missing.

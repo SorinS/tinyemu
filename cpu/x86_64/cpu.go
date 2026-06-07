@@ -211,6 +211,13 @@ type CPU struct {
 	msrCstar        uint64 // SYSCALL compatibility-mode RIP target
 	msrSFMask       uint64 // SYSCALL RFLAGS clear mask
 
+	// apicEnabled advertises a local APIC (CPUID.1 EDX bit 9) and makes
+	// IA32_APIC_BASE report the enabled reset value. Off by default; the
+	// machine turns it on only when a LocalAPIC is wired up. msrApicBase
+	// holds the (writable) IA32_APIC_BASE value when enabled.
+	apicEnabled bool
+	msrApicBase uint64
+
 	// mode tracks the current operating mode. It is derived from the
 	// architectural state (CR0.PE, EFLAGS.VM, EFER.LMA, CS.L, CS.D) and
 	// recomputed any time those bits change. Held explicitly so hot
@@ -348,7 +355,7 @@ func (c *CPU) Reset() {
 
 // ===== 64-bit register accessors =====
 
-func (c *CPU) GetReg64(r int) uint64 { return c.reg64[r&0xF] }
+func (c *CPU) GetReg64(r int) uint64    { return c.reg64[r&0xF] }
 func (c *CPU) SetReg64(r int, v uint64) { c.reg64[r&0xF] = v }
 
 // ===== 32-bit register accessors =====
@@ -424,9 +431,9 @@ func (c *CPU) SetReg8(r int, v uint8) {
 
 // ===== Segment accessors =====
 
-func (c *CPU) GetSeg(sel int) uint16     { return c.seg[sel] }
-func (c *CPU) SetSeg(sel int, v uint16)  { c.seg[sel] = v }
-func (c *CPU) GetSegBase64(sel int) uint64 { return c.segBase[sel] }
+func (c *CPU) GetSeg(sel int) uint16          { return c.seg[sel] }
+func (c *CPU) SetSeg(sel int, v uint16)       { c.seg[sel] = v }
+func (c *CPU) GetSegBase64(sel int) uint64    { return c.segBase[sel] }
 func (c *CPU) SetSegBase64(sel int, v uint64) { c.segBase[sel] = v }
 
 // SetSegBase / GetSegBase use a 32-bit value to match cpu.X86Core. The
@@ -436,9 +443,9 @@ func (c *CPU) SetSegBase64(sel int, v uint64) { c.segBase[sel] = v }
 func (c *CPU) SetSegBase(sel int, v uint32) { c.segBase[sel] = uint64(v) }
 func (c *CPU) GetSegBase(sel int) uint32    { return uint32(c.segBase[sel]) }
 
-func (c *CPU) GetSegLimit(sel int) uint32     { return c.segLimit[sel] }
-func (c *CPU) SetSegLimit(sel int, v uint32)  { c.segLimit[sel] = v }
-func (c *CPU) GetSegAccess(sel int) uint32 { return c.segAccess[sel] }
+func (c *CPU) GetSegLimit(sel int) uint32    { return c.segLimit[sel] }
+func (c *CPU) SetSegLimit(sel int, v uint32) { c.segLimit[sel] = v }
+func (c *CPU) GetSegAccess(sel int) uint32   { return c.segAccess[sel] }
 
 // SetSegAccess stores the descriptor-cache access word for a segment
 // register. Writes to CS may toggle the L (long-mode-active) and D
@@ -453,17 +460,17 @@ func (c *CPU) SetSegAccess(sel int, v uint32) {
 
 // ===== Instruction pointer =====
 
-func (c *CPU) GetRIP() uint64     { return c.rip }
-func (c *CPU) SetRIP(v uint64)    { c.rip = v }
-func (c *CPU) GetEIP() uint32     { return uint32(c.rip) }
-func (c *CPU) SetEIP(v uint32)    { c.rip = uint64(v) }
+func (c *CPU) GetRIP() uint64  { return c.rip }
+func (c *CPU) SetRIP(v uint64) { c.rip = v }
+func (c *CPU) GetEIP() uint32  { return uint32(c.rip) }
+func (c *CPU) SetEIP(v uint32) { c.rip = uint64(v) }
 
 // ===== RFLAGS / CR / EFER =====
 
-func (c *CPU) GetRFLAGS() uint64    { return c.rflags }
-func (c *CPU) SetRFLAGS(v uint64)   { c.rflags = v&ValidFlagMask | 2 }
-func (c *CPU) GetEFLAGS() uint32    { return uint32(c.rflags) }
-func (c *CPU) SetEFLAGS(v uint32)   { c.rflags = uint64(v)&ValidFlagMask | 2 }
+func (c *CPU) GetRFLAGS() uint64  { return c.rflags }
+func (c *CPU) SetRFLAGS(v uint64) { c.rflags = v&ValidFlagMask | 2 }
+func (c *CPU) GetEFLAGS() uint32  { return uint32(c.rflags) }
+func (c *CPU) SetEFLAGS(v uint32) { c.rflags = uint64(v)&ValidFlagMask | 2 }
 
 func (c *CPU) GetCR64(n int) uint64    { return c.cr[n] }
 func (c *CPU) SetCR64(n int, v uint64) { c.writeCR(n, v) }
@@ -515,12 +522,22 @@ func (c *CPU) SetInterruptAckHandler(fn func() (uint8, bool)) {
 	c.ackInterruptFunc = fn
 }
 
+// SetAPICEnabled advertises a local APIC via CPUID and seeds the
+// IA32_APIC_BASE MSR with the enabled reset value (base 0xFEE00000 | EN |
+// BSP). Called by the machine when a LocalAPIC is present.
+func (c *CPU) SetAPICEnabled(b bool) {
+	c.apicEnabled = b
+	if b {
+		c.msrApicBase = 0xFEE00900
+	}
+}
+
 // ===== cpu.Core interface =====
 
-func (c *CPU) GetCycles() uint64    { return c.cycles }
-func (c *CPU) AddCycles(n uint64)   { c.cycles += n }
-func (c *CPU) SetPowerDown(b bool)  { c.powerDown = b }
-func (c *CPU) IsPowerDown() bool    { return c.powerDown }
+func (c *CPU) GetCycles() uint64   { return c.cycles }
+func (c *CPU) AddCycles(n uint64)  { c.cycles += n }
+func (c *CPU) SetPowerDown(b bool) { c.powerDown = b }
+func (c *CPU) IsPowerDown() bool   { return c.powerDown }
 
 func (c *CPU) HasPendingInterrupt() bool {
 	return c.intrLineState != 0 && (c.rflags&RFLAGS_IF) != 0

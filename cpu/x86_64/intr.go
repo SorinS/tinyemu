@@ -16,6 +16,7 @@ import (
 //     modeled (CPL is assumed 0 in tests).
 //   - The new CS's descriptor is not walked through the GDT; we trust
 //     the gate and synthesize a 64-bit code-segment access word.
+//
 // The full descriptor walk + IST/TSS lookup arrives in a later phase
 // once those features are needed for real kernel boot.
 func (c *CPU) deliverInterrupt(vec uint8, hasErr bool, errorCode uint32) error {
@@ -507,8 +508,8 @@ func (c *CPU) opCPUID() error {
 	case 0:
 		// Max basic leaf = 1; vendor = "GenuineIntel".
 		a = 1
-		b = 0x756E6547 // "Genu"
-		d = 0x49656E69 // "ineI"
+		b = 0x756E6547  // "Genu"
+		d = 0x49656E69  // "ineI"
 		cx = 0x6C65746E // "ntel"
 	case 1:
 		// Signature: family 6, model 0, stepping 0.
@@ -547,6 +548,13 @@ func (c *CPU) opCPUID() error {
 		// actually emulate.
 		d = 1<<0 | 1<<4 | 1<<5 | 1<<6 | 1<<8 | 1<<11 |
 			1<<13 | 1<<15 | 1<<16 | 1<<17 | 1<<23 | 1<<24 | 1<<25 | 1<<26
+		// APIC (bit 9): only when a local APIC is actually modelled. See
+		// the note above — advertising it without an APIC breaks the
+		// nolapic IRQ path; the machine sets apicEnabled only when it
+		// wires a LocalAPIC.
+		if c.apicEnabled {
+			d |= 1 << 9
+		}
 	case 0x80000000:
 		// Max extended leaf = 0x80000008 so the address-size leaf below
 		// is reachable.
@@ -781,9 +789,10 @@ func (c *CPU) opIRETQ(operandSize uint8) error {
 // called by opIRETQ when c.mode != ModeLong64.
 //
 // Stack frame layout (popped low-to-high):
-//   real / pm16: IP (2), CS (2), FLAGS (2)
-//   pm32 same-CPL / VM=0: EIP (4), CS (4), EFLAGS (4)
-//   pm32 + CPL change or VM=1: EIP, CS, EFLAGS, ESP, SS (5×4)
+//
+//	real / pm16: IP (2), CS (2), FLAGS (2)
+//	pm32 same-CPL / VM=0: EIP (4), CS (4), EFLAGS (4)
+//	pm32 + CPL change or VM=1: EIP, CS, EFLAGS, ESP, SS (5×4)
 //
 // SeaBIOS uses real-mode IRET extensively (for INT 10h / INT 13h
 // callbacks); we focus on the same-CPL paths here. CPL-changing IRET

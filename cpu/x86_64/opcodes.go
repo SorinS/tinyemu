@@ -1468,7 +1468,6 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int, repPrefix uint8
 		c.SetReg32(EDX, uint32(v>>32))
 		return nil
 
-
 	case op2 == 0x05:
 		// SYSCALL — fast kernel entry. EFER.SCE must be set; we
 		// honor that lazily by always allowing the entry.
@@ -1541,7 +1540,7 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int, repPrefix uint8
 		if m.isReg {
 			c.write8FromModRM(m, v)
 		} else {
-			c.writeMem8(c.segBaseForModRM(m) + m.ea, v)
+			c.writeMem8(c.segBaseForModRM(m)+m.ea, v)
 		}
 		return nil
 
@@ -1704,6 +1703,7 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int, repPrefix uint8
 //     several microarchitectures);
 //   - else: ZF = 0, destination = bit position of the lowest (BSF)
 //     or highest (BSR) set bit.
+//
 // CF/OF/SF/AF/PF are undefined on Intel; AMD documents them as
 // preserved. We follow AMD's "leave them alone" rule for portability.
 // opSHxD implements SHLD / SHRD — double-precision shift. Combines
@@ -2113,6 +2113,7 @@ func (c *CPU) opMovToCR(rex uint8) error {
 //   - CR0.PG / CR0.WP transitions: full flush.
 //   - CR4.PGE / CR4.PAE / CR4.PSE / CR4.SMEP / CR4.SMAP / CR4.PCIDE
 //     transitions: full flush.
+//
 // We match the x86 backend's behaviour where the semantics are equivalent.
 func (c *CPU) writeCR(n int, v uint64) {
 	if cr3Trace && n == 3 {
@@ -2193,14 +2194,14 @@ func (c *CPU) opMovToDR(rex uint8) error {
 // silently drop writes on WRMSR — real hardware raises #GP, but the
 // boot path passes through several MSRs we don't model.
 const (
-	msrEFER          = 0xC0000080
-	msrSTAR          = 0xC0000081
-	msrLSTAR         = 0xC0000082
-	msrCSTAR         = 0xC0000083
-	msrSFMASK        = 0xC0000084
-	msrFSBaseMSR     = 0xC0000100
-	msrGSBaseMSR     = 0xC0000101
-	msrKernelGSBase  = 0xC0000102
+	msrEFER         = 0xC0000080
+	msrSTAR         = 0xC0000081
+	msrLSTAR        = 0xC0000082
+	msrCSTAR        = 0xC0000083
+	msrSFMASK       = 0xC0000084
+	msrFSBaseMSR    = 0xC0000100
+	msrGSBaseMSR    = 0xC0000101
+	msrKernelGSBase = 0xC0000102
 )
 
 func (c *CPU) opRDMSR() error {
@@ -2226,10 +2227,13 @@ func (c *CPU) opWRMSR() error {
 func (c *CPU) readMSR(num uint32) uint64 {
 	switch num {
 	case 0x1B: // IA32_APIC_BASE
-		// We don't model a local APIC, but the BSP bit (8) must be set —
-		// this is the bootstrap processor. Matches the QEMU vCPU (which
-		// reports 0x100 here with the APIC otherwise disabled). Firmware
-		// reads this during early CPU setup.
+		// With a modelled local APIC: the (writable) enabled value, base
+		// 0xFEE00000 | EN | BSP. Without one: just the BSP bit (0x100),
+		// matching a vCPU whose APIC is disabled — the value shipped
+		// before the LocalAPIC existed, keeping the no-APIC path stable.
+		if c.apicEnabled {
+			return c.msrApicBase
+		}
 		return 0x100
 	case msrEFER:
 		return c.efer
@@ -2253,6 +2257,10 @@ func (c *CPU) readMSR(num uint32) uint64 {
 
 func (c *CPU) writeMSR(num uint32, v uint64) error {
 	switch num {
+	case 0x1B: // IA32_APIC_BASE — software may relocate/toggle the APIC
+		if c.apicEnabled {
+			c.msrApicBase = v
+		}
 	case msrEFER:
 		// Route through SetEFER so the LMA-latch logic AND the TLB
 		// flush on EFER.NXE / LMA / LME transitions happen in one
@@ -2333,18 +2341,18 @@ func (c *CPU) opBTC(rex, operandSize uint8) error {
 // on whether the destination is a register or memory; the SDM has
 // two distinct rules:
 //
-//   register destination — the bit index is masked to (operand_size - 1).
-//     `bts rax, rbx` with rbx = 253 sets bit (253 & 63) = 61 of rax.
+//	register destination — the bit index is masked to (operand_size - 1).
+//	  `bts rax, rbx` with rbx = 253 sets bit (253 & 63) = 61 of rax.
 //
-//   memory destination — the bit index is treated as a SIGNED integer
-//     that extends the memory address. `bts qword [mem], rax` with
-//     rax = 253 sets bit 253 of memory at [mem], landing at byte
-//     [mem + 253/8] (= [mem + 31]) bit 5. Equivalently, addresses the
-//     word at [mem + (idx / word_bits) * (word_bits/8)] and sets bit
-//     (idx mod word_bits) within it. Signed division rounds toward
-//     zero, so a negative idx with non-zero remainder needs a -1
-//     adjustment to the word index and a +word_bits to the bit-within-
-//     word (the same pattern the i386 backend uses).
+//	memory destination — the bit index is treated as a SIGNED integer
+//	  that extends the memory address. `bts qword [mem], rax` with
+//	  rax = 253 sets bit 253 of memory at [mem], landing at byte
+//	  [mem + 253/8] (= [mem + 31]) bit 5. Equivalently, addresses the
+//	  word at [mem + (idx / word_bits) * (word_bits/8)] and sets bit
+//	  (idx mod word_bits) within it. Signed division rounds toward
+//	  zero, so a negative idx with non-zero remainder needs a -1
+//	  adjustment to the word index and a +word_bits to the bit-within-
+//	  word (the same pattern the i386 backend uses).
 //
 // We previously masked the bit index unconditionally — that meant
 // `lock bts qword [system_vectors], rax` with rax = 253 (Linux's
@@ -2447,7 +2455,7 @@ func (c *CPU) opXCHGRM(rex, operandSize uint8) error {
 		if m.isReg {
 			c.write8FromModRM(m, uint8(src))
 		} else {
-			c.writeMem8(c.segBaseForModRM(m) + m.ea, uint8(src))
+			c.writeMem8(c.segBaseForModRM(m)+m.ea, uint8(src))
 		}
 	} else {
 		c.writeReg(m.reg, dst, operandSize)
@@ -2485,7 +2493,7 @@ func (c *CPU) opCMPXCHG(rex, operandSize uint8) error {
 			if m.isReg {
 				c.write8FromModRM(m, uint8(src))
 			} else {
-				c.writeMem8(c.segBaseForModRM(m) + m.ea, uint8(src))
+				c.writeMem8(c.segBaseForModRM(m)+m.ea, uint8(src))
 			}
 		} else {
 			c.writeOperand(m, src, operandSize)
@@ -2523,7 +2531,7 @@ func (c *CPU) opXADD(rex, operandSize uint8) error {
 		if m.isReg {
 			c.write8FromModRM(m, uint8(res))
 		} else {
-			c.writeMem8(c.segBaseForModRM(m) + m.ea, uint8(res))
+			c.writeMem8(c.segBaseForModRM(m)+m.ea, uint8(res))
 		}
 	} else {
 		c.writeReg(m.reg, dst, operandSize)
@@ -2727,7 +2735,7 @@ func (c *CPU) opALURM(rex, operandSize uint8, op aluOp) error {
 			if m.isReg {
 				c.write8FromModRM(m, uint8(res))
 			} else {
-				c.writeMem8(c.segBaseForModRM(m) + m.ea, uint8(res))
+				c.writeMem8(c.segBaseForModRM(m)+m.ea, uint8(res))
 			}
 		} else {
 			c.writeOperand(m, res, operandSize)
@@ -3370,7 +3378,7 @@ func (c *CPU) opGroup1(rex, operandSize uint8, imm8 bool) error {
 			if m.isReg {
 				c.write8FromModRM(m, uint8(res))
 			} else {
-				c.writeMem8(c.segBaseForModRM(m) + m.ea, uint8(res))
+				c.writeMem8(c.segBaseForModRM(m)+m.ea, uint8(res))
 			}
 		} else {
 			c.writeOperand(m, res, operandSize)
@@ -3592,7 +3600,7 @@ func (c *CPU) opMOVRM8(rex uint8) error {
 	if m.isReg {
 		c.write8FromModRM(m, src)
 	} else {
-		c.writeMem8(c.segBaseForModRM(m) + m.ea, src)
+		c.writeMem8(c.segBaseForModRM(m)+m.ea, src)
 	}
 	return nil
 }

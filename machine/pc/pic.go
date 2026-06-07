@@ -32,7 +32,16 @@ type PIC8259 struct {
 	// IRQ, the master sees IRQ 2 asserted.
 	slave  *PIC8259
 	master *PIC8259
+
+	// intrFunc, when set, receives the master PIC's INTR line level
+	// instead of the CPU directly — used to route the PIC through the
+	// local APIC as ExtINT.
+	intrFunc func(level int)
 }
+
+// SetINTRFunc redirects the (master) PIC's INTR output. Used by the
+// machine in APIC mode to feed the local APIC's ExtINT input.
+func (p *PIC8259) SetINTRFunc(fn func(level int)) { p.intrFunc = fn }
 
 // NewPIC8259 creates a single (master) PIC. IMR defaults to 0xFF (all
 // masked) so devices that fire before the kernel programs them don't
@@ -151,10 +160,16 @@ func (p *PIC8259) updateINTR() {
 		return
 	}
 	pending := p.irr &^ p.imr
+	level := 0
 	if pending != 0 {
-		p.cpu.SetINTR(1)
+		level = 1
+	}
+	// In APIC mode the machine redirects the master PIC's INTR line into
+	// the local APIC (virtual-wire ExtINT) instead of straight to the CPU.
+	if p.intrFunc != nil {
+		p.intrFunc(level)
 	} else {
-		p.cpu.SetINTR(0)
+		p.cpu.SetINTR(level)
 	}
 }
 

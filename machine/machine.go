@@ -64,6 +64,10 @@ type Config struct {
 	// normal operation including Linux boot.
 	// Reference: tinyemu-2019-12-21/temu.c:818 (always sets rtc_real_time = TRUE)
 	RTCDeterministic bool
+
+	// EnableAPIC wires a real local APIC on x86_64 (off by default). See
+	// pc.Config.EnableAPIC.
+	EnableAPIC bool
 }
 
 // Machine represents a complete RISC-V machine with CPU, memory, and devices.

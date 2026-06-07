@@ -21,6 +21,7 @@ func NewBoard(machineType string, cfg Config) (Board, error) {
 			RAMSize:     cfg.RAMSize,
 			Console:     cfg.Console,
 			MachineType: machineType,
+			EnableAPIC:  cfg.EnableAPIC,
 		}
 		return pc.New(pcCfg)
 	default:

@@ -59,6 +59,12 @@ type Config struct {
 	// i386 backend (cpu/x86); "x86_64" picks the long-mode backend
 	// (cpu/x86_64). Devices and chassis are identical either way.
 	MachineType string
+	// EnableAPIC wires a real local APIC (and advertises it via CPUID /
+	// IA32_APIC_BASE) instead of the read-zero stub. Off by default so
+	// the legacy 8259-PIC path used by every current Linux boot is
+	// unaffected; needed for firmware (OVMF) that requires an APIC.
+	// x86_64 only.
+	EnableAPIC bool
 }
 
 // Compile-time checks: both CPU backends satisfy cpu.X86Core.
@@ -86,6 +92,7 @@ type PC struct {
 	lowRAM     *mem.PhysMemoryRange
 	biosROM    *mem.PhysMemoryRange
 	biosHigh   *mem.PhysMemoryRange
+	lapic      *LocalAPIC
 	fwCfg      *fwCfg
 	ps2        *PS2Controller
 	console    *virtio.CharacterDevice
@@ -341,9 +348,23 @@ func New(cfg Config) (*PC, error) {
 	stubRead := func(opaque any, offset uint32, sizeLog2 int) uint32 { return 0 }
 	stubWrite := func(opaque any, offset uint32, val uint32, sizeLog2 int) {}
 	stubFlags := mem.DevIOSize8 | mem.DevIOSize16 | mem.DevIOSize32 | mem.DevIOSize64
-	if _, err := p.memMap.RegisterDevice(0xFEE00000, 0x1000, nil, stubRead, stubWrite, stubFlags); err != nil {
+	if cfg.EnableAPIC {
+		// Real local APIC at 0xFEE00000. Drives the CPU INTR line; the
+		// master PIC is rerouted into it as ExtINT (virtual wire) and the
+		// CPU's ack handler is overridden below.
+		p.lapic = NewLocalAPIC(p.cpu, p.cpu.GetCycles)
+		if _, err := p.memMap.RegisterDevice(0xFEE00000, 0x1000, nil, p.lapic.MMIORead, p.lapic.MMIOWrite, stubFlags); err != nil {
+			return nil, fmt.Errorf("register LAPIC: %w", err)
+		}
+		if a, ok := p.cpu.(interface{ SetAPICEnabled(bool) }); ok {
+			a.SetAPICEnabled(true)
+		}
+		p.pic.SetINTRFunc(p.lapic.SetExtINT)
+	} else if _, err := p.memMap.RegisterDevice(0xFEE00000, 0x1000, nil, stubRead, stubWrite, stubFlags); err != nil {
 		return nil, fmt.Errorf("register LAPIC stub: %w", err)
 	}
+	// IOAPIC window stays a read-zero stub for now (redirection table is
+	// a later increment); kernels poke it during early init.
 	if _, err := p.memMap.RegisterDevice(0xFEC00000, 0x1000, nil, stubRead, stubWrite, stubFlags); err != nil {
 		return nil, fmt.Errorf("register IOAPIC stub: %w", err)
 	}
@@ -387,14 +408,23 @@ func New(cfg Config) (*PC, error) {
 		func(port uint16, val uint32) { p.io.Write32(port, val) },
 	)
 
-	// Wire PIC interrupt delivery to CPU
-	p.cpu.SetInterruptAckHandler(func() (uint8, bool) {
+	// Wire interrupt-acknowledge to the CPU. The PIC fetch is the legacy
+	// path; in APIC mode the local APIC arbitrates and delegates to the
+	// PIC only for an ExtINT.
+	picAck := func() (uint8, bool) {
 		vec := p.pic.DeliverInterrupt()
 		if vec < 0 {
 			return 0, false
 		}
 		return uint8(vec), true
-	})
+	}
+	if p.lapic != nil {
+		p.cpu.SetInterruptAckHandler(func() (uint8, bool) {
+			return p.lapic.Ack(picAck)
+		})
+	} else {
+		p.cpu.SetInterruptAckHandler(picAck)
+	}
 
 	// Create VirtIO console if console is provided
 	if cfg.Console != nil {
@@ -765,6 +795,9 @@ func (p *PC) CheckTimer() {
 	delta := cycles - p.lastTickCycles
 	p.lastTickCycles = cycles
 	p.pit.Tick(delta)
+	if p.lapic != nil {
+		p.lapic.Tick(delta)
+	}
 }
 
 // AdvanceIdle is called when the CPU is in HLT and no interrupt is pending.
