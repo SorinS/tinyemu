@@ -163,6 +163,12 @@ func (f *fwCfg) dataForSelector(sel uint16) []byte {
 		return []byte{0x01, 0x00, 0x00, 0x00}
 	case fwCfgSelFileDir:
 		return f.fileDirectory()
+	case 0x0005: // FW_CFG_NB_CPUS — 16-bit LE, present CPU count
+		return []byte{0x01, 0x00}
+	case 0x000F: // FW_CFG_MAX_CPUS — 16-bit LE
+		return []byte{0x01, 0x00}
+	case 0x000E: // FW_CFG_BOOT_MENU — 16-bit LE flag (disabled)
+		return []byte{0x00, 0x00}
 	}
 	for i := range f.files {
 		if f.files[i].sel == sel {
