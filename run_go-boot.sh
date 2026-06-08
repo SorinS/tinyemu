@@ -14,6 +14,19 @@
 # (COM1 = temu stdin/stdout). Type `help` at the `>` prompt; exit temu
 # with Ctrl-A x.
 #
+# IMPORTANT: build go-boot with CONSOLE=COM1, not the default `text`:
+#
+#   make CONSOLE=COM1 TAMAGO=/path/to/tamago-go/bin/go
+#   # then copy go-boot.efi into bin/go-boot/
+#
+# go-boot's `text` console reads keystrokes via UEFI ConIn, which OVMF
+# services by polling the serial on a timer-driven event — that input
+# path does not deliver under temu (output is synchronous and works, but
+# you cannot type). CONSOLE=COM1 makes go-boot poll the raw 16550 directly
+# (In8(LSR)&DR -> read RBR), the same RX path Linux uses here, so the
+# interactive shell works. (objcopy for the .efi step: on macOS use
+# /opt/homebrew/opt/binutils/bin on PATH.)
+#
 # Two flags are load-bearing:
 #   -apic   : OVMF asserts a software-enabled local APIC (CpuMpPei reads
 #             SVR bit 8). temu only wires a local APIC when -apic is given
@@ -85,7 +98,8 @@ fi
 
 # Route OVMF's verbose port-0x402 debug log to a file so only go-boot's
 # serial console shows in the terminal. Override with TINYEMU_BIOS_DEBUG=stderr.
-: "${TINYEMU_BIOS_DEBUG:=$ROOT/bin/go-boot/ovmf-debug.log}"
+#: "${TINYEMU_BIOS_DEBUG:=$ROOT/bin/go-boot/ovmf-debug.log}"
+TINYEMU_BIOS_DEBUG=stderr
 export TINYEMU_BIOS_DEBUG
 
 echo "Starting go-boot under OVMF (x86_64, ${MEM} MiB) at: $(date)"
