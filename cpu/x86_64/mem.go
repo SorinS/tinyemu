@@ -118,16 +118,46 @@ func (c *CPU) readMem8(addr uint64) uint8 {
 	return v
 }
 
-// readMem16 / readMem32 / readMem64 do byte-at-a-time loads. A
-// natural-aligned access still hits a single page; the per-byte
-// translate is conservative against the cross-page case. M1 prizes
-// correctness over speed; the prefetch buffer + TLB are a later pass.
+// readMem16 / readMem32 / readMem64 load a multi-byte value.
+//
+// When the access lies wholly within one page they translate once and
+// issue a single sized read, so an MMIO device sees ONE atomic register
+// access of the right width. This is required, not just an optimization:
+// a register file like the local APIC returns the whole 32-bit register
+// for its dword offset and zero for the in-between byte offsets, so a
+// decomposed byte-at-a-time read would return only the low byte and drop
+// the upper 24 bits (e.g. the SVR software-enable bit 8). A page-
+// straddling access still goes byte-at-a-time so each byte faults on its
+// own page (the 2026-05-15 unaligned cross-page fix); the per-byte path
+// is also taken whenever a VA watch is armed so its logging still fires.
 func (c *CPU) readMem16(addr uint64) uint16 {
+	if addr&0xFFF <= 0xFFE && !vaWatchEnabled {
+		phys, perr := c.translateForData(addr, false)
+		if perr != nil {
+			panic(pageFaultPanic{Err: perr})
+		}
+		v, err := c.memMap.Read16(phys)
+		if err != nil {
+			panic(pageFaultPanic{Err: &PageFaultError{Addr: addr}})
+		}
+		return v
+	}
 	return uint16(c.readMem8(addr)) |
 		uint16(c.readMem8(addr+1))<<8
 }
 
 func (c *CPU) readMem32(addr uint64) uint32 {
+	if addr&0xFFF <= 0xFFC && !vaWatchEnabled {
+		phys, perr := c.translateForData(addr, false)
+		if perr != nil {
+			panic(pageFaultPanic{Err: perr})
+		}
+		v, err := c.memMap.Read32(phys)
+		if err != nil {
+			panic(pageFaultPanic{Err: &PageFaultError{Addr: addr}})
+		}
+		return v
+	}
 	return uint32(c.readMem8(addr)) |
 		uint32(c.readMem8(addr+1))<<8 |
 		uint32(c.readMem8(addr+2))<<16 |
@@ -169,12 +199,38 @@ func (c *CPU) writeMem8(addr uint64, v uint8) {
 	}
 }
 
+// writeMem16 / writeMem32 mirror the read helpers: a single-page access
+// translates once and issues one sized write so an MMIO device receives
+// one atomic register write of the correct width (a byte-decomposed store
+// would land only the low byte of, say, the APIC SVR and drop the
+// software-enable bit). Page-straddling stores, and any store while a
+// write watch is armed, fall back to the per-byte path.
 func (c *CPU) writeMem16(addr uint64, v uint16) {
+	if addr&0xFFF <= 0xFFE && !vaWatchEnabled && !physWatchEnabled {
+		phys, perr := c.translateForData(addr, true)
+		if perr != nil {
+			panic(pageFaultPanic{Err: perr})
+		}
+		if err := c.memMap.Write16(phys, v); err != nil {
+			panic(pageFaultPanic{Err: &PageFaultError{Addr: addr}})
+		}
+		return
+	}
 	c.writeMem8(addr, uint8(v))
 	c.writeMem8(addr+1, uint8(v>>8))
 }
 
 func (c *CPU) writeMem32(addr uint64, v uint32) {
+	if addr&0xFFF <= 0xFFC && !vaWatchEnabled && !physWatchEnabled {
+		phys, perr := c.translateForData(addr, true)
+		if perr != nil {
+			panic(pageFaultPanic{Err: perr})
+		}
+		if err := c.memMap.Write32(phys, v); err != nil {
+			panic(pageFaultPanic{Err: &PageFaultError{Addr: addr}})
+		}
+		return
+	}
 	c.writeMem8(addr, uint8(v))
 	c.writeMem8(addr+1, uint8(v>>8))
 	c.writeMem8(addr+2, uint8(v>>16))

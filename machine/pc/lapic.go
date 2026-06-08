@@ -1,8 +1,13 @@
 package pc
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/jtolio/tinyemu-go/cpu"
 )
+
+var lapicDebug = os.Getenv("TINYEMU_LAPIC_DEBUG") == "1"
 
 // LocalAPIC is a minimal xAPIC (MMIO) local-APIC model, enabled only when
 // Config.EnableAPIC is set. It exists for firmware (OVMF) and OSes that
@@ -275,6 +280,9 @@ func (l *LocalAPIC) writeICR() {
 
 // MMIORead/MMIOWrite implement the RegisterDevice accessors.
 func (l *LocalAPIC) MMIORead(_ any, offset uint32, _ int) uint32 {
+	if lapicDebug && offset == lapicSVR {
+		fmt.Fprintf(os.Stderr, "[lapic] R SVR -> %#x\n", l.svr)
+	}
 	switch offset {
 	case lapicID:
 		return l.id << 24
@@ -334,6 +342,9 @@ func (l *LocalAPIC) MMIORead(_ any, offset uint32, _ int) uint32 {
 }
 
 func (l *LocalAPIC) MMIOWrite(_ any, offset uint32, val uint32, _ int) {
+	if lapicDebug {
+		fmt.Fprintf(os.Stderr, "[lapic] W off=%#03x val=%#x\n", offset, val)
+	}
 	switch offset {
 	case lapicID:
 		l.id = val >> 24
