@@ -40,10 +40,10 @@
 #             pushes are dropped, and the first RET jumps into garbage.
 #
 # Env knobs:
-#   MEM=2048              override guest RAM (MiB)
+#   MEM=2048                    override guest RAM (MiB)
+#   OVMF=bin/ovmf/OVMF.fd       use a different firmware (release = faster/quiet)
 #   TINYEMU_BIOS_DEBUG=stderr   watch the OVMF SEC/PEI/DXE log inline
-#                               (default: routed to bin/go-boot/ovmf-debug.log
-#                               so only go-boot's console shows)
+#                               (unset by default = fastest; see note below)
 
 set -e
 
@@ -53,7 +53,7 @@ ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 TEMU="$ROOT/bin/temu.${OS}-${ARCH}.bin"
 
 MEM=${MEM:-1024}
-OVMF="$ROOT/bin/ovmf/OVMF_DEBUG.fd"
+OVMF="${OVMF:-$ROOT/bin/ovmf/OVMF_DEBUG.fd}"
 EFI="$ROOT/bin/go-boot/go-boot.efi"
 ESP="$ROOT/bin/go-boot/esp.img"
 
@@ -96,11 +96,22 @@ if [ ! -f "$ESP" ] || [ "$EFI" -nt "$ESP" ]; then
 	esac
 fi
 
-# Route OVMF's verbose port-0x402 debug log to a file so only go-boot's
-# serial console shows in the terminal. Override with TINYEMU_BIOS_DEBUG=stderr.
-#: "${TINYEMU_BIOS_DEBUG:=$ROOT/bin/go-boot/ovmf-debug.log}"
-TINYEMU_BIOS_DEBUG=stderr
-export TINYEMU_BIOS_DEBUG
+# OVMF's port-0x402 debug log is OFF by default for speed: when
+# TINYEMU_BIOS_DEBUG is unset temu drops every byte with io.Discard (a
+# true no-op). Routing it anywhere costs a write() syscall PER BYTE —
+# /dev/null and a real file both do that (a file also hits disk and
+# grows), and stderr writes each byte to the terminal (slowest). So
+# leaving it unset is faster than /dev/null. Only go-boot's serial console
+# shows. To watch / capture the firmware boot, set it yourself:
+#   TINYEMU_BIOS_DEBUG=stderr ./run_go-boot.sh                 # inline (slow)
+#   TINYEMU_BIOS_DEBUG=bin/go-boot/ovmf.log ./run_go-boot.sh   # to a file
+# For an even faster, quiet boot use the release firmware (no DEBUG()
+# formatting or 0x402 writes in the guest at all):
+#   OVMF=bin/ovmf/OVMF.fd ./run_go-boot.sh
+# The dominant remaining cost is OVMF decompressing its LZMA-packed
+# firmware volumes in SEC, which is CPU-bound under temu's interpreter
+# (the long pause right after SecCoreStartupWithStack) and unaffected by
+# the log sink.
 
 echo "Starting go-boot under OVMF (x86_64, ${MEM} MiB) at: $(date)"
 echo "  (type 'help' at the go-boot '>' prompt; exit temu with Ctrl-A x)"
