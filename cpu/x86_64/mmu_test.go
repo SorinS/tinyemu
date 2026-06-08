@@ -167,7 +167,7 @@ func TestTranslate_OffsetInPage(t *testing.T) {
 
 func TestTranslate_2MHugePage(t *testing.T) {
 	c, b := pagedCPU(t, 0x20_0000)
-	const linBase = 0x80_0000   // 2 MiB aligned
+	const linBase = 0x80_0000  // 2 MiB aligned
 	const physBase = 0xA0_0000 // 2 MiB aligned
 	b.map2M(linBase, physBase, pteRW)
 	for _, off := range []uint64{0, 0xFFF, 0x10_0000, 0x1F_FFFF} {
@@ -253,22 +253,48 @@ func TestTranslate_NotPresent_PT(t *testing.T) {
 	}
 }
 
+// TestTranslate_WriteToReadOnly exercises the full CR0.WP matrix for a
+// write to a read-only page. Per Intel SDM Vol.3 §4.6.1: a user-mode
+// write to a read-only page always faults; a supervisor (CPL<3) write
+// faults only when CR0.WP=1 — with CR0.WP=0 the R/W bit is ignored for
+// supervisor accesses and the write is permitted. OVMF's CpuDxe relies on
+// the WP=0 case to edit its own page tables (which DxeIpl maps read-only)
+// while WP is clear; mishandling it faulted CpuDxe during attribute sync.
 func TestTranslate_WriteToReadOnly(t *testing.T) {
-	c, b := pagedCPU(t, 0x20_0000)
 	const lin = 0x40_0000
-	b.map4K(lin, lin, 0) // leaf RW bit clear
-	// Read is allowed.
+
+	// A read is always allowed regardless of WP.
+	c, b := pagedCPU(t, 0x20_0000)
+	b.map4K(lin, lin, 0) // leaf RW bit clear → read-only page
 	if _, perr := c.Translate(lin, false, false, false); perr != nil {
-		t.Errorf("read: %v", perr)
+		t.Errorf("read of RO page: %v", perr)
 	}
-	// Write faults with P|W.
-	_, perr := c.Translate(lin, true, false, false)
-	if perr == nil {
-		t.Fatalf("write to RO: expected fault")
+
+	// Supervisor write, CR0.WP=0 → permitted (no fault). pagedCPU leaves
+	// WP clear.
+	c, b = pagedCPU(t, 0x20_0000)
+	b.map4K(lin, lin, 0)
+	if _, perr := c.Translate(lin, true /*write*/, false /*user*/, false); perr != nil {
+		t.Errorf("supervisor write, WP=0: want success, got fault %#x", perr.ErrorCode)
 	}
-	want := PFErrP | PFErrWrite
-	if perr.ErrorCode != want {
-		t.Errorf("ErrorCode = %#x, want %#x", perr.ErrorCode, want)
+
+	// Supervisor write, CR0.WP=1 → faults with P|W.
+	c, b = pagedCPU(t, 0x20_0000)
+	b.map4K(lin, lin, 0)
+	c.SetCR64(0, CR0_PE|CR0_PG|CR0_WP)
+	if _, perr := c.Translate(lin, true, false, false); perr == nil {
+		t.Fatalf("supervisor write, WP=1: expected fault")
+	} else if want := PFErrP | PFErrWrite; perr.ErrorCode != want {
+		t.Errorf("supervisor write, WP=1: ErrorCode = %#x, want %#x", perr.ErrorCode, want)
+	}
+
+	// User write, CR0.WP=0 → still faults (P|W|U).
+	c, b = pagedCPU(t, 0x20_0000)
+	b.map4K(lin, lin, pteUS) // user-accessible but read-only
+	if _, perr := c.Translate(lin, true, true /*user*/, false); perr == nil {
+		t.Fatalf("user write to RO: expected fault")
+	} else if want := PFErrP | PFErrWrite | PFErrUser; perr.ErrorCode != want {
+		t.Errorf("user write, WP=0: ErrorCode = %#x, want %#x", perr.ErrorCode, want)
 	}
 }
 
@@ -447,9 +473,13 @@ func TestTranslate_DirtyBit_OnlyOnWrite(t *testing.T) {
 }
 
 // TestTranslate_2M_PermissionsAtLeaf: the leaf's RW=0 should make a
-// write fault even when the leaf is a 2 MiB huge page.
+// write fault even when the leaf is a 2 MiB huge page. CR0.WP=1 so the
+// read-only bit is enforced for the supervisor write (with WP=0 a
+// supervisor write would be permitted regardless of the leaf RW bit —
+// see TestTranslate_WriteToReadOnly).
 func TestTranslate_2M_PermissionsAtLeaf(t *testing.T) {
 	c, b := pagedCPU(t, 0x20_0000)
+	c.SetCR64(0, CR0_PE|CR0_PG|CR0_WP)
 	const lin = 0x80_0000
 	b.map2M(lin, lin, 0) // RW clear on leaf
 	if _, perr := c.Translate(lin, false, false, false); perr != nil {

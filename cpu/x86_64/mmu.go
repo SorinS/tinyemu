@@ -219,11 +219,12 @@ func (c *CPU) readWalkEntry(entryAddr, linAddr uint64, isWrite, isUser, isFetch,
 		// NX bit set while EFER.NXE=0 is a reserved-bit violation.
 		return 0, &PageFaultError{Addr: linAddr, ErrorCode: faultCode(true, isWrite, isUser, isFetch, true)}
 	}
-	if isWrite && v&pteRW == 0 {
-		// Write to read-only page. CPL=0 with CR0.WP=0 is allowed to
-		// override this on real hardware, but M1 does not model that
-		// bypass — every test that exercises a write goes through a
-		// writable page.
+	if isWrite && v&pteRW == 0 && (isUser || c.cr[0]&CR0_WP != 0) {
+		// Write to a read-only page. A user-mode write always faults; a
+		// supervisor write faults only when CR0.WP=1. With CR0.WP=0 a
+		// supervisor (CPL<3) write to a read-only page is permitted (Intel
+		// SDM Vol.3 §4.6.1) — OVMF's CpuDxe relies on this to edit its own
+		// page tables (which DxeIpl maps read-only) while WP is clear.
 		return 0, &PageFaultError{Addr: linAddr, ErrorCode: faultCode(true, isWrite, isUser, isFetch, false)}
 	}
 	if isUser && v&pteUS == 0 {
