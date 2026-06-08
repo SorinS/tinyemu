@@ -380,25 +380,103 @@ and our code skipped it. Fix: track `active` per-channel and use a
 
 ## 15. The env-var reference
 
+Every knob is an environment variable read once at start-up, so set it on
+the command line in front of the binary:
+
+```sh
+TINYEMU_BIOS_DEBUG=stderr TINYEMU_LAPIC_DEBUG=1 \
+    ./bin/temu.darwin-arm64.bin -machine x86_64 -m 512 -apic -bios bin/ovmf/OVMF_DEBUG.fd
+```
+
+Naming convention: `X64_*` flags belong to the `x86_64` long-mode
+backend, `X86_*` flags to the i386 backend (a handful are honoured by
+both). Flags with no arch prefix are machine/device or process-wide.
+Ranges are written `lo-hi` as **hex** (e.g. `0x1000-0x2000`); counters
+are decimal.
+
+### CPU — x86_64 backend (`cpu/x86_64`)
+
 | Variable | Effect |
 |---|---|
-| `TINYEMU_X64_RIPSAMPLE=N` | log RIP every N cycles |
-| `TINYEMU_X64_TRACE_CYCLES=lo-hi` | full step trace in cycle window |
-| `TINYEMU_X64_RIPTRACE=lo-hi` | full step trace when RIP in range (hex offsets) |
-| `TINYEMU_X64_TRACE=1` | full step trace (everything; very verbose) |
-| `TINYEMU_X64_PHYSWATCH=lo-hi` | log every byte-write to phys range |
+| `TINYEMU_X64_TRACE=1` | full per-instruction step trace (everything; very verbose) |
+| `TINYEMU_X64_TRACE_CYCLES=lo-hi` | step trace only within a cycle window |
+| `TINYEMU_X64_RIPTRACE=lo-hi` | step trace only while RIP is in range |
+| `TINYEMU_X64_RIPSAMPLE=N` | log one RIP/mode line every N executed instructions |
+| `TINYEMU_X64_RIPTRAP=1` | dump + trap at a built-in RIP breakpoint |
 | `TINYEMU_X64_DUMPCYCLE=N` | one-shot register + memory dump at cycle N |
-| `TINYEMU_X64_INTR=1` | log every interrupt delivery |
-| `TINYEMU_X86_IO_DEBUG=1` | log every in/out |
-| `TINYEMU_VIRTIO_PCI_DEBUG=1` | log every virtio-pci register access |
-| `TINYEMU_BIOS_DEBUG=path/stderr` | route SeaBIOS port-0x402 output |
-| `TINYEMU_VGA_CHAR_LOG=path/stderr` | mirror VGA text-mode framebuffer writes |
-| `TINYEMU_FDC_DEBUG=1` | log every FDC command and READ |
-| `TINYEMU_X86_PROFILE=1` | write a Go CPU profile to /tmp/temu.prof |
-| `TINYEMU_X86_PERF=1` | periodic cycles/sec on stderr |
+| `TINYEMU_X64_INTR=1` | log every interrupt / exception delivery |
+| `TINYEMU_X64_PF=1` | log page-fault handling (walk + injected #PF) |
+| `TINYEMU_X64_CR3=1` | log CR3 (page-table base) writes |
+| `TINYEMU_X64_MSR=1` | log RDMSR / WRMSR |
+| `TINYEMU_X64_IO=1` | log IN / OUT at the CPU layer |
+| `TINYEMU_X64_USYS=1` | log user-mode SYSCALLs |
+| `TINYEMU_X64_PHYSWATCH=lo-hi` | log every write to a physical-address range, with read-back qword |
+| `TINYEMU_X64_VAWATCH=lo-hi` | log every read/write to a virtual-address range |
+| `TINYEMU_X64_STRWATCH=lo-hi` | log REP string-instruction (MOVS/STOS/…) activity in range |
+| `TINYEMU_X64_ENTRY=addr` | override the long-mode kernel entry point (vmlinux boot) |
+| `TINYEMU_X64_PIC=1` | log 8259 PIC activity on the x86_64 path |
 
-All `X64_*` env vars apply only to the `x86_64` backend; the i386
-backend uses the matching `X86_*` names (sometimes both work).
+Setting `PHYSWATCH`/`VAWATCH` forces multi-byte accesses down the
+byte-at-a-time path so each byte is logged (the same-page fast path is
+skipped while a watch is armed).
+
+### CPU — i386 backend (`cpu/x86`)
+
+| Variable | Effect |
+|---|---|
+| `TINYEMU_X86_CHKPT=cycle` / `TINYEMU_X86_CHKPT_INTERVAL=N` | dump a state checkpoint at `cycle`, then every N cycles |
+| `TINYEMU_X86_EIPBP=addr` / `TINYEMU_X86_EIPBPS=a,b,…` | break/dump at one or several EIP values |
+| `TINYEMU_X86_CPUID_TRACE=1` | log every CPUID |
+| `TINYEMU_X86_CR_DEBUG=1` | log control-register writes |
+| `TINYEMU_X86_INVLPG_DEBUG=1` | log INVLPG |
+| `TINYEMU_X86_INT_DEBUG=1` | log interrupt delivery |
+| `TINYEMU_X86_SYS=1` | log syscalls |
+| `TINYEMU_X86_USERPF=1` | dump regs + memory near EAX/ESI/EDI for user-mode #PF to addresses < 0x1000 |
+| `TINYEMU_X86_PF_DEBUG=1` | log page-fault handling |
+| `TINYEMU_X86_ESP_DEBUG=1` | log ESP / stack anomalies |
+| `TINYEMU_X86_FPCMP=1` | x87 floating-point compare diagnostics |
+| `TINYEMU_X86_X87_TRACE=1` | trace x87 FPU operations |
+| `TINYEMU_X86_LOG_UD2=1` | log every #UD (invalid opcode) |
+| `TINYEMU_X86_SKIP_UD2=1` | log **and skip** a #UD so the guest survives an unknown opcode |
+| `TINYEMU_X86_LOOPHANG=1` | detect and report tight infinite loops |
+| `TINYEMU_X86_PHYSWATCH=lo-hi` | log writes to a physical-address range |
+| `TINYEMU_X86_PHYSSENTINEL=addr:val` | trip when a sentinel value appears at a phys address |
+| `TINYEMU_X86_WW_LO=lo` + `TINYEMU_X86_WW_HI=hi` | watch writes to the window `[lo,hi)` (both must be set) |
+
+### Machine & devices (`machine/pc`)
+
+| Variable | Effect |
+|---|---|
+| `TINYEMU_BIOS_DEBUG=path\|stderr` | route firmware (SeaBIOS / OVMF) port-0x402 debug output |
+| `TINYEMU_BIOS_POST=1` | log BIOS POST codes (port 0x80) |
+| `TINYEMU_CMOS_DEBUG=1` | log every CMOS/RTC register read (memory-sizing regs 0x34/0x35, 0x5B-0x5D) |
+| `TINYEMU_FWCFG_DEBUG=1` | log fw_cfg selector + reads (file directory, `etc/e820`, …) |
+| `TINYEMU_FDC_DEBUG=1` | log every floppy-controller command and READ |
+| `TINYEMU_LAPIC_DEBUG=1` | log local-APIC MMIO register reads/writes (use with `-apic`) |
+| `TINYEMU_VGA_CHAR_LOG=path\|stderr` | mirror VGA text-mode framebuffer writes |
+| `TINYEMU_X86_VGA_RENDER=1` | render the VGA framebuffer for inspection |
+| `TINYEMU_X86_ATA_DEBUG=1` | log ATA/IDE commands |
+| `TINYEMU_X86_IDE=1` | enable the legacy IDE controller |
+| `TINYEMU_X86_PCI_DEBUG=1` | log PCI config-space accesses |
+| `TINYEMU_X86_IO_DEBUG=1` | log every port IN / OUT at the machine layer |
+
+### virtio & networking
+
+| Variable | Effect |
+|---|---|
+| `TINYEMU_VIRTIO_PCI_DEBUG=1` | log every virtio-pci register access |
+| `TINYEMU_VIRTIO_NET_DEBUG=1` | log virtio-net queue / packet activity |
+| `TINYEMU_VIRTIO_CONSUME_DEBUG=1` | log virtqueue descriptor consumption |
+| `TINYEMU_X86_DMAWATCH=lo-hi` | log virtio DMA activity in an address range |
+| `TINYEMU_SLIRP_TRACE=1` | trace user-mode network (slirp) packets |
+
+### Profiling & test
+
+| Variable | Effect |
+|---|---|
+| `TINYEMU_PROFILE` / `TINYEMU_X86_PROFILE` / `TINYEMU_X64_PROFILE=1` | write a Go CPU profile to `/tmp/temu.prof` |
+| `TINYEMU_PERF` / `TINYEMU_X86_PERF` / `TINYEMU_X64_PERF=1` | print periodic cycles/sec on stderr |
+| `TINYEMU_SKIP_BOOT_TESTS=1` | skip the slow OS-boot integration tests under `go test` |
 
 ---
 

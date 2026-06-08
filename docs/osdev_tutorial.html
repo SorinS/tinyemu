@@ -472,8 +472,14 @@ An OS is not a magic supervisor program. It's a normal program that happens to b
 </ul>
 <p>From here on it's "just code" — the OS itself, running on the hardware the bootloader prepared for it.</p>
 
-<h2>What tinyemu-go skips</h2>
-<p>Our emulator doesn't model BIOS or UEFI. The harness in <code>machine/pc/bzimage.go</code> reads a Linux <code>bzImage</code> directly, sets up the boot params and a minimal GDT, and starts the CPU at the kernel's protected-mode entry point. This is "we're playing the role of a bootloader." It's enough — Linux boots without noticing.</p>
+<h2>What tinyemu-go skips (and what it now models)</h2>
+<p>The default path skips firmware entirely: the harness in <code>machine/pc/bzimage.go</code> reads a Linux <code>bzImage</code> directly, sets up the boot params and a minimal GDT, and starts the CPU at the kernel's protected-mode entry point. This is "we're playing the role of a bootloader." It's enough — Linux boots without noticing.</p>
+<p>The emulator <em>also</em> runs real firmware when you point it at one: <strong>SeaBIOS</strong> (legacy BIOS, used by the MenuetOS floppy boot) and <strong>OVMF</strong> (UEFI) are both brought up incrementally. Real firmware exercises the chassis far harder than a direct kernel boot does, and each rough edge it finds is a genuine emulator bug. Three from the OVMF bring-up are worth remembering because they are classic firmware-vs-emulator mismatches:</p>
+<ul>
+<li><strong>The memory map must speak the firmware's dialect.</strong> OVMF reads the amount of usable low memory from the <em>length of the single <code>etc/e820</code> RAM entry based at address 0</em> (and from CMOS registers 0x34/0x35), exactly QEMU's convention. tinyemu-go originally split low RAM around the legacy EBDA/BIOS holes, so that base-0 entry was only 640&nbsp;KiB — OVMF then believed the machine had 640&nbsp;KiB of RAM, could not fit its boot-time heap, and placed it (and the UEFI variable store) up near 4&nbsp;GiB, faulting the instant it touched it. The fix was to describe below-4&nbsp;GiB RAM as one base-0 entry of the full length, and to fill in the above-4&nbsp;GiB CMOS registers (0x5B/0x5C/0x5D).</li>
+<li><strong>CPUID has to advertise what the firmware trusts.</strong> OVMF only believes the physical-address width it reads from <code>CPUID.80000008h</code> when the "guest physical bits" field (EAX[23:16]) is non-zero; with it zero it falls back to a layout that strands memory. A faithful CPUID is part of the hardware-software contract.</li>
+<li><strong>MMIO register writes must be atomic.</strong> The local APIC's registers are 32-bit; firmware enables it with one 32-bit write of the SVR register. An emulator that decomposes every memory store into byte writes delivers four 1-byte writes to the device, and a register file that only recognises its aligned dword offset drops the upper three bytes — including the software-enable bit. Devices must see one access of the program-visible width.</li>
+</ul>
 
 <div class="box box-note">
 <strong>Note</strong>

@@ -1506,12 +1506,35 @@ About 1.4 million distinct effective addresses are encodable per opcode — and 
 
 <div class="box box-warn">
 <strong>Gotcha</strong>
-RIP rewind alone isn't always enough. If an instruction has already written one byte of a 4-byte memory store and faults on the second byte (cross-page write), partial writes are visible. Real hardware spec says page-fault delivery is "as if the instruction had not started" — but the bus has already moved bytes. Our M1 emulator simply accepts this; the test programs we've written so far don't cross pages.
+RIP rewind alone isn't always enough. If an instruction has already written one byte of a 4-byte store and faults on a later byte, partial writes are visible. Real hardware spec says page-fault delivery is "as if the instruction had not started" — but the bus has already moved bytes. We confine this to the rare case that actually needs it: a store crossing a page boundary (see the next section).
+</div>
+
+<h2>Multi-byte access: one page fast, two pages careful</h2>
+<p>A 16/32/64-bit load or store has to do two things that pull in opposite directions. It must translate <em>every</em> byte it touches, because the two halves of a page-straddling access can map to different (or differently-permissioned) physical pages — that was a real bug, fixed 2026-05-15, where translating only the start address sent the cross-page bytes to the wrong physical page. But it must <em>also</em> deliver a single access of the program-visible width to memory-mapped devices.</p>
+<p>The resolution is a same-page fast path with a byte-at-a-time fallback:</p>
+<pre><span class="kw">func</span> (c *<span class="kw">CPU</span>) <span class="fn">writeMem32</span>(addr <span class="kw">uint64</span>, v <span class="kw">uint32</span>) {
+    <span class="kw">if</span> addr&amp;0xFFF &lt;= 0xFFC &amp;&amp; !vaWatchEnabled &amp;&amp; !physWatchEnabled {
+        phys, perr := c.<span class="fn">translateForData</span>(addr, <span class="kw">true</span>)   <span class="cm">// all 4 bytes share one page</span>
+        <span class="kw">if</span> perr != <span class="kw">nil</span> { <span class="kw">panic</span>(pageFaultPanic{Err: perr}) }
+        <span class="kw">if</span> err := c.memMap.<span class="fn">Write32</span>(phys, v); err != <span class="kw">nil</span> { ... }
+        <span class="kw">return</span>
+    }
+    c.<span class="fn">writeMem8</span>(addr, <span class="kw">uint8</span>(v))         <span class="cm">// straddles a page: per-byte translate</span>
+    c.<span class="fn">writeMem8</span>(addr+1, <span class="kw">uint8</span>(v&gt;&gt;8))
+    c.<span class="fn">writeMem8</span>(addr+2, <span class="kw">uint8</span>(v&gt;&gt;16))
+    c.<span class="fn">writeMem8</span>(addr+3, <span class="kw">uint8</span>(v&gt;&gt;24))
+}<span class="lang-tag">go</span></pre>
+<p>The <code>addr&amp;0xFFF &lt;= 0xFFC</code> test is "do all four bytes lie in one 4&nbsp;KiB page?" When yes — the overwhelmingly common, naturally-aligned case — we translate once and issue one <code>Write32</code>, which <code>physmem</code> forwards to the device as a single 32-bit access. When no, we fall back to the per-byte path so each byte faults on its own page. (The watch-flag checks just keep the byte-granular debug logging working when a watchpoint is armed.)</p>
+
+<div class="box box-note">
+<strong>Why the device half matters</strong>
+This isn't only an optimization. xAPIC registers are 32-bit, and OVMF software-enables the local APIC with a single 32-bit write of the spurious-interrupt-vector register (SVR = 0x10F: vector 0xF + the enable bit, bit 8). With the old byte-decomposing store, the device received four 1-byte writes; a register file that only recognises its aligned dword offset kept the low byte (0x0F) and silently dropped bit 8. Firmware then asserted <code>(ReadLocalApicReg(0xF0) &amp; 0x100) != 0</code> and halted. A device must see one access of the width the program used — so reads and writes both take this fast path. The regression is pinned by <code>TestMMIO32AtomicAccess</code> in <code>cpu/x86_64</code>.
 </div>
 `,
   exercises: [
     "Why does <code>translateForData</code> short-circuit when CR0.PG=0? Read the Intel SDM: is it valid for long mode to have paging off?",
     "Trace the call stack when a kernel-mode write to a read-only page happens. Start at <code>writeMem8</code>, follow the panic, and end at Step's recover.",
+    "The same-page fast path uses <code>addr&amp;0xFFF &lt;= 0xFFC</code> for a 4-byte store. What is the equivalent test for a 2-byte and an 8-byte store, and why?",
     "Implement a TLB cache (similar to <code>cpu/x86/tlb.go</code>) for the long-mode walker. The cache should be invalidated on CR3 writes and INVLPG. Spec the changes you'd need to <code>mem.go</code> and <code>mmu.go</code>."
   ]
 },
