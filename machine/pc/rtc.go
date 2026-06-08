@@ -58,9 +58,16 @@ func NewCMOSRTC(memSizeKB uint32) *CMOSRTC {
 	c.ram[0x15] = uint8(baseKB & 0xFF)
 	c.ram[0x16] = uint8(baseKB >> 8)
 
+	// Split total RAM at the 32-bit PCI hole exactly as the fw_cfg E820
+	// map does (see ramSplit), so the below-4 GiB fields below and the
+	// above-4 GiB fields (0x5B-0x5D) describe the same layout firmware
+	// reads from etc/e820.
+	below4G, above4G := ramSplit(uint64(memSizeKB) * 1024)
+	below4GKB := uint32(below4G / 1024)
+
 	// Extended memory (1..64 MiB) in KB.
-	if memSizeKB > 1024 {
-		extKB := memSizeKB - 1024
+	if below4GKB > 1024 {
+		extKB := below4GKB - 1024
 		if extKB > 0xFFFF {
 			extKB = 0xFFFF
 		}
@@ -73,13 +80,25 @@ func NewCMOSRTC(memSizeKB uint32) *CMOSRTC {
 	// Extended memory above 16 MiB, in 64-KiB units. Needed for any
 	// RAM size > ~65 MiB (where the 0x17/0x18 KB-units field
 	// saturates).
-	if memSizeKB > 16*1024 {
-		ext64K := (memSizeKB - 16*1024) / 64
+	if below4GKB > 16*1024 {
+		ext64K := (below4GKB - 16*1024) / 64
 		if ext64K > 0xFFFF {
 			ext64K = 0xFFFF
 		}
 		c.ram[0x34] = uint8(ext64K & 0xFF)
 		c.ram[0x35] = uint8(ext64K >> 8)
+	}
+
+	// Extended memory above 4 GiB, in 64-KiB units, low/mid/high. SeaBIOS
+	// and OVMF read these to size the RAM relocated past the PCI hole;
+	// leaving them zero (the old behaviour) under-reports total RAM for
+	// any >3 GiB config. Zero for the emulator's common small configs,
+	// where everything fits below the hole.
+	if above4G > 0 {
+		above64K := above4G / (64 * 1024)
+		c.ram[0x5B] = uint8(above64K & 0xFF)
+		c.ram[0x5C] = uint8((above64K >> 8) & 0xFF)
+		c.ram[0x5D] = uint8((above64K >> 16) & 0xFF)
 	}
 	return c
 }

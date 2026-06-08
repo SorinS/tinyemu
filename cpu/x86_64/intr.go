@@ -578,12 +578,21 @@ func (c *CPU) opCPUID() error {
 		d = leUint32(brand, off+12)
 	case 0x80000008:
 		// Address sizes. EAX[7:0] = physical-address bits,
-		// EAX[15:8] = linear (virtual) address bits. Firmware (OVMF)
-		// reads this to size its GCD memory space and the coverage of
-		// its identity page tables; a zero here (the old default for an
-		// unadvertised leaf) makes those two disagree. 40/48 matches the
-		// QEMU default vCPU.
-		a = (48 << 8) | 40
+		// EAX[15:8] = linear (virtual) address bits, EAX[23:16] =
+		// guest-physical-address bits. Firmware (OVMF) reads this to size
+		// its GCD memory space and the coverage of its identity page
+		// tables; a zero here (the old default for an unadvertised leaf)
+		// makes those two disagree. 40/48 matches the QEMU default vCPU.
+		//
+		// GuestPhysBits (bits 23:16) is what OVMF's
+		// PlatformAddressWidthFromCpuid uses as its "trust this width"
+		// signal: with it zero it marks the address width "Valid: No" and
+		// falls back to a layout that strands PEI permanent memory (and
+		// thus the EmuVariable NV-store reservation) near 4 GiB, above our
+		// mapped RAM — a #PF the moment it seeds the store from flash.
+		// Reporting it equal to the physical width matches a QEMU vCPU
+		// configured with host-phys-bits and makes the width Valid.
+		a = (40 << 16) | (48 << 8) | 40
 	default:
 		// Unrecognised leaves return zero, matching what real CPUs do
 		// for invalid leaves above the advertised maximums.
