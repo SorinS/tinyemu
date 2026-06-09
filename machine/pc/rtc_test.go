@@ -1,6 +1,41 @@
 package pc
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+// TestCMOSRTC_HostTime: the time-of-day registers report the host's
+// current UTC time in BCD, not the old fixed 2000-01-01. Year/month/day
+// won't roll during the test, so compare them exactly; seconds/minutes/
+// hours are only checked for valid BCD (they may tick mid-test).
+func TestCMOSRTC_HostTime(t *testing.T) {
+	c := NewCMOSRTC(512 * 1024)
+	now := time.Now().UTC()
+
+	if got, want := cmosRead(c, 0x09), bcd(now.Year()%100); got != want {
+		t.Errorf("year reg = %#x, want %#x", got, want)
+	}
+	if got, want := cmosRead(c, 0x32), bcd(now.Year()/100); got != want {
+		t.Errorf("century reg = %#x, want %#x", got, want)
+	}
+	if got, want := cmosRead(c, 0x08), bcd(int(now.Month())); got != want {
+		t.Errorf("month reg = %#x, want %#x", got, want)
+	}
+	if got, want := cmosRead(c, 0x07), bcd(now.Day()); got != want {
+		t.Errorf("day reg = %#x, want %#x", got, want)
+	}
+	validBCD := func(v uint8, hiMax uint8) bool { return v>>4 <= hiMax && v&0xF <= 9 }
+	if v := cmosRead(c, 0x00); !validBCD(v, 5) {
+		t.Errorf("seconds reg = %#x not valid BCD", v)
+	}
+	if v := cmosRead(c, 0x02); !validBCD(v, 5) {
+		t.Errorf("minutes reg = %#x not valid BCD", v)
+	}
+	if v := cmosRead(c, 0x04); !validBCD(v, 2) {
+		t.Errorf("hours reg = %#x not valid 24h BCD", v)
+	}
+}
 
 // read drives the CMOS index/data port pair the way firmware does, so the
 // test exercises the same path (readData) the BIOS uses.

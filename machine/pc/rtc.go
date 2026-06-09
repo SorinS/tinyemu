@@ -3,6 +3,7 @@ package pc
 import (
 	"fmt"
 	"os"
+	"time"
 )
 
 // cmosDebug logs every CMOS register read (index → value) when
@@ -132,33 +133,47 @@ func (c *CMOSRTC) Register(io *IOPortDispatcher) {
 	})
 }
 
+// readData returns the value of the currently-indexed CMOS register. The
+// time-of-day registers report the host's current UTC time in BCD (Status
+// B advertises 24-hour BCD), so guests see a real wall-clock — UEFI
+// variable timestamps, TLS/cert validation, and `date`/`uptime` all need a
+// sane year, not the old fixed 2000-01-01. The non-clock registers (memory
+// sizing, equipment, etc.) come from the ram backing via the default case.
 func (c *CMOSRTC) readData() uint8 {
+	now := time.Now().UTC()
 	switch c.index {
 	case 0x00: // Seconds
-		return 0x00
+		return bcd(now.Second())
 	case 0x02: // Minutes
-		return 0x00
-	case 0x04: // Hours
-		return 0x00
-	case 0x06: // Day of week
-		return 0x01
+		return bcd(now.Minute())
+	case 0x04: // Hours (24-hour, per Status B bit 1)
+		return bcd(now.Hour())
+	case 0x06: // Day of week, CMOS convention Sunday=1
+		return bcd(int(now.Weekday()) + 1)
 	case 0x07: // Day of month
-		return 0x01
+		return bcd(now.Day())
 	case 0x08: // Month
-		return 0x01
-	case 0x09: // Year
-		return 0x00
-	case 0x0A: // Status A
+		return bcd(int(now.Month()))
+	case 0x09: // Year within century
+		return bcd(now.Year() % 100)
+	case 0x32: // Century (ACPI FADT century register)
+		return bcd(now.Year() / 100)
+	case 0x0A: // Status A — UIP clear (we compute a consistent time), rate bits
 		return 0x26
-	case 0x0B: // Status B
+	case 0x0B: // Status B — 24-hour (bit 1), BCD (bit 2 clear)
 		return 0x02
 	case 0x0C: // Status C
 		return 0x00
-	case 0x0D: // Status D
+	case 0x0D: // Status D — valid RAM/time (bit 7)
 		return 0x80
 	default:
 		return c.ram[c.index]
 	}
+}
+
+// bcd encodes a 0..99 value as packed binary-coded decimal.
+func bcd(n int) uint8 {
+	return uint8((n/10)<<4 | (n % 10))
 }
 
 func (c *CMOSRTC) writeData(val uint8) {
