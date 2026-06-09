@@ -88,6 +88,7 @@ type PC struct {
 	ata        *ATAController
 	pciHost    *PCIHost
 	vga        *VGA
+	stdVGA     *StdVGA
 	ramSize    uint64
 	lowRAM     *mem.PhysMemoryRange
 	biosROM    *mem.PhysMemoryRange
@@ -260,6 +261,16 @@ func New(cfg Config) (*PC, error) {
 	p.vga = NewVGA()
 	if err := p.vga.Register(p.io, p.memMap); err != nil {
 		return nil, fmt.Errorf("register VGA: %w", err)
+	}
+
+	// QEMU std-VGA (Bochs VBE) PCI graphics card at slot 2, behind
+	// TINYEMU_STDVGA=1. Provides a generic linear framebuffer + GOP for
+	// firmware/OSes that drive the Bochs VBE dispi interface.
+	if stdVGAEnabled {
+		p.stdVGA = NewStdVGA()
+		if err := p.stdVGA.Register(p.io, p.memMap, p.pciHost.Bus(), 2, 0); err != nil {
+			return nil, fmt.Errorf("register std-VGA: %w", err)
+		}
 	}
 
 	// System Control Port B (0x61). Bit roles:

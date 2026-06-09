@@ -92,11 +92,11 @@ func NewPCIDevice(name string, vendor, device uint16, classCode uint32, headerTy
 	d := &PCIDevice{name: name}
 	d.setU16(0x00, vendor)
 	d.setU16(0x02, device)
-	d.setU8(0x08, 0x00)                  // revision ID
-	d.setU8(0x09, uint8(classCode))      // ProgIF
-	d.setU8(0x0A, uint8(classCode>>8))   // Subclass
-	d.setU8(0x0B, uint8(classCode>>16))  // Class
-	d.setU8(0x0E, headerType)            // header type (bit 7 = multi-function)
+	d.setU8(0x08, 0x00)                 // revision ID
+	d.setU8(0x09, uint8(classCode))     // ProgIF
+	d.setU8(0x0A, uint8(classCode>>8))  // Subclass
+	d.setU8(0x0B, uint8(classCode>>16)) // Class
+	d.setU8(0x0E, headerType)           // header type (bit 7 = multi-function)
 	return d
 }
 
@@ -121,6 +121,24 @@ func (d *PCIDevice) SetIOBAR(idx int, base uint32, size uint32) {
 	mask := ^(size - 1) // e.g. size=16 → mask = 0xFFFFFFF0
 	d.barMasks[idx] = mask
 	d.setU32(off, (base&mask)|0x01) // bit 0 = 1 → I/O space
+}
+
+// SetMemBAR configures BAR `idx` as a 32-bit memory BAR of `size` bytes
+// (a power of two) at `base`. prefetchable sets the prefetch hint (bit 3),
+// which firmware uses for linear framebuffers. The low type bits encode a
+// 32-bit, non-prefetchable-by-default memory BAR (bit 0 = 0).
+func (d *PCIDevice) SetMemBAR(idx int, base uint32, size uint32, prefetchable bool) {
+	if idx < 0 || idx > 5 || size < 16 || size&(size-1) != 0 {
+		return
+	}
+	off := uint32(0x10 + idx*4)
+	mask := ^(size - 1)
+	d.barMasks[idx] = mask
+	typ := uint32(0) // 32-bit memory space, bit 0 = 0
+	if prefetchable {
+		typ |= 0x08
+	}
+	d.setU32(off, (base&mask)|typ)
 }
 
 // PCIBus is bus 0 — the only bus we model. Slots are addressed by
@@ -342,7 +360,7 @@ func writeBAR(d *PCIDevice, off uint32, val uint32, size int) {
 		uint32(d.config[barOff+1])<<8 |
 		uint32(d.config[barOff+2])<<16 |
 		uint32(d.config[barOff+3])<<24
-	prev := cur            // base before this write, for change detection
+	prev := cur           // base before this write, for change detection
 	typeBits := cur & 0x1 // bit 0 = I/O indicator (memory leaves it 0)
 	switch size {
 	case 1:
@@ -360,17 +378,18 @@ func writeBAR(d *PCIDevice, off uint32, val uint32, size int) {
 	d.config[barOff+2] = uint8(cur >> 16)
 	d.config[barOff+3] = uint8(cur >> 24)
 
-	// Notify the device if its decoded base actually moved. We skip the
-	// all-ones sizing probe (firmware writes 0xFFFFFFFF then reads back
-	// the mask): after masking that leaves the high bits set, which for
-	// an I/O BAR is an impossible base (I/O space is only 16 bits), so we
-	// gate on isIO && base <= 0xFFFF.
+	// Notify the device if its decoded base actually moved. Skip the
+	// all-ones sizing probe (firmware writes 0xFFFFFFFF as a dword, then
+	// reads back the mask to learn the region size) so a transient masked
+	// base never relocates a live region onto flash/APIC. For an I/O BAR
+	// also require a 16-bit-addressable base (I/O space is only 16 bits).
 	if d.onBARChange != nil {
 		isIO := typeBits&0x1 != 0
 		newBase := cur & mask
 		changed := newBase != (prev & mask)
-		validIO := isIO && newBase <= 0xFFFF
-		if changed && validIO {
+		sizingProbe := size == 4 && val == 0xFFFFFFFF
+		sane := !isIO || newBase <= 0xFFFF
+		if changed && !sizingProbe && sane {
 			d.onBARChange(idx, newBase, isIO)
 		}
 	}
