@@ -3,10 +3,21 @@ package pc
 import (
 	"encoding/binary"
 	"fmt"
+	"math/bits"
 	"os"
+
+	"github.com/jtolio/tinyemu-go/mem"
 )
 
 var fwCfgDebug = os.Getenv("TINYEMU_FWCFG_DEBUG") == "1"
+
+// fwCfgDMAEnabled gates the (newer) DMA interface. Default off: with it
+// clear, ID reports only bit 0 and OVMF/SeaBIOS use the byte-at-a-time
+// port path — the exact behaviour that boots today. Set TINYEMU_FWCFG_DMA=1
+// to advertise + service DMA (faster bulk reads, matches QEMU). Flag-gated
+// so a DMA bug can't regress a currently-working firmware boot; remove the
+// gate once it's proven in the field.
+var fwCfgDMAEnabled = os.Getenv("TINYEMU_FWCFG_DMA") == "1"
 
 // fw_cfg — QEMU's hypervisor-to-firmware paravirt channel. SeaBIOS,
 // OVMF/EDK2, and the various coreboot SeaBIOS payloads all consume it.
@@ -46,6 +57,20 @@ const (
 	//  56 bytes  name (NUL-padded ASCII)
 	fwCfgFileNameSize  = 56
 	fwCfgFileEntrySize = 4 + 2 + 2 + fwCfgFileNameSize // = 64
+
+	// DMA interface (QEMU docs/specs/fw_cfg.rst). The 64-bit, big-endian
+	// control-structure address register sits at 0x514 (high 32 bits) and
+	// 0x518 (low 32 bits); writing the low half triggers the transfer.
+	fwCfgDMAAddrHi = 0x514
+	fwCfgDMAAddrLo = 0x518
+
+	// FWCfgDmaAccess.control bits (the struct is 16 bytes, all big-endian:
+	// control@0, length@4, address@8).
+	fwCfgDmaError  = 0x01
+	fwCfgDmaRead   = 0x02
+	fwCfgDmaSkip   = 0x04
+	fwCfgDmaSelect = 0x08
+	fwCfgDmaWrite  = 0x10
 )
 
 // fwCfgFile is a named blob the firmware can read end-to-end. select
@@ -65,6 +90,14 @@ type fwCfg struct {
 	offset   uint32
 	files    []fwCfgFile
 	dirCache []byte // assembled on first access; rebuilt if files change
+
+	// DMA interface state (only used when fwCfgDMAEnabled). mem is the
+	// guest physical memory the DMA transfers read from / write to; it is
+	// wired by the machine before Register. dmaAddr accumulates the 64-bit
+	// control-structure address across the two 32-bit register writes.
+	mem     *mem.PhysMemoryMap
+	dma     bool
+	dmaAddr uint64
 }
 
 // newFWCfg creates an fw_cfg device with the standard signature/ID
@@ -73,7 +106,7 @@ type fwCfg struct {
 // on the I/O bus — once SeaBIOS sees the file directory it caches
 // names → selectors, so new files added after boot won't be picked up.
 func newFWCfg() *fwCfg {
-	return &fwCfg{}
+	return &fwCfg{dma: fwCfgDMAEnabled}
 }
 
 // addFile appends a named file to the directory and assigns it the
@@ -156,10 +189,13 @@ func (f *fwCfg) dataForSelector(sel uint16) []byte {
 		// else and SeaBIOS treats the channel as absent.
 		return []byte("QEMU")
 	case fwCfgSelID:
-		// Feature bits. Bit 0 = fw_cfg present (we set it), bit 1 =
-		// DMA support (we don't implement DMA; SeaBIOS falls back to
-		// the slow port path when this is clear). The field is 4
-		// bytes little-endian; we hand back exactly the LSB.
+		// Feature bits, 4 bytes little-endian. Bit 0 = fw_cfg present;
+		// bit 1 = DMA interface. With DMA advertised, OVMF/SeaBIOS use
+		// the bulk DMA path; otherwise they fall back to the slow
+		// byte-at-a-time port reads.
+		if f.dma {
+			return []byte{0x03, 0x00, 0x00, 0x00}
+		}
 		return []byte{0x01, 0x00, 0x00, 0x00}
 	case fwCfgSelFileDir:
 		return f.fileDirectory()
@@ -199,6 +235,85 @@ func (f *fwCfg) Register(io *IOPortDispatcher) {
 	io.RegisterRead(fwCfgDataPort, fwCfgDataPort, func(_ uint16) uint32 {
 		return f.readData()
 	})
+
+	// DMA interface: the 64-bit big-endian control-structure address is
+	// written as two 32-bit halves; the low-half write triggers. Only
+	// registered when DMA is advertised so the default port path is
+	// untouched. Completion is signalled by writing the struct's control
+	// field back in guest memory (synchronous here), so no read handler
+	// is needed.
+	if f.dma {
+		io.RegisterWrite32(fwCfgDMAAddrHi, fwCfgDMAAddrHi, func(_ uint16, v uint32) {
+			f.dmaAddr = (f.dmaAddr & 0x00000000FFFFFFFF) | (uint64(bits.ReverseBytes32(v)) << 32)
+		})
+		io.RegisterWrite32(fwCfgDMAAddrLo, fwCfgDMAAddrLo, func(_ uint16, v uint32) {
+			f.dmaAddr = (f.dmaAddr &^ 0x00000000FFFFFFFF) | uint64(bits.ReverseBytes32(v))
+			f.dmaProcess(f.dmaAddr)
+		})
+	}
+}
+
+// dmaProcess services one FWCfgDmaAccess request whose 16-byte control
+// structure lives at guest-physical addr. All struct fields are
+// big-endian: control@0, length@4, address@8. It selects (if requested),
+// then reads/skips/writes, advancing the per-selector offset, and writes
+// the control field back to 0 on success or the ERROR bit on failure —
+// which is how the firmware learns the transfer is complete.
+func (f *fwCfg) dmaProcess(addr uint64) {
+	if f.mem == nil {
+		return
+	}
+	hdr := f.mem.GetRAMPtr(addr, true)
+	if hdr == nil || len(hdr) < 16 {
+		// Control struct not in mapped RAM — can't even report an error
+		// (no writeback target). Firmware would treat this as a stuck
+		// transfer; OVMF always places it in RAM, so this is unexpected.
+		return
+	}
+	control := binary.BigEndian.Uint32(hdr[0:4])
+	length := binary.BigEndian.Uint32(hdr[4:8])
+	bufAddr := binary.BigEndian.Uint64(hdr[8:16])
+
+	if control&fwCfgDmaSelect != 0 {
+		f.selector = uint16(control >> 16)
+		f.offset = 0
+	}
+
+	dmaErr := false
+	switch {
+	case control&fwCfgDmaRead != 0:
+		data := f.dataForSelector(f.selector)
+		buf := f.mem.GetRAMPtr(bufAddr, true)
+		if buf == nil || uint64(len(buf)) < uint64(length) {
+			dmaErr = true
+			break
+		}
+		for i := uint32(0); i < length; i++ {
+			if int(f.offset) < len(data) {
+				buf[i] = data[f.offset]
+			} else {
+				buf[i] = 0 // zero-fill past end, matching the port path
+			}
+			f.offset++
+		}
+	case control&fwCfgDmaSkip != 0:
+		f.offset += length
+	case control&fwCfgDmaWrite != 0:
+		// No writable items exist during boot; refuse rather than risk
+		// corrupting a backing slice.
+		dmaErr = true
+	}
+
+	if fwCfgDebug {
+		fmt.Fprintf(os.Stderr, "[fwcfg] dma ctrl=%#x len=%d buf=%#x sel=%#x off=%d err=%v\n",
+			control, length, bufAddr, f.selector, f.offset, dmaErr)
+	}
+
+	if dmaErr {
+		binary.BigEndian.PutUint32(hdr[0:4], fwCfgDmaError)
+	} else {
+		binary.BigEndian.PutUint32(hdr[0:4], 0)
+	}
 }
 
 // fileDirectory assembles the QEMU-defined file directory: a 4-byte

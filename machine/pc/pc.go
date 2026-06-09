@@ -378,6 +378,9 @@ func New(cfg Config) (*PC, error) {
 	// MADT + HPET — that SeaBIOS allocates, relocates, and publishes on
 	// our behalf via its BiosLinker.
 	p.fwCfg = newFWCfg()
+	// Guest memory for the fw_cfg DMA interface (only used when DMA is
+	// advertised, i.e. TINYEMU_FWCFG_DMA=1).
+	p.fwCfg.mem = p.memMap
 	// etc/e820 must be added BEFORE etc/table-loader — SeaBIOS reads
 	// e820 during its early POST (when responding to the MBR's INT
 	// 15h E820 calls), and a missing file makes the staging buffer
