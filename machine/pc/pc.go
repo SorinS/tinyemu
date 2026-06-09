@@ -291,6 +291,24 @@ func New(cfg Config) (*PC, error) {
 		port61 = uint8(val)
 	})
 
+	// APM/SMI command (0xB2) and status (0xB3) ports. temu models no SMM,
+	// but SeaBIOS's SMM relocation (fw/smm.c smm_relocate_and_restore)
+	// writes 0x01 to the status port, raises an SMI by writing the command
+	// port, then spins until the SMM handler clears the status to 0:
+	//     outb(0x01, 0xB3); outb(0x00, 0xB2);
+	//     while (inb(0xB3) != 0x00) ;
+	// SeaBIOS only tries this because it found our PIIX4 ACPI PM and assumed
+	// SMM is available. Model the handshake synchronously — a write to the
+	// command port clears the status — so SeaBIOS sees the SMI "complete"
+	// and proceeds. It never actually relocates SMBASE, which is fine:
+	// nothing we boot relies on SMM. Without this SeaBIOS hangs forever
+	// polling 0xB3 (e.g. booting MenuetOS via SeaBIOS).
+	var smiStatus uint8
+	p.io.RegisterRead(0xB2, 0xB2, func(uint16) uint32 { return 0x00 })
+	p.io.RegisterWrite(0xB2, 0xB2, func(uint16, uint32) { smiStatus = 0x00 })
+	p.io.RegisterRead(0xB3, 0xB3, func(uint16) uint32 { return uint32(smiStatus) })
+	p.io.RegisterWrite(0xB3, 0xB3, func(_ uint16, v uint32) { smiStatus = uint8(v) })
+
 	// QEMU/SeaBIOS debug ports.
 	//
 	// 0x402: byte-write debugcon — SeaBIOS prints its boot log here when
