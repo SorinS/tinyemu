@@ -19,6 +19,18 @@ var fwCfgDebug = os.Getenv("TINYEMU_FWCFG_DEBUG") == "1"
 // gate once it's proven in the field.
 var fwCfgDMAEnabled = os.Getenv("TINYEMU_FWCFG_DMA") == "1"
 
+// fwCfgRamfb gates a ramfb framebuffer (QEMU's etc/ramfb). When set,
+// fw_cfg exposes a writable etc/ramfb item; OVMF's QemuRamfbDxe writes the
+// framebuffer config there (over fw_cfg DMA) and publishes a GOP, which is
+// what GOP-requiring guests (e.g. go-boot's screenInfo) need to proceed.
+// temu is headless, so the framebuffer is write-only (held in RAM). ramfb
+// is configured over the DMA interface, so enabling it implies DMA.
+var fwCfgRamfb = os.Getenv("TINYEMU_RAMFB") == "1"
+
+// ramfbCfgSize is the size of QEMU's RAMFBCfg struct written to etc/ramfb:
+// addr(8) + fourcc(4) + flags(4) + width(4) + height(4) + stride(4).
+const ramfbCfgSize = 28
+
 // fw_cfg — QEMU's hypervisor-to-firmware paravirt channel. SeaBIOS,
 // OVMF/EDK2, and the various coreboot SeaBIOS payloads all consume it.
 // The host writes a 16-bit "selector" to I/O port 0x510 and reads
@@ -77,9 +89,10 @@ const (
 // is the 16-bit selector we hand to readers (so they don't have to
 // know the directory order).
 type fwCfgFile struct {
-	name string
-	data []byte
-	sel  uint16
+	name     string
+	data     []byte
+	sel      uint16
+	writable bool // guest may write it back over the DMA WRITE path
 }
 
 // fwCfg is the per-machine fw_cfg state. The selector field tracks
@@ -97,6 +110,7 @@ type fwCfg struct {
 	// control-structure address across the two 32-bit register writes.
 	mem     *mem.PhysMemoryMap
 	dma     bool
+	ramfb   bool
 	dmaAddr uint64
 }
 
@@ -106,7 +120,8 @@ type fwCfg struct {
 // on the I/O bus — once SeaBIOS sees the file directory it caches
 // names → selectors, so new files added after boot won't be picked up.
 func newFWCfg() *fwCfg {
-	return &fwCfg{dma: fwCfgDMAEnabled}
+	// ramfb is configured over the DMA WRITE path, so it implies DMA.
+	return &fwCfg{dma: fwCfgDMAEnabled || fwCfgRamfb, ramfb: fwCfgRamfb}
 }
 
 // addFile appends a named file to the directory and assigns it the
@@ -125,6 +140,27 @@ func (f *fwCfg) addFile(name string, data []byte) uint16 {
 	f.files = append(f.files, fwCfgFile{name: name, data: data, sel: sel})
 	f.dirCache = nil
 	return sel
+}
+
+// addFileWritable is addFile for an item the guest may write back over the
+// DMA WRITE path (e.g. etc/ramfb, where the firmware writes the framebuffer
+// config). The backing slice is mutated in place by the write.
+func (f *fwCfg) addFileWritable(name string, data []byte) uint16 {
+	sel := f.addFile(name, data)
+	f.files[len(f.files)-1].writable = true
+	return sel
+}
+
+// writableForSelector returns the backing slice of a writable item, or nil
+// if the selector doesn't map to one (so DMA WRITE can't touch read-only
+// items or the inlined well-known selectors).
+func (f *fwCfg) writableForSelector(sel uint16) []byte {
+	for i := range f.files {
+		if f.files[i].sel == sel && f.files[i].writable {
+			return f.files[i].data
+		}
+	}
+	return nil
 }
 
 // writeSelector implements writes to port 0x510. SeaBIOS issues
@@ -299,9 +335,21 @@ func (f *fwCfg) dmaProcess(addr uint64) {
 	case control&fwCfgDmaSkip != 0:
 		f.offset += length
 	case control&fwCfgDmaWrite != 0:
-		// No writable items exist during boot; refuse rather than risk
-		// corrupting a backing slice.
-		dmaErr = true
+		// Copy guest memory into a writable item (e.g. etc/ramfb). Refused
+		// for read-only items so a stray WRITE can't corrupt a backing
+		// slice.
+		dst := f.writableForSelector(f.selector)
+		src := f.mem.GetRAMPtr(bufAddr, false)
+		if dst == nil || src == nil || uint64(len(src)) < uint64(length) {
+			dmaErr = true
+			break
+		}
+		for i := uint32(0); i < length; i++ {
+			if int(f.offset) < len(dst) {
+				dst[f.offset] = src[i]
+			}
+			f.offset++
+		}
 	}
 
 	if fwCfgDebug {

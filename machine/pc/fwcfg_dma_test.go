@@ -90,6 +90,47 @@ func TestFwCfgDMA_SelectThenRead(t *testing.T) {
 	}
 }
 
+// TestFwCfgDMA_WriteRamfb: the DMA WRITE path copies guest memory into a
+// writable item (the mechanism QemuRamfbDxe uses to publish its framebuffer
+// config to etc/ramfb). A WRITE to a read-only item must fail, not corrupt.
+func TestFwCfgDMA_WriteRamfb(t *testing.T) {
+	f, mm := dmaFWCfg(t)
+	sel := f.addFileWritable("etc/ramfb", make([]byte, ramfbCfgSize))
+
+	const ctrlAddr = 0x5000
+	const srcAddr = 0x6000
+	// Source payload in guest RAM: a fake 28-byte RAMFBCfg.
+	src := mm.GetRAMPtr(srcAddr, true)
+	for i := 0; i < ramfbCfgSize; i++ {
+		src[i] = byte(0x10 + i)
+	}
+
+	hdr := mm.GetRAMPtr(ctrlAddr, true)
+	binary.BigEndian.PutUint32(hdr[0:4], fwCfgDmaSelect|fwCfgDmaWrite|(uint32(sel)<<16))
+	binary.BigEndian.PutUint32(hdr[4:8], ramfbCfgSize)
+	binary.BigEndian.PutUint64(hdr[8:16], srcAddr)
+	f.dmaProcess(ctrlAddr)
+
+	if ctrl := binary.BigEndian.Uint32(hdr[0:4]); ctrl != 0 {
+		t.Fatalf("WRITE control = %#x, want 0 (success)", ctrl)
+	}
+	got := f.dataForSelector(sel)
+	for i := 0; i < ramfbCfgSize; i++ {
+		if got[i] != byte(0x10+i) {
+			t.Fatalf("etc/ramfb[%d] = %#x, want %#x", i, got[i], 0x10+i)
+		}
+	}
+
+	// WRITE to a read-only item (the signature) must error, not panic/corrupt.
+	binary.BigEndian.PutUint32(hdr[0:4], fwCfgDmaSelect|fwCfgDmaWrite|(uint32(fwCfgSelSignature)<<16))
+	binary.BigEndian.PutUint32(hdr[4:8], 4)
+	binary.BigEndian.PutUint64(hdr[8:16], srcAddr)
+	f.dmaProcess(ctrlAddr)
+	if ctrl := binary.BigEndian.Uint32(hdr[0:4]); ctrl != fwCfgDmaError {
+		t.Errorf("WRITE to read-only item control = %#x, want ERROR bit %#x", ctrl, fwCfgDmaError)
+	}
+}
+
 // TestFwCfgDMA_Disabled: with DMA off (the default), ID reports only bit 0
 // and the DMA ports are not registered — the byte path is untouched.
 func TestFwCfgDMA_Disabled(t *testing.T) {

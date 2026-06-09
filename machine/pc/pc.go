@@ -391,6 +391,12 @@ func New(cfg Config) (*PC, error) {
 	p.fwCfg.addFile("etc/acpi/rsdp", rsdpBlob())
 	p.fwCfg.addFile("etc/acpi/tables", tablesBlob())
 	p.fwCfg.addFile("etc/table-loader", tableLoaderScript())
+	if p.fwCfg.ramfb {
+		// ramfb framebuffer config (QEMU RAMFBCfg). The firmware
+		// (QemuRamfbDxe) writes addr/format/geometry here over fw_cfg DMA
+		// and then publishes a GOP backed by that RAM framebuffer.
+		p.fwCfg.addFileWritable("etc/ramfb", make([]byte, ramfbCfgSize))
+	}
 	p.fwCfg.Register(p.io)
 
 	// 8042 PS/2 controller stub — enough of the protocol to keep guests
