@@ -210,6 +210,15 @@ func New(cfg Config) (*PC, error) {
 		case off >= 0x40 && off < 0x44: // PMBA — power-management I/O base
 			applyWrite(d, off, val, size)
 			d.config[0x40] |= 0x01 // bit 0 hardwired (I/O space)
+			// Relocate the PM timer when firmware reprograms the base.
+			// OVMF keeps it at 0xB000; SeaBIOS moves it to 0x600 and then
+			// reads the PM timer at base+8. Without following the move that
+			// read hits nothing, so SeaBIOS's PM-timer-based delays (FDC
+			// reset, boot waits) spin forever. The base is the 64-byte-
+			// aligned I/O address in bits [15:6].
+			if base := (uint16(d.config[0x40]) | uint16(d.config[0x41])<<8) & 0xFFC0; base != 0 {
+				p.registerACPIPMTimer(base + 0x08)
+			}
 		case off == 0x80: // PMREGMISC — bit 0 = PMIOSE
 			applyWrite(d, off, val, size)
 		default:
