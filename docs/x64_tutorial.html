@@ -1116,6 +1116,22 @@ e = <span class="fn">readWalkEntry</span>(ptAddr, ...)
 </table>
 <p>The interior-vs-leaf distinction is encoded entirely in the PS bit at the non-leaf levels. A PDPT entry with PS=1 is a 1 GiB leaf; PS=0 means it points at a PD.</p>
 
+<h2>Write permission and CR0.WP — the rule that bit us in DXE</h2>
+<p>The R/W bit (bit 1) looks trivial — 0 means read-only — but whether a <em>write</em> to a read-only page actually faults depends on who is writing and on <code>CR0.WP</code>:</p>
+<ul>
+<li>A <strong>user-mode</strong> (CPL=3) write to a read-only page <em>always</em> faults.</li>
+<li>A <strong>supervisor</strong> (CPL&lt;3) write to a read-only page faults <em>only when CR0.WP=1</em>. With CR0.WP=0 the R/W bit is ignored for supervisor accesses — the kernel is allowed to write its own read-only pages (Intel SDM Vol.3 §4.6.1).</li>
+</ul>
+<pre><span class="cm">// inside readWalkEntry, for each level</span>
+<span class="kw">if</span> isWrite &amp;&amp; e&amp;pteRW == 0 &amp;&amp; (isUser || c.cr[0]&amp;CR0_WP != 0) {
+    <span class="kw">return</span> 0, &amp;<span class="kw">PageFaultError</span>{Addr: linAddr, ErrorCode: <span class="fn">faultCode</span>(<span class="kw">true</span>, isWrite, isUser, isFetch, <span class="kw">false</span>)}
+}<span class="lang-tag">go</span></pre>
+<p>We first faulted on <em>every</em> write to a read-only page, regardless of WP. That's invisible under Linux — which runs with CR0.WP=1 — but OVMF's <code>CpuDxe</code> edits its own page tables (which DxeIpl maps read-only) with WP <em>clear</em>, while syncing memory attributes. The unconditional fault (error code 0x3 = present + write, supervisor) killed it in DXE. Gating the fault on <code>(isUser || CR0.WP)</code> let CpuDxe through — and with that one condition OVMF finished DXE, entered BDS, and went on to launch a UEFI application that chain-booted Linux.</p>
+<div class="box box-warn">
+<strong>Gotcha — tests can encode the bug</strong>
+Two of our existing tests asserted "a supervisor write to a read-only page faults" while running with CR0.WP=0 (the default) — they were pinning the <em>wrong</em> behaviour. When a fix contradicts a test, check the test against the spec, not the other way round: the SDM is the authority. The corrected tests exercise the full matrix — supervisor WP=0 permitted, supervisor WP=1 faults, user always faults.
+</div>
+
 <h2>Where the walker lives</h2>
 <p>The whole implementation is in <code>cpu/x86_64/mmu.go</code>, around 200 lines including comments. The tests in <code>cpu/x86_64/mmu_test.go</code> cover every fault case: not-present at each level, write-to-readonly, user-to-supervisor, NX, reserved bits, non-canonical, huge pages with leftover bits in the page-frame field, A/D bit setting.</p>
 
