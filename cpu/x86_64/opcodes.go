@@ -556,7 +556,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		// "0x62 unimplemented" wall we kept hitting).
 		m := c.parseModRM64(rex)
 		if m.isReg {
-			return c.unimplementedAt("BOUND with register operand (#UD)")
+			return c.raiseUD() // BOUND requires a memory operand
 		}
 		size := operandSize
 		seg := m.defaultSeg
@@ -1434,9 +1434,9 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int, repPrefix uint8
 		return c.opGroup7(rex)
 
 	case op2 == 0x0B:
-		// UD2 — guaranteed-invalid-opcode instruction. Routes through
-		// vector 6 (#UD).
-		return c.deliverInterrupt(6, false, 0)
+		// UD2 — guaranteed-invalid-opcode instruction. Delivered as #UD
+		// (vector 6), a fault: saved RIP points at the UD2 itself.
+		return c.raiseUD()
 
 	case op2 == 0x1F:
 		// Multi-byte NOP — the compiler emits this for alignment
@@ -3391,6 +3391,25 @@ func (c *CPU) opGroup1(rex, operandSize uint8, imm8 bool) error {
 // opGroup5 dispatches 0xFF. Sub-ops: 0=INC, 1=DEC, 2=CALL, 3=CALLF,
 // 4=JMP, 5=JMPF, 6=PUSH, 7=reserved. M2 wires the data ops; CALL/JMP
 // indirect arrive when control flow gets more interesting.
+// raiseUD delivers an Invalid-Opcode exception (#UD, vector 6) to the
+// guest. Use this for encodings that are *architecturally invalid* — a
+// reserved Group 4/5 /reg value, a far CALL/JMP with a register operand,
+// BOUND with a register operand — so the guest's own #UD handler runs.
+// This is deliberately distinct from unimplementedAt (ErrNotImplemented),
+// which halts the emulator and is reserved for opcodes we simply have not
+// written yet (a decoder gap). Conflating the two made temu abort on
+// guest code that real hardware would fault on and recover from (e.g.
+// go-boot executing 0xFF /7).
+//
+// Delivered as a FAULT via exceptionPanic (like #DE): Step's recover
+// rewinds RIP to the faulting instruction before vectoring through the
+// IDT, so the saved CS:RIP points at the bad opcode. Declared to return
+// error only so callers can `return c.raiseUD()`; it never actually
+// returns (it panics).
+func (c *CPU) raiseUD() error {
+	panic(exceptionPanic{Vec: 6})
+}
+
 // opGroup4 implements 0xFE — the byte-form INC/DEC family (/0 and /1
 // only; /2..7 are illegal). Mirrors Group 5's INC/DEC handling but
 // with operandSize fixed at 1, which matters for read8FromModRM /
@@ -3414,7 +3433,8 @@ func (c *CPU) opGroup4(rex uint8) error {
 		c.rflags = (c.rflags &^ RFLAGS_CF) | oldCF
 		return nil
 	}
-	return c.unimplementedAt("Group 4 /%d", m.reg)
+	// /2..7 are reserved encodings of 0xFE → #UD.
+	return c.raiseUD()
 }
 
 func (c *CPU) opGroup5(rex, operandSize uint8) error {
@@ -3448,7 +3468,7 @@ func (c *CPU) opGroup5(rex, operandSize uint8) error {
 		return nil
 	case 3: // CALL FAR m16:16/32/64 (intersegment indirect through memory)
 		if m.isReg {
-			return c.unimplementedAt("Group 5 /3 with register operand (CALLF only valid m16:16/32)")
+			return c.raiseUD() // CALLF requires a memory operand; register form is #UD
 		}
 		seg := m.defaultSeg
 		if c.currentSegOverride >= 0 {
@@ -3483,7 +3503,7 @@ func (c *CPU) opGroup5(rex, operandSize uint8) error {
 		return nil
 	case 5: // JMP FAR m16:16/32/64 (intersegment indirect through memory)
 		if m.isReg {
-			return c.unimplementedAt("Group 5 /5 with register operand (JMPF only valid m16:16/32)")
+			return c.raiseUD() // JMPF requires a memory operand; register form is #UD
 		}
 		seg := m.defaultSeg
 		if c.currentSegOverride >= 0 {
@@ -3514,7 +3534,8 @@ func (c *CPU) opGroup5(rex, operandSize uint8) error {
 		c.pushStack(c.readOperand(m, uint8(size)), size)
 		return nil
 	}
-	return c.unimplementedAt("Group 5 /%d", m.reg)
+	// Only /7 reaches here — a reserved encoding of 0xFF → #UD.
+	return c.raiseUD()
 }
 
 // opMOVImm implements 0xC7 /0 — MOV r/m, imm. In 64-bit operand mode

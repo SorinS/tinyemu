@@ -875,8 +875,12 @@ func (p *PC) GetVirtIOAddr() uint64 {
 }
 
 func (p *PC) GetVirtIOIRQ() *mem.IRQSignal {
+	// Capture the IRQ line for THIS device now, at signal-creation time.
+	// Reading p.virtioCount inside the closure instead meant a second
+	// device (which bumps virtioCount) would silently re-route an earlier
+	// device's IRQ to the later line.
+	irqNum8 := uint8(VirtIOIRQ + p.virtioCount)
 	return mem.NewIRQSignal(func(opaque any, irqNum int, level int) {
-		irqNum8 := uint8(VirtIOIRQ + p.virtioCount)
 		if level != 0 {
 			p.pic.RaiseIRQ(irqNum8)
 		} else {
