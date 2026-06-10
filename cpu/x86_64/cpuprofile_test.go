@@ -63,3 +63,37 @@ func TestCPUFeatureProfile(t *testing.T) {
 		}
 	})
 }
+
+// TestUnknownMSR covers the permissive-but-logged MSR policy (advisor #4):
+// an unmodeled MSR still reads as 0 / drops writes, but in the debug
+// profile each is noted once. Pragmatic must stay silent (and not touch
+// the nil seen-set).
+func TestUnknownMSR(t *testing.T) {
+	const unknown = uint32(0xDEADBEEF)
+
+	// Debug: behaviour unchanged (0 / drop) but recorded once.
+	c := newTestCPU(t)
+	c.featureProfile = profileDebug
+	c.seenUnimpl = make(map[string]struct{})
+	if v := c.readMSR(unknown); v != 0 {
+		t.Errorf("unknown RDMSR = %#x, want 0", v)
+	}
+	if _, ok := c.seenUnimpl["msr-RDMSR-0xdeadbeef"]; !ok {
+		t.Errorf("debug: RDMSR of unknown MSR not recorded")
+	}
+	if err := c.writeMSR(unknown, 0x1234); err != nil {
+		t.Errorf("unknown WRMSR returned error: %v", err)
+	}
+	if _, ok := c.seenUnimpl["msr-WRMSR-0xdeadbeef"]; !ok {
+		t.Errorf("debug: WRMSR of unknown MSR not recorded")
+	}
+
+	// Pragmatic: same permissive behaviour, no recording, no nil-map panic.
+	p := newTestCPU(t)
+	if v := p.readMSR(unknown); v != 0 {
+		t.Errorf("pragmatic unknown RDMSR = %#x, want 0", v)
+	}
+	if err := p.writeMSR(unknown, 0x1234); err != nil {
+		t.Errorf("pragmatic unknown WRMSR: %v", err)
+	}
+}

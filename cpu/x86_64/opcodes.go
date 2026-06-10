@@ -2252,7 +2252,34 @@ func (c *CPU) readMSR(num uint32) uint64 {
 	case msrKernelGSBase:
 		return c.msrKernelGSBase
 	}
+	c.noteUnknownMSR(false, num, 0)
 	return 0
+}
+
+// noteUnknownMSR logs the first RDMSR/WRMSR of an MSR we don't model, in
+// the debug feature profile (advisor report #4). Unknown MSRs read as 0
+// and drop writes — real hardware #GPs, but the boot path passes through
+// several MSRs we don't model, so the permissive default stays. Logging
+// them in debug mode surfaces guest/kernel feature-probing we silently
+// absorb. Deduplicated per (direction, MSR) via the debug seen-set.
+func (c *CPU) noteUnknownMSR(write bool, num uint32, v uint64) {
+	if c.featureProfile != profileDebug {
+		return
+	}
+	dir := "RDMSR"
+	if write {
+		dir = "WRMSR"
+	}
+	key := fmt.Sprintf("msr-%s-%#x", dir, num)
+	if _, seen := c.seenUnimpl[key]; seen {
+		return
+	}
+	c.seenUnimpl[key] = struct{}{}
+	if write {
+		fmt.Fprintf(os.Stderr, "[msr] unmodeled WRMSR %#x = %#x (write dropped)\n", num, v)
+	} else {
+		fmt.Fprintf(os.Stderr, "[msr] unmodeled RDMSR %#x -> 0\n", num)
+	}
 }
 
 func (c *CPU) writeMSR(num uint32, v uint64) error {
@@ -2283,6 +2310,8 @@ func (c *CPU) writeMSR(num uint32, v uint64) error {
 		c.segBase[GS] = v
 	case msrKernelGSBase:
 		c.msrKernelGSBase = v
+	default:
+		c.noteUnknownMSR(true, num, v)
 	}
 	return nil
 }
