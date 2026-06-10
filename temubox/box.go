@@ -60,28 +60,35 @@ func (e *Emulator) Run(ctx context.Context) error {
 	}
 	defer m.Close()
 
+	// temubox runs the RISC-V virt board, which attaches devices via the
+	// generic VirtIO-MMIO path.
+	va, ok := m.(machine.VirtioMMIOAttacher)
+	if !ok {
+		return fmt.Errorf("temubox: board does not support VirtIO-MMIO attach")
+	}
+
 	nbInput := startNonblockingReader(ctx, e.cfg.ConsoleIn)
 
 	root := devices.NewMemoryBlockDeviceFromData(e.cfg.RootFS)
 	defer root.Close()
 
-	virtRoot, err := virtio.NewBlockDevice(m.MemMap(), m.GetVirtIOAddr(), m.GetVirtIOIRQ(), root)
+	virtRoot, err := virtio.NewBlockDevice(m.MemMap(), va.GetVirtIOAddr(), va.GetVirtIOIRQ(), root)
 	if err != nil {
 		return err
 	}
-	_, err = m.AddVirtIODevice(virtRoot.Device())
+	_, err = va.AddVirtIODevice(virtRoot.Device())
 	if err != nil {
 		return err
 	}
 
 	var nics []*virtio.EthernetDevice
 	if es := newNetDevice(); es != nil {
-		virtNet, err := virtio.NewNet(m.MemMap(), m.GetVirtIOAddr(), m.GetVirtIOIRQ(), es)
+		virtNet, err := virtio.NewNet(m.MemMap(), va.GetVirtIOAddr(), va.GetVirtIOIRQ(), es)
 		if err != nil {
 			return err
 		}
 		nics = append(nics, es)
-		_, err = m.AddVirtIODevice(virtNet.Device())
+		_, err = va.AddVirtIODevice(virtNet.Device())
 		if err != nil {
 			return err
 		}

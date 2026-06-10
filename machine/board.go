@@ -36,8 +36,22 @@ type NetAttacher interface {
 	AttachNet(es *virtio.EthernetDevice) error
 }
 
+// VirtioMMIOAttacher is the optional capability for boards that expose the
+// generic VirtIO-MMIO attach path: a fixed per-device slot address + IRQ
+// line, with the device registered via AddVirtIODevice. The RISC-V virt
+// board uses this; the PC board prefers native hardware (ATA) and
+// virtio-pci, so this is not forced onto every Board (advisor report #2).
+// cmd/temu type-asserts it for the fallback path.
+type VirtioMMIOAttacher interface {
+	GetVirtIOAddr() uint64
+	GetVirtIOIRQ() *mem.IRQSignal
+	AddVirtIODevice(dev *virtio.Device) (int, error)
+}
+
 // Board is the generic machine interface implemented by all
 // architecture-specific board implementations (RISC-V virt, PC, etc.).
+// VirtIO-MMIO attach lives in the optional VirtioMMIOAttacher interface;
+// Console() stays here as the machine's primary console accessor.
 type Board interface {
 	Run(maxCycles int) error
 	LoadBIOS(bios, kernel, initrd []byte, cmdline string) error
@@ -49,8 +63,5 @@ type Board interface {
 	CheckTimer()
 	PollDevices()
 	GetSleepDuration(delay int) int
-	GetVirtIOAddr() uint64
-	GetVirtIOIRQ() *mem.IRQSignal
-	AddVirtIODevice(dev *virtio.Device) (int, error)
 	Console() *virtio.Console
 }

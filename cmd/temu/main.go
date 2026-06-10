@@ -203,6 +203,9 @@ func run() int {
 	// Reference: tinyemu-2019-12-21/temu.c:731-749
 	var blockDevs []devices.BlockDevice
 	attacher, hasAttacher := m.(machine.BlockDeviceAttacher)
+	// Optional generic VirtIO-MMIO attach path (RISC-V); PC uses native
+	// hardware + virtio-pci and won't reach these fallbacks.
+	virtioMMIO, hasVirtioMMIO := m.(machine.VirtioMMIOAttacher)
 	for _, drive := range cfg.Drives {
 		bd, err := openBlockDevice(drive.File, driveMode)
 		if err != nil {
@@ -220,14 +223,18 @@ func run() int {
 		}
 
 		// Fallback: VirtIO-MMIO (RISC-V today).
-		addr := m.GetVirtIOAddr()
-		irq := m.GetVirtIOIRQ()
+		if !hasVirtioMMIO {
+			fmt.Fprintf(os.Stderr, "Error: board has no block attach path for drive %s\n", drive.File)
+			return 1
+		}
+		addr := virtioMMIO.GetVirtIOAddr()
+		irq := virtioMMIO.GetVirtIOIRQ()
 		virtBlock, err := virtio.NewBlockDevice(m.MemMap(), addr, irq, bd)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating VirtIO block device: %v\n", err)
 			return 1
 		}
-		if _, err := m.AddVirtIODevice(virtBlock.Device()); err != nil {
+		if _, err := virtioMMIO.AddVirtIODevice(virtBlock.Device()); err != nil {
 			fmt.Fprintf(os.Stderr, "Error adding VirtIO block device: %v\n", err)
 			return 1
 		}
@@ -288,15 +295,19 @@ func run() int {
 			return 1
 		}
 
-		addr := m.GetVirtIOAddr()
-		irq := m.GetVirtIOIRQ()
+		if !hasVirtioMMIO {
+			fmt.Fprintf(os.Stderr, "Error: board has no VirtIO-MMIO path for 9P share %s\n", fs.Tag)
+			return 1
+		}
+		addr := virtioMMIO.GetVirtIOAddr()
+		irq := virtioMMIO.GetVirtIOIRQ()
 		p9Dev, err := virtio.NewP9Device(m.MemMap(), addr, irq, hostFS, fs.Tag)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating VirtIO 9P device: %v\n", err)
 			return 1
 		}
 		p9Devs = append(p9Devs, p9Dev)
-		if _, err := m.AddVirtIODevice(p9Dev.Device()); err != nil {
+		if _, err := virtioMMIO.AddVirtIODevice(p9Dev.Device()); err != nil {
 			fmt.Fprintf(os.Stderr, "Error adding VirtIO 9P device: %v\n", err)
 			return 1
 		}
@@ -324,19 +335,22 @@ func run() int {
 				fmt.Fprintf(os.Stderr, "Error attaching net: %v\n", err)
 				return 1
 			}
-		} else {
+		} else if hasVirtioMMIO {
 			// Fallback: VirtIO-MMIO (RISC-V today).
-			addr := m.GetVirtIOAddr()
-			irq := m.GetVirtIOIRQ()
+			addr := virtioMMIO.GetVirtIOAddr()
+			irq := virtioMMIO.GetVirtIOIRQ()
 			virtNet, err := virtio.NewNet(m.MemMap(), addr, irq, es)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error creating VirtIO network device: %v\n", err)
 				return 1
 			}
-			if _, err := m.AddVirtIODevice(virtNet.Device()); err != nil {
+			if _, err := virtioMMIO.AddVirtIODevice(virtNet.Device()); err != nil {
 				fmt.Fprintf(os.Stderr, "Error adding VirtIO network device: %v\n", err)
 				return 1
 			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: board has no network attach path\n")
+			return 1
 		}
 		ethDevs = append(ethDevs, es)
 
