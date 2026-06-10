@@ -476,11 +476,18 @@ func (c *CPU) unimplementedAt(format string, args ...any) error {
 	// In the debug-overadvertise profile, don't halt: log the gap once per
 	// opcode and deliver #UD so the guest keeps running, surfacing the full
 	// set of missing opcodes in a single run. (raiseUD panics.)
+	//
+	// Dedup by the FORMATTED message (format with its args applied), not the
+	// raw format string — the dispatch defaults reuse one format for every
+	// missing opcode (e.g. "0F %#02x rex=%#x"), so keying by `format` alone
+	// would record only the first 0F gap and hide the rest. The args carry
+	// the opcode; ctx (RIP/bytes) is deliberately excluded so the same
+	// opcode at different RIPs still dedups.
 	if c.featureProfile == profileDebug {
-		if _, seen := c.seenUnimpl[format]; !seen {
-			c.seenUnimpl[format] = struct{}{}
-			fmt.Fprintf(os.Stderr, "[overadvertise] unimplemented opcode -> #UD: "+format+"%s\n",
-				append(args, ctx)...)
+		key := fmt.Sprintf(format, args...)
+		if _, seen := c.seenUnimpl[key]; !seen {
+			c.seenUnimpl[key] = struct{}{}
+			fmt.Fprintf(os.Stderr, "[overadvertise] unimplemented opcode -> #UD: %s%s\n", key, ctx)
 		}
 		return c.raiseUD()
 	}

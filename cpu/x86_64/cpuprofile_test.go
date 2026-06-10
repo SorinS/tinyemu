@@ -35,6 +35,26 @@ func TestCPUFeatureProfile(t *testing.T) {
 		_ = c.unimplementedAt("test opcode %d", 7)
 	})
 
+	// Debug dedup must key by the formatted opcode, not the raw format
+	// string: the dispatch defaults reuse one format ("0F %#02x rex=%#x")
+	// for every missing 0F opcode, so two distinct opcodes sharing a format
+	// must each be recorded (else only the first gap ever logs).
+	t.Run("debug dedups by formatted opcode", func(t *testing.T) {
+		c := newTestCPU(t)
+		c.featureProfile = profileDebug
+		c.seenUnimpl = make(map[string]struct{})
+		call := func(op int) {
+			defer func() { _ = recover() }() // unimplementedAt panics (raiseUD)
+			_ = c.unimplementedAt("0F %#02x rex=%#x", op, 0)
+		}
+		call(0x05)
+		call(0x07)
+		call(0x05) // repeat must not add a new entry
+		if len(c.seenUnimpl) != 2 {
+			t.Errorf("seenUnimpl has %d entries, want 2 (distinct opcodes sharing a format must each record)", len(c.seenUnimpl))
+		}
+	})
+
 	// CPUID.1 ECX: pragmatic advertises SSE3 (bit 0) + RDRAND (bit 30);
 	// strict drops them but keeps the SSE2 baseline in EDX (bit 26).
 	t.Run("CPUID ECX features by profile", func(t *testing.T) {
