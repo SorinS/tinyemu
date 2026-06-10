@@ -84,7 +84,15 @@ case $NAME in
         # proceed. Use the `upstream` variant below to reproduce the
         # nlplug hang for diagnosis.
         "$ROOT/scripts/extract_alpine64.sh"
-        KERNEL="$ROOT/bin/alpine64/vmlinuz"
+        # Prefer the pre-decompressed ELF (extract_alpine64.sh produces it)
+        # to skip the in-guest bzImage self-decompressor — much faster to the
+        # kernel banner under the interpreter. Falls back to the compressed
+        # vmlinuz if extraction wasn't possible.
+        if [ -r "$ROOT/bin/alpine64/vmlinux" ]; then
+            KERNEL="$ROOT/bin/alpine64/vmlinux"
+        else
+            KERNEL="$ROOT/bin/alpine64/vmlinuz"
+        fi
         INITRD="$ROOT/bin/alpine64/initrd.nonlplug"
         ISO="$ROOT/bin/alpine/alpine-standard-3.23.4-x86_64.iso"
         MEM=512

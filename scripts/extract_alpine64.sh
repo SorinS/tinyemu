@@ -20,6 +20,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ISO="$ROOT/bin/alpine/alpine-standard-3.23.4-x86_64.iso"
 OUT="$ROOT/bin/alpine64"
 KERNEL="$OUT/vmlinuz"
+VMLINUX="$OUT/vmlinux"
 INITRD="$OUT/initrd"
 
 [ -f "$ISO" ] || { echo "missing $ISO" >&2; exit 1; }
@@ -32,6 +33,32 @@ if [ ! -f "$KERNEL" ] || [ ! -f "$INITRD" ] || [ "$ISO" -nt "$KERNEL" ]; then
     cp "$tmp/boot/vmlinuz-lts" "$KERNEL"
     cp "$tmp/boot/initramfs-lts" "$INITRD"
     rm -rf "$tmp"
+fi
+
+# Decompress the bzImage to a raw vmlinux ELF so the direct -kernel boot
+# (run64_iso.sh) skips the in-guest self-decompressor, which is brutally
+# slow under the interpreter (~50s -> a few seconds to the kernel banner
+# for this kernel). The upstream scripts/extract-vmlinux relies on GNU
+# tr/grep tricks that silently no-op on macOS (it re-emits the bzImage),
+# so find the gzip payload portably: every gzip magic (1f 8b 08) on a byte
+# boundary, gunzip from there, and accept the first stream that yields an
+# ELF (7f 45 4c 46). Other compressors aren't handled here — the Alpine
+# lts kernel is gzip.
+if [ ! -f "$VMLINUX" ] || [ "$KERNEL" -nt "$VMLINUX" ]; then
+    echo "[extract_alpine64] decompressing $KERNEL -> $VMLINUX"
+    found=0
+    for hexoff in $(xxd -p "$KERNEL" | tr -d '\n' | grep -bo '1f8b08' | cut -d: -f1); do
+        [ $((hexoff % 2)) -eq 0 ] || continue # only byte-aligned matches
+        tail -c "+$((hexoff / 2 + 1))" "$KERNEL" | gunzip > "$VMLINUX" 2>/dev/null
+        if [ "$(head -c 4 "$VMLINUX" 2>/dev/null | xxd -p)" = "7f454c46" ]; then
+            found=1
+            break
+        fi
+    done
+    if [ "$found" != 1 ]; then
+        rm -f "$VMLINUX"
+        echo "[extract_alpine64] warning: could not decompress a vmlinux ELF; run64_iso.sh will fall back to the compressed vmlinuz" >&2
+    fi
 fi
 
 # build_variant <out-path> <relative-path…> — patches /init in a fresh
