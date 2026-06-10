@@ -12,6 +12,8 @@
 package x86_64
 
 import (
+	"os"
+
 	"github.com/jtolio/tinyemu-go/mem"
 )
 
@@ -218,6 +220,13 @@ type CPU struct {
 	apicEnabled bool
 	msrApicBase uint64
 
+	// featureProfile controls how aggressively CPUID advertises features
+	// and what happens when an unimplemented (but possibly advertised)
+	// opcode is hit. Set via TINYEMU_X64_CPU_PROFILE. See cpuFeatureProfile.
+	featureProfile cpuFeatureProfile
+	// seenUnimpl deduplicates the per-opcode log in the debug profile.
+	seenUnimpl map[string]struct{}
+
 	// mode tracks the current operating mode. It is derived from the
 	// architectural state (CR0.PE, EFLAGS.VM, EFER.LMA, CS.L, CS.D) and
 	// recomputed any time those bits change. Held explicitly so hot
@@ -267,10 +276,45 @@ type CPU struct {
 // produces. The CPU walks through the standard real → protected →
 // long-mode bring-up sequence in response to guest writes to CR0/CR4/
 // EFER, the same way real hardware does.
+// cpuFeatureProfile selects how CPUID advertises features and how
+// unimplemented opcodes are handled (advisor report #2 / #4 — don't
+// silently over-promise a feature whose instructions aren't all there).
+type cpuFeatureProfile int
+
+const (
+	// profilePragmatic (default): advertise the SSE/SSE2/SSE3/MMX/FXSR +
+	// RDRAND set that boots Linux, and halt with ErrNotImplemented on a
+	// missing opcode. This is the historical behaviour.
+	profilePragmatic cpuFeatureProfile = iota
+	// profileStrict: drop the CPUID bits beyond the SSE2 baseline (SSE3,
+	// RDRAND) so guests are less likely to emit instructions past what we
+	// implement. SSE/SSE2 stay because Linux requires them to boot.
+	profileStrict
+	// profileDebug: advertise as pragmatic, but on the first use of each
+	// unimplemented opcode, log it and deliver #UD (continue) instead of
+	// halting — so one run surfaces the full set of gaps a guest hits.
+	profileDebug
+)
+
+func cpuProfileFromEnv() cpuFeatureProfile {
+	switch os.Getenv("TINYEMU_X64_CPU_PROFILE") {
+	case "strict":
+		return profileStrict
+	case "debug":
+		return profileDebug
+	default:
+		return profilePragmatic
+	}
+}
+
 func NewCPU(memMap *mem.PhysMemoryMap) *CPU {
 	c := &CPU{
-		memMap:  memMap,
-		a20Mask: 0xFFFFFFFFFFFFFFFF,
+		memMap:         memMap,
+		a20Mask:        0xFFFFFFFFFFFFFFFF,
+		featureProfile: cpuProfileFromEnv(),
+	}
+	if c.featureProfile == profileDebug {
+		c.seenUnimpl = make(map[string]struct{})
 	}
 	c.Reset()
 	return c

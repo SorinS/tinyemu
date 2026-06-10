@@ -45,9 +45,9 @@ const (
 const ripRingSize = 32
 
 var (
-	ripRing       [ripRingSize]uint64
-	ripRingIdx    int
-	ripRingFull   bool
+	ripRing        [ripRingSize]uint64
+	ripRingIdx     int
+	ripRingFull    bool
 	ripTrapEnabled = os.Getenv("TINYEMU_X64_RIPTRAP") == "1"
 )
 
@@ -473,6 +473,17 @@ func (c *CPU) unimplementedAt(format string, args ...any) error {
 	}
 	ctx := fmt.Sprintf(" [mode=%v RIP=%#x CSbase=%#x CSlim=%#x addrSize=%d pre=% x post=% x]",
 		c.mode, rip, c.segBase[CS], c.segLimit[CS], c.currentAddressSize, pre[:], post[:])
+	// In the debug-overadvertise profile, don't halt: log the gap once per
+	// opcode and deliver #UD so the guest keeps running, surfacing the full
+	// set of missing opcodes in a single run. (raiseUD panics.)
+	if c.featureProfile == profileDebug {
+		if _, seen := c.seenUnimpl[format]; !seen {
+			c.seenUnimpl[format] = struct{}{}
+			fmt.Fprintf(os.Stderr, "[overadvertise] unimplemented opcode -> #UD: "+format+"%s\n",
+				append(args, ctx)...)
+		}
+		return c.raiseUD()
+	}
 	return fmt.Errorf("%w: "+format+"%s",
 		append([]any{ErrNotImplemented}, append(args, ctx)...)...)
 }

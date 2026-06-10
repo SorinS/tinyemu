@@ -531,6 +531,12 @@ func (c *CPU) opCPUID() error {
 		//           working `rdrand` opcode, crng init drops to under
 		//           a second of boot-time and the wait disappears.
 		cx = 1<<0 | 1<<30
+		if c.featureProfile == profileStrict {
+			// Drop SSE3 + RDRAND: keep only the SSE2 baseline (in EDX)
+			// that Linux requires, so guests are less likely to emit
+			// instructions past what we implement.
+			cx = 0
+		}
 		// EDX features (bits): FPU(0), TSC(4), MSR(5), PAE(6), CX8(8),
 		// SEP(11), PGE(13), CMOV(15), PAT(16), PSE36(17),
 		// MMX(23), FXSR(24), SSE(25), SSE2(26).
