@@ -16,3 +16,6 @@ tinyemu-*/
 /tmp/
 bin/
 
+# Local-only advisor review report (not for the repo)
+docs/tinyemu-go-advisor-report.md
+
