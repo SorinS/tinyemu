@@ -58,15 +58,22 @@ func TestLEAVE(t *testing.T) {
 
 // RDTSC reads c.cycles into EDX:EAX.
 func TestRDTSC(t *testing.T) {
+	// RDTSC reports wall-clock nanoseconds since reset (a 1 GHz TSC, the
+	// frequency advertised in CPUID leaf 0x15), NOT the instruction
+	// counter — so setting c.cycles must not surface in the result. See
+	// TestRDTSC_WallClock for the rate/monotonicity check.
 	c := runMiscProg(t,
 		func(c *CPU, _ *mem.PhysMemoryMap) {
-			c.cycles = 0x123456789ABC
+			c.cycles = 0x123456789ABC // sentinel; must NOT appear in RDTSC
 		},
 		[]byte{0x0F, 0x31, 0xF4}, // rdtsc; hlt
 	)
 	combined := uint64(c.GetReg32(EAX)) | (uint64(c.GetReg32(EDX)) << 32)
-	if combined != 0x123456789ABC {
-		t.Errorf("EDX:EAX = %#x, want %#x", combined, uint64(0x123456789ABC))
+	if combined == 0x123456789ABC {
+		t.Errorf("RDTSC returned the cycle counter (%#x); it must be a wall-clock TSC", combined)
+	}
+	if combined == 0 {
+		t.Errorf("RDTSC = 0; want nonzero ns elapsed since reset")
 	}
 }
 

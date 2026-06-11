@@ -506,8 +506,13 @@ func (c *CPU) opCPUID() error {
 	var a, b, cx, d uint32
 	switch leaf {
 	case 0:
-		// Max basic leaf = 1; vendor = "GenuineIntel".
-		a = 1
+		// Max basic leaf = 0x16 (so leaves 0x15/0x16 below are reachable
+		// — guests check cpuid_level before reading them). Leaves between
+		// 1 and 0x16 that we don't model fall to the default case and
+		// return zero, which is the correct "nothing here" answer (no
+		// AVX in leaf 7, no XSAVE in leaf 0xD — gated by CPUID.1 ECX bits
+		// we leave clear, no deterministic-cache data in leaf 4, etc.).
+		a = 0x16
 		b = 0x756E6547  // "Genu"
 		d = 0x49656E69  // "ineI"
 		cx = 0x6C65746E // "ntel"
@@ -564,6 +569,24 @@ func (c *CPU) opCPUID() error {
 		if c.apicEnabled {
 			d |= 1 << 9
 		}
+	case 0x15:
+		// TSC / core-crystal-clock ratio. TSC_freq = ECX * EBX / EAX.
+		// We report a 1 GHz TSC (RDTSC returns ns since reset): crystal
+		// (ECX) = 25 MHz, ratio (EBX/EAX) = 40/1 → 25e6 * 40 = 1e9 Hz.
+		// EAX (denominator) must be non-zero or consumers ignore the leaf.
+		a = 1          // denominator
+		b = 40         // numerator
+		cx = 25_000_000 // nominal core crystal clock, Hz
+		d = 0
+	case 0x16:
+		// Processor frequency: EAX = base MHz, EBX = max MHz, ECX = bus
+		// MHz. 1000 MHz matches the 1 GHz TSC. Used as a fallback by
+		// guests when leaf 0x15's crystal (ECX) is zero, and for the
+		// "CPU speed" line tools print.
+		a = 1000 // base frequency, MHz
+		b = 1000 // max frequency, MHz
+		cx = 100 // bus (reference) frequency, MHz
+		d = 0
 	case 0x80000000:
 		// Max extended leaf = 0x80000008 so the address-size leaf below
 		// is reachable.

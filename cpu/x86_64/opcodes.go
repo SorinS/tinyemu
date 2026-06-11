@@ -6,6 +6,7 @@ import (
 	"math/bits"
 	"math/rand/v2"
 	"os"
+	"time"
 )
 
 // cr3Trace is enabled by TINYEMU_X64_CR3=1 and logs every write to CR3
@@ -1461,9 +1462,17 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int, repPrefix uint8
 		return nil
 
 	case op2 == 0x31:
-		// RDTSC — read time-stamp counter into EDX:EAX. Our cycle
-		// counter is monotonic; bind RDTSC to it.
-		v := c.cycles
+		// RDTSC — read time-stamp counter into EDX:EAX. The TSC is a
+		// fixed-rate wall-clock counter, not an instruction count:
+		// report nanoseconds since reset (a 1 GHz TSC), matching the
+		// frequency advertised in CPUID leaf 0x15. This keeps RDTSC
+		// consistent with the host-clock-backed ACPI PM timer and lets
+		// guests derive real elapsed time. (tscBase is set at reset; if
+		// a caller skipped Reset it is the zero time, so guard it.)
+		v := uint64(0)
+		if !c.tscBase.IsZero() {
+			v = uint64(time.Since(c.tscBase).Nanoseconds())
+		}
 		c.SetReg32(EAX, uint32(v))
 		c.SetReg32(EDX, uint32(v>>32))
 		return nil

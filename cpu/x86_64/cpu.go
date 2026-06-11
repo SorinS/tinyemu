@@ -13,6 +13,7 @@ package x86_64
 
 import (
 	"os"
+	"time"
 
 	"github.com/jtolio/tinyemu-go/mem"
 )
@@ -213,6 +214,16 @@ type CPU struct {
 	msrCstar        uint64 // SYSCALL compatibility-mode RIP target
 	msrSFMask       uint64 // SYSCALL RFLAGS clear mask
 
+	// tscBase anchors RDTSC to the host monotonic clock. The Time-Stamp
+	// Counter is architecturally a fixed-frequency wall-clock counter
+	// (an "invariant TSC"), NOT an instruction count — so we report
+	// nanoseconds since reset, i.e. a 1 GHz TSC. That frequency is
+	// advertised via CPUID leaf 0x15 so guests (Linux's native_calibrate_
+	// tsc, TamaGo's detectCoreFrequency) convert ticks→time correctly
+	// instead of falling back to a bogus default. It stays consistent
+	// with the ACPI PM timer, which is likewise host-clock-backed.
+	tscBase time.Time
+
 	// xcr0 — extended control register 0, read/written via XGETBV/XSETBV
 	// (0F 01 D0/D1). Bit 0 (x87) is always set on real hardware. We do not
 	// advertise OSXSAVE in CPUID (no XSAVE area management), so a guest
@@ -384,6 +395,9 @@ func (c *CPU) Reset() {
 
 	// XCR0 powers up with only the x87 bit set (Intel SDM 13.3).
 	c.xcr0 = 1
+
+	// Anchor the TSC at reset: RDTSC reports ns elapsed since here.
+	c.tscBase = time.Now()
 
 	c.mode = ModeReal16
 
