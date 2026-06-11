@@ -56,10 +56,22 @@
 # script sets TINYEMU_STDVGA=1 by default (std-VGA Bochs DISPI -> OVMF's
 # QemuVideoDxe -> GOP). No emulator code change was needed.
 #
-# Known gap: the appended user payload (hello.bin) doesn't print yet — the
-# kernel reaches "system ready" but the jump-to-payload at 0x1E0000 hasn't
-# surfaced output. Needs the BareMetal kernel source to trace how it locates
-# the payload after the UEFI relocation. The boot itself is solid.
+# Payload output + the LFB gotcha: the appended payload (hello.bin) runs
+# fine and reaches 0x1E0000 — but its output goes wherever the kernel's
+# b_output (API slot 0x100018) points. The BareMetal kernel's lfb_init
+# REROUTES b_output from serial to the graphical framebuffer whenever an
+# LFB is present (drivers/lfb/lfb.asm) — and we must enable one
+# (TINYEMU_STDVGA=1) for Pure64's loader. temu is headless, so payload text
+# written to the framebuffer is invisible. The kernel's own banner uses
+# os_debug_string -> b_output_serial directly, so it always shows on serial.
+#
+# To SEE payload output over serial, build the BareMetal kernel with NO_LFB
+# (it then leaves b_output on the serial port that serial_init set):
+#   cd ~/Dev/Assembler/BareMetal.git/src
+#   nasm -dNO_VGA -dNO_LFB kernel.asm -o ../../tinyemu-go.git/bin/baremetal/kernel.sys
+# Verified end-to-end: with that kernel, hello.bin prints
+# "Hello from a BareMetal payload!" on the serial console after
+# "system ready". (The default kernel.sys here is that NO_LFB build.)
 
 set -e
 
