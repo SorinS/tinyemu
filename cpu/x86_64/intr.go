@@ -521,6 +521,8 @@ func (c *CPU) opCPUID() error {
 		b = 0x00000800
 		// ECX features:
 		//   bit  0  SSE3 — advertised for the rare cases that expect it.
+		//   bit 13  CX16 — CMPXCHG16B is implemented (opGroup9 /1).
+		//   bit 23  POPCNT — implemented (F3 0F B8).
 		//   bit 30  RDRAND — load-bearing for Linux's crng_init. Without
 		//           it Linux's entropy collection falls back to
 		//           interrupt-arrival timing, which on our emulator (no
@@ -530,12 +532,13 @@ func (c *CPU) opCPUID() error {
 		//           "Mounting boot media". With RDRAND advertised + a
 		//           working `rdrand` opcode, crng init drops to under
 		//           a second of boot-time and the wait disappears.
-		cx = 1<<0 | 1<<30
+		cx = 1<<0 | 1<<13 | 1<<23 | 1<<30
 		if c.featureProfile == profileStrict {
 			// Drop SSE3 + RDRAND: keep only the SSE2 baseline (in EDX)
 			// that Linux requires, so guests are less likely to emit
-			// instructions past what we implement.
-			cx = 0
+			// instructions past what we implement. CX16/POPCNT are real
+			// implemented opcodes, so they stay advertised even here.
+			cx = 1<<13 | 1<<23
 		}
 		// EDX features (bits): FPU(0), TSC(4), MSR(5), PAE(6), CX8(8),
 		// SEP(11), PGE(13), CMOV(15), PAT(16), PSE36(17),

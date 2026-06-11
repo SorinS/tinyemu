@@ -213,6 +213,13 @@ type CPU struct {
 	msrCstar        uint64 // SYSCALL compatibility-mode RIP target
 	msrSFMask       uint64 // SYSCALL RFLAGS clear mask
 
+	// xcr0 — extended control register 0, read/written via XGETBV/XSETBV
+	// (0F 01 D0/D1). Bit 0 (x87) is always set on real hardware. We do not
+	// advertise OSXSAVE in CPUID (no XSAVE area management), so a guest
+	// should not normally touch this; we still model it so a probe of
+	// XCR0 returns a sane value instead of faulting.
+	xcr0 uint64
+
 	// apicEnabled advertises a local APIC (CPUID.1 EDX bit 9) and makes
 	// IA32_APIC_BASE report the enabled reset value. Off by default; the
 	// machine turns it on only when a LocalAPIC is wired up. msrApicBase
@@ -374,6 +381,9 @@ func (c *CPU) Reset() {
 	c.msrLstar = 0
 	c.msrCstar = 0
 	c.msrSFMask = 0
+
+	// XCR0 powers up with only the x87 bit set (Intel SDM 13.3).
+	c.xcr0 = 1
 
 	c.mode = ModeReal16
 

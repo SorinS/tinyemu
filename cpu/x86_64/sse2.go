@@ -635,6 +635,71 @@ func (c *CPU) opSSE2(opcode2, rex, repPrefix uint8, has66 bool) (bool, error) {
 		c.xmm[mr.reg] = dst
 		return true, nil
 
+	// 0F 7C / 7D / D0: SSE3 horizontal add/sub and add-subtract.
+	//   66 prefix → packed double (2 lanes); F2 prefix → packed single
+	//   (4 lanes). 0x7C = HADD, 0x7D = HSUB, 0xD0 = ADDSUB. No legacy
+	//   (no-prefix / F3) encodings exist for these three.
+	case 0x7C, 0x7D, 0xD0:
+		if !has66 && repPrefix != 2 {
+			return false, nil
+		}
+		mr := c.parseModRM64(rex)
+		var src [2]uint64
+		if mr.isReg {
+			src = c.xmm[mr.rm]
+		} else {
+			src = c.readMem128(c.segBaseForModRM(mr) + mr.ea)
+		}
+		dst := c.xmm[mr.reg]
+		if has66 {
+			// Packed double — 2 lanes.
+			d0 := ssemath.Float64frombits(dst[0])
+			d1 := ssemath.Float64frombits(dst[1])
+			s0 := ssemath.Float64frombits(src[0])
+			s1 := ssemath.Float64frombits(src[1])
+			var r0, r1 float64
+			switch opcode2 {
+			case 0x7C: // HADDPD
+				r0, r1 = d0+d1, s0+s1
+			case 0x7D: // HSUBPD
+				r0, r1 = d0-d1, s0-s1
+			case 0xD0: // ADDSUBPD — low lane subtracts, high lane adds.
+				r0, r1 = d0-s0, d1+s1
+			}
+			c.xmm[mr.reg][0] = ssemath.Float64bits(r0)
+			c.xmm[mr.reg][1] = ssemath.Float64bits(r1)
+			return true, nil
+		}
+		// Packed single — 4 lanes (F2 prefix).
+		lane := func(v [2]uint64, i int) float32 {
+			if i < 2 {
+				return ssemath.Float32frombits(uint32(v[0] >> (uint(i) * 32)))
+			}
+			return ssemath.Float32frombits(uint32(v[1] >> (uint(i-2) * 32)))
+		}
+		d := [4]float32{lane(dst, 0), lane(dst, 1), lane(dst, 2), lane(dst, 3)}
+		s := [4]float32{lane(src, 0), lane(src, 1), lane(src, 2), lane(src, 3)}
+		var r [4]float32
+		switch opcode2 {
+		case 0x7C: // HADDPS
+			r = [4]float32{d[0] + d[1], d[2] + d[3], s[0] + s[1], s[2] + s[3]}
+		case 0x7D: // HSUBPS
+			r = [4]float32{d[0] - d[1], d[2] - d[3], s[0] - s[1], s[2] - s[3]}
+		case 0xD0: // ADDSUBPS — even lanes subtract, odd lanes add.
+			r = [4]float32{d[0] - s[0], d[1] + s[1], d[2] - s[2], d[3] + s[3]}
+		}
+		var out [2]uint64
+		for i := 0; i < 4; i++ {
+			rb := uint64(ssemath.Float32bits(r[i]))
+			if i < 2 {
+				out[0] |= rb << (uint(i) * 32)
+			} else {
+				out[1] |= rb << (uint(i-2) * 32)
+			}
+		}
+		c.xmm[mr.reg] = out
+		return true, nil
+
 	// 0F DA / DE: PMINUB / PMAXUB — packed unsigned-byte min/max.
 	// MMX (no prefix) or SSE2 (66 prefix) — 8 or 16 bytes per lane.
 	case 0xDA, 0xDE:

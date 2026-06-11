@@ -1563,12 +1563,9 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int, repPrefix uint8
 		return c.opXADD(rex, operandSize)
 
 	case op2 == 0xC7:
-		// Group 9. With mod=11 (register form), reg=6 is RDRAND and
-		// reg=7 is RDSEED. We treat them identically: write a fresh
-		// random value into the destination register, set CF=1 (success),
-		// and clear OF/SF/ZF/AF/PF per SDM. Memory forms (CMPXCHG8B /
-		// CMPXCHG16B) are not implemented — kernels we boot don't use
-		// them on a uniprocessor.
+		// Group 9. Register form (mod=11): reg=6 RDRAND, reg=7 RDSEED.
+		// Memory form (/1): CMPXCHG8B, or CMPXCHG16B under REX.W. See
+		// opGroup9.
 		return c.opGroup9(rex, operandSize)
 
 	case op2 == 0xAE:
@@ -1671,6 +1668,22 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int, repPrefix uint8
 		// SHRD r/m, r, CL.
 		return c.opSHxD(rex, operandSize, false, true)
 
+	case op2 == 0xB8:
+		// POPCNT r, r/m — requires the F3 prefix (advertised via CPUID.1
+		// ECX bit 23). repPrefix is the normalised rep code (1 = F3,
+		// 2 = F2). Without F3 this encoding is reserved → #UD.
+		if repPrefix != 1 {
+			return c.raiseUD()
+		}
+		m := c.parseModRM64(rex)
+		src := c.readOperand(m, operandSize) & mask(operandSize)
+		c.writeReg(m.reg, uint64(bits.OnesCount64(src)), operandSize)
+		// ZF = (src == 0); CF/OF/SF/AF/PF cleared (Intel SDM).
+		c.rflags &^= RFLAGS_CF | RFLAGS_OF | RFLAGS_SF | RFLAGS_AF | RFLAGS_PF | RFLAGS_ZF
+		if src == 0 {
+			c.rflags |= RFLAGS_ZF
+		}
+		return nil
 	case op2 == 0xBC:
 		// BSF r, r/m — bit scan forward (find lowest set bit). With an
 		// F3 prefix on CPUs that report BMI1, the encoding becomes
@@ -1857,10 +1870,40 @@ func (c *CPU) opGroup15(rex uint8) error {
 func (c *CPU) opGroup9(rex, operandSize uint8) error {
 	m := c.parseModRM64(rex)
 	if !m.isReg {
-		// Memory form — CMPXCHG8B (operandSize=4) or CMPXCHG16B
-		// (operandSize=8) at reg=1, and various MSR ops at /6,/7. Not
-		// reached by the kernels we boot; surface clearly if it is.
-		return c.unimplementedAt("Group 9 /%d memory form", m.reg)
+		// /1 memory form — CMPXCHG8B (operandSize 4) / CMPXCHG16B
+		// (REX.W → operandSize 8). LOCK is a no-op here: the emulator is
+		// single-threaded, so the read-compare-write is already atomic.
+		if m.reg != 1 {
+			return c.unimplementedAt("Group 9 /%d memory form", m.reg)
+		}
+		ea := c.segBaseForModRM(m) + m.ea
+		if operandSize == 8 {
+			// CMPXCHG16B: compare RDX:RAX with the 128-bit [ea].
+			lo := c.readMem64(ea)
+			hi := c.readMem64(ea + 8)
+			if lo == c.reg64[RAX] && hi == c.reg64[RDX] {
+				c.writeMem64(ea, c.reg64[RBX])
+				c.writeMem64(ea+8, c.reg64[RCX])
+				c.rflags |= RFLAGS_ZF
+			} else {
+				c.reg64[RAX] = lo
+				c.reg64[RDX] = hi
+				c.rflags &^= RFLAGS_ZF
+			}
+			return nil
+		}
+		// CMPXCHG8B: compare EDX:EAX with the 64-bit [ea].
+		val := c.readMem64(ea)
+		expected := uint64(c.GetReg32(RDX))<<32 | uint64(c.GetReg32(RAX))
+		if val == expected {
+			c.writeMem64(ea, uint64(c.GetReg32(RCX))<<32|uint64(c.GetReg32(RBX)))
+			c.rflags |= RFLAGS_ZF
+		} else {
+			c.SetReg32(RAX, uint32(val))      // 32-bit write zero-extends RAX
+			c.SetReg32(RDX, uint32(val>>32))  //   "          "          RDX
+			c.rflags &^= RFLAGS_ZF
+		}
+		return nil
 	}
 	switch m.reg {
 	case 6, 7: // RDRAND, RDSEED
@@ -1997,6 +2040,33 @@ func (c *CPU) opGroup7(rex uint8) error {
 		// Many mod=11 forms exist (XGETBV at reg=2,rm=0; SWAPGS at
 		// reg=7,rm=0 — that one is M6); not yet routed.
 		switch {
+		case m.reg == 2 && m.rm == 0:
+			// XGETBV — read XCR[ECX] into EDX:EAX (0F 01 D0). Only XCR0
+			// (ECX==0) is defined; any other index is #GP on real HW.
+			if c.GetReg32(ECX) != 0 {
+				return c.raiseGP(0)
+			}
+			c.SetReg64(RAX, c.xcr0&0xFFFFFFFF)
+			c.SetReg64(RDX, c.xcr0>>32)
+			return nil
+		case m.reg == 2 && m.rm == 1:
+			// XSETBV — write EDX:EAX to XCR[ECX] (0F 01 D1). Privileged
+			// (#GP if CPL!=0). Only XCR0 is defined; bit 0 (x87) must
+			// stay set, and we don't support clearing it or setting any
+			// state we can't manage.
+			if c.cpl != 0 {
+				return c.raiseGP(0)
+			}
+			if c.GetReg32(ECX) != 0 {
+				return c.raiseGP(0)
+			}
+			v := uint64(c.GetReg32(EAX)) | uint64(c.GetReg32(EDX))<<32
+			if v&1 == 0 {
+				// Clearing the x87 bit is always invalid.
+				return c.raiseGP(0)
+			}
+			c.xcr0 = v
+			return nil
 		case m.reg == 7 && m.rm == 0:
 			// SWAPGS — atomic swap of GS.base and KernelGSBase. Lives
 			// at 0x0F 0x01 0xF8.
@@ -3437,6 +3507,13 @@ func (c *CPU) opGroup1(rex, operandSize uint8, imm8 bool) error {
 // returns (it panics).
 func (c *CPU) raiseUD() error {
 	panic(exceptionPanic{Vec: 6})
+}
+
+// raiseGP raises #GP (vector 13) with the given error code. Like raiseUD
+// it is delivered as a fault via exceptionPanic so Step's recover rewinds
+// RIP to the faulting instruction. Never returns.
+func (c *CPU) raiseGP(code uint32) error {
+	panic(exceptionPanic{Vec: 13, HasErr: true, ErrorCode: code})
 }
 
 // opGroup4 implements 0xFE — the byte-form INC/DEC family (/0 and /1
