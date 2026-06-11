@@ -1,0 +1,141 @@
+#!/bin/sh
+# Boot Return Infinity's BareMetal kernel via Pure64's *UEFI* loader, under
+# OVMF, on the cpu/x86_64 long-mode emulator.
+#
+# This is the UEFI counterpart of run_baremetal.sh (which uses Pure64's BIOS
+# MBR under SeaBIOS). The BIOS path caps the user payload at 8 KiB because
+# the MBR loads a fixed 32 KiB via INT 13h. The UEFI path has no such cap:
+# OVMF reads BOOTX64.EFI (any size) as a file from the FAT EFI System
+# Partition, so the payload is bounded only by the loader's 60 KiB embedded
+# region (Pure64 + kernel + payload), not by a fixed disk read.
+#
+# Usage:
+#   ./run_baremetal_uefi.sh                              # boot with hello.bin payload
+#   ./run_baremetal_uefi.sh "" bin/baremetal/your.bin    # custom payload
+#   TINYEMU_BIOS_DEBUG=stderr ./run_baremetal_uefi.sh    # watch the OVMF log
+#
+# Boot chain (see Pure64 docs/Boot Process.md):
+#   temu loads OVMF as -bios; OVMF runs SEC->PEI->DXE->BDS, scans the FAT
+#   volume for \EFI\BOOT\BOOTX64.EFI and launches it. BOOTX64.EFI is
+#   Pure64's hand-rolled PE32+ UEFI loader (uefi.sys) with a payload blob
+#   spliced in at file offset 0x1000. The loader sets the video mode, copies
+#   32 KiB from that blob to 0x8000, gets the UEFI memory map, and jumps to
+#   0x8000 (the second-stage pure64-uefi.sys). Pure64 sets up the 64-bit
+#   environment, then relocates the <=26 KiB after itself (the kernel +
+#   payload) to 0x100000 and jumps there.
+#
+# Disk/blob layout (matches Pure64's `dd ... bs=4096 seek=1` recipe):
+#   BOOTX64.EFI = uefi.sys, with [pure64-uefi.sys ++ kernel.sys ++ payload]
+#   written at offset 0x1000 (the loader's PAYLOAD label; 60 KiB region).
+#
+# Inputs (in bin/baremetal/ — copy the first two from a built Pure64 tree,
+# e.g. ~/Dev/Assembler/Pure64.git/bin/, via PURE64=... below):
+#   uefi.sys          Pure64 UEFI loader (the PE32+ BOOTX64.EFI body)
+#   pure64-uefi.sys   Pure64 second-stage loader (UEFI build)
+#   kernel.sys        BareMetal kernel (<=20 KiB)
+#   <payload.bin>     flat binary linked at ORG 0x1E0000 (default hello.bin)
+#
+# Env knobs:
+#   MEM=1024                    guest RAM in MiB (default 256)
+#   OVMF=bin/ovmf/OVMF.fd       firmware (release = faster/quiet; DEBUG default)
+#   PURE64=~/Dev/Assembler/Pure64.git   re-copy uefi.sys/pure64-uefi.sys from here
+#   TINYEMU_BIOS_DEBUG=stderr   stream the OVMF SEC/PEI/DXE log
+#
+# STATUS (2026-06-11): the temu side is proven end-to-end — OVMF reads the
+# FAT ESP, validates Pure64's hand-rolled PE32+, loads it at IMAGE_BASE
+# 0x400000, transfers control, and installs the 4 fw_cfg ACPI tables. The
+# remaining blocker is firmware-side, NOT a temu gap: Pure64's loader scans
+# the UEFI configuration table for the ACPI *1.0* GUID
+# (eb9d2d30-2d88-11d3-9a16-0090273fc14d) and bails to its `error` path
+# (prints "UEFI Error" = msg_uefi+msg_error) when absent. The retrage
+# edk2-nightly OVMF we ship installs the QEMU tables under the ACPI 2.0
+# GUID only, so the 1.0 entry Pure64 wants isn't published. Likely fix:
+# use a stock QEMU/distro OVMF (which Pure64 is tested against and which
+# exposes the 1.0 RSDP), or build OVMF so AcpiTableDxe installs the 1.0
+# config table. No emulator change is required.
+
+set -e
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+OS=$(uname -s | tr A-Z a-z)
+ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+TEMU="$ROOT/bin/temu.${OS}-${ARCH}.bin"
+
+MEM=${MEM:-256}
+OVMF="${OVMF:-$ROOT/bin/ovmf/OVMF_DEBUG.fd}"
+DIR="$ROOT/bin/baremetal"
+PAYLOAD=${2:-$DIR/hello.bin}
+
+UEFI_LOADER="$DIR/uefi.sys"
+PURE64_SYS="$DIR/pure64-uefi.sys"
+KERNEL="$DIR/kernel.sys"
+EFI="$DIR/BOOTX64.EFI"
+ESP="$DIR/esp-uefi.img"
+
+# Optionally refresh the Pure64 loader artifacts from a built Pure64 tree
+# (PURE64=path to the Pure64 repo whose bin/ holds the freshly-built .sys).
+if [ -n "$PURE64" ] && [ -d "$PURE64/bin" ]; then
+    cp "$PURE64/bin/uefi.sys" "$UEFI_LOADER"
+    cp "$PURE64/bin/pure64-uefi.sys" "$PURE64_SYS"
+fi
+
+[ -x "$TEMU" ] || { echo "missing emulator binary $TEMU (run: go build -o $TEMU ./cmd/temu)" >&2; exit 1; }
+[ -r "$OVMF" ] || { echo "missing OVMF firmware $OVMF (see bin/ovmf/get_omvf.sh)" >&2; exit 1; }
+for f in "$UEFI_LOADER" "$PURE64_SYS" "$KERNEL"; do
+    [ -r "$f" ] || { echo "missing $f -- copy Pure64 UEFI artifacts into $DIR/ (see header)" >&2; exit 1; }
+done
+[ -r "$PAYLOAD" ] || { echo "missing payload $PAYLOAD" >&2; exit 1; }
+
+# --- Assemble BOOTX64.EFI: splice [pure64-uefi.sys ++ kernel.sys ++ payload]
+#     into a copy of uefi.sys at file offset 0x1000 (the PAYLOAD label). ---
+PAYLOAD_OFF=4096   # 0x1000
+blob="$DIR/.uefi-blob"
+cat "$PURE64_SYS" "$KERNEL" "$PAYLOAD" > "$blob"
+blobsz=$(wc -c < "$blob")
+# The loader copies 32 KiB from PAYLOAD to 0x8000 and Pure64 relocates the
+# <=26 KiB after itself; the embedded region is 60 KiB. Warn past that.
+if [ "$blobsz" -gt 61440 ]; then
+    echo "[run_baremetal_uefi] WARNING: blob is ${blobsz} B > 60 KiB embedded region; will be truncated" >&2
+fi
+cp "$UEFI_LOADER" "$EFI"
+dd if="$blob" of="$EFI" bs=1 seek=$PAYLOAD_OFF conv=notrunc status=none
+rm -f "$blob"
+echo "[run_baremetal_uefi] BOOTX64.EFI = uefi.sys + ${blobsz} B blob @ 0x1000 (pure64+kernel+$(basename "$PAYLOAD"))"
+
+# --- Build a FAT EFI System Partition holding \EFI\BOOT\BOOTX64.EFI. ---
+build_esp_darwin() {
+    tmp="$DIR/.esp-build"
+    rm -f "$tmp.dmg" "$ESP"
+    hdiutil create -megabytes 64 -fs MS-DOS -volname BAREMETAL -layout NONE -o "$tmp" >/dev/null
+    mnt=$(mktemp -d)
+    hdiutil attach "$tmp.dmg" -mountpoint "$mnt" >/dev/null
+    mkdir -p "$mnt/EFI/BOOT"
+    COPYFILE_DISABLE=1 cp "$EFI" "$mnt/EFI/BOOT/BOOTX64.EFI"
+    hdiutil detach "$mnt" >/dev/null
+    rmdir "$mnt" 2>/dev/null || true
+    mv "$tmp.dmg" "$ESP"
+}
+
+build_esp_mtools() {
+    command -v mformat >/dev/null 2>&1 || {
+        echo "need 'mtools' (mformat/mcopy) to build the ESP on $OS" >&2; exit 1; }
+    rm -f "$ESP"
+    dd if=/dev/zero of="$ESP" bs=1048576 count=64 status=none
+    mformat -i "$ESP" -F -v BAREMETAL ::
+    mmd -i "$ESP" ::/EFI ::/EFI/BOOT
+    mcopy -i "$ESP" "$EFI" ::/EFI/BOOT/BOOTX64.EFI
+}
+
+echo "[run_baremetal_uefi] building ESP image $ESP"
+case $OS in
+    darwin) build_esp_darwin ;;
+    *)      build_esp_mtools ;;
+esac
+
+echo "Starting BareMetal (UEFI/Pure64) under OVMF (x86_64, ${MEM} MiB) at: $(date)"
+echo "  (exit temu with Ctrl-A x)"
+
+# -apic: OVMF + Pure64 both need a software-enabled local APIC (Pure64
+#        brings up SMP via the LAPIC). It is flag-gated in temu so legacy
+#        PIC-only Linux boots are unaffected (machine/pc/lapic.go).
+exec "$TEMU" -machine x86_64 -m "$MEM" -apic -bios "$OVMF" -drive "$ESP"
