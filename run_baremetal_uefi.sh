@@ -41,18 +41,25 @@
 #   PURE64=~/Dev/Assembler/Pure64.git   re-copy uefi.sys/pure64-uefi.sys from here
 #   TINYEMU_BIOS_DEBUG=stderr   stream the OVMF SEC/PEI/DXE log
 #
-# STATUS (2026-06-11): the temu side is proven end-to-end — OVMF reads the
-# FAT ESP, validates Pure64's hand-rolled PE32+, loads it at IMAGE_BASE
-# 0x400000, transfers control, and installs the 4 fw_cfg ACPI tables. The
-# remaining blocker is firmware-side, NOT a temu gap: Pure64's loader scans
-# the UEFI configuration table for the ACPI *1.0* GUID
-# (eb9d2d30-2d88-11d3-9a16-0090273fc14d) and bails to its `error` path
-# (prints "UEFI Error" = msg_uefi+msg_error) when absent. The retrage
-# edk2-nightly OVMF we ship installs the QEMU tables under the ACPI 2.0
-# GUID only, so the 1.0 entry Pure64 wants isn't published. Likely fix:
-# use a stock QEMU/distro OVMF (which Pure64 is tested against and which
-# exposes the 1.0 RSDP), or build OVMF so AcpiTableDxe installs the 1.0
-# config table. No emulator change is required.
+# STATUS (2026-06-11): WORKS — boots to the BareMetal kernel's
+# "[ BareMetal ] ... system ready" banner. The whole chain is exercised on
+# temu: OVMF reads the FAT ESP, validates Pure64's hand-rolled PE32+, loads
+# it at IMAGE_BASE 0x400000, transfers control, installs the 4 fw_cfg ACPI
+# tables, and provides a GOP; Pure64's loader prints "UEFI OK", relocates
+# the kernel to 0x100000, and runs it.
+#
+# The one non-obvious requirement: Pure64's loader REQUIRES a Graphics
+# Output Protocol (it does LocateProtocol(GOP) and bails to its `error`
+# path — printing "UEFI Error" = msg_uefi+msg_error — if absent; it also
+# requires ACPI, which temu's fw_cfg tables already provide). temu only
+# exposes a GOP-capable display when a video device is enabled, so this
+# script sets TINYEMU_STDVGA=1 by default (std-VGA Bochs DISPI -> OVMF's
+# QemuVideoDxe -> GOP). No emulator code change was needed.
+#
+# Known gap: the appended user payload (hello.bin) doesn't print yet — the
+# kernel reaches "system ready" but the jump-to-payload at 0x1E0000 hasn't
+# surfaced output. Needs the BareMetal kernel source to trace how it locates
+# the payload after the UEFI relocation. The boot itself is solid.
 
 set -e
 
@@ -134,6 +141,12 @@ esac
 
 echo "Starting BareMetal (UEFI/Pure64) under OVMF (x86_64, ${MEM} MiB) at: $(date)"
 echo "  (exit temu with Ctrl-A x)"
+
+# Pure64's UEFI loader requires a Graphics Output Protocol. temu only
+# publishes one when a video device is enabled, so default the std-VGA
+# Bochs DISPI device on (OVMF's QemuVideoDxe binds it and installs the
+# GOP). Override with TINYEMU_STDVGA=0 to reproduce the no-GOP failure.
+export TINYEMU_STDVGA="${TINYEMU_STDVGA:-1}"
 
 # -apic: OVMF + Pure64 both need a software-enabled local APIC (Pure64
 #        brings up SMP via the LAPIC). It is flag-gated in temu so legacy
