@@ -1390,6 +1390,11 @@ func (c *CPU) executePriv(insn uint32) error {
 			c.SetPendingException(CauseIllegalInsn, uint64(insn))
 			return c.handleException()
 		}
+		// mstatus.TSR traps SRET executed in S-mode (M-mode is exempt).
+		if c.Priv == PrivSupervisor && c.Mstatus&MstatusTSR != 0 {
+			c.SetPendingException(CauseIllegalInsn, uint64(insn))
+			return c.handleException()
+		}
 		return c.executeSRET()
 
 	case PrivMRET:
@@ -1416,6 +1421,11 @@ func (c *CPU) executePriv(insn uint32) error {
 			c.SetPendingException(CauseIllegalInsn, uint64(insn))
 			return c.handleException()
 		}
+		// mstatus.TW traps WFI executed below M-mode.
+		if c.Priv < PrivMachine && c.Mstatus&MstatusTW != 0 {
+			c.SetPendingException(CauseIllegalInsn, uint64(insn))
+			return c.handleException()
+		}
 		// Wait for interrupt
 		if c.Mip&c.Mie == 0 {
 			c.PowerDownFlag = true
@@ -1433,6 +1443,11 @@ func (c *CPU) executePriv(insn uint32) error {
 				return c.handleException()
 			}
 			if c.Priv == PrivUser {
+				c.SetPendingException(CauseIllegalInsn, uint64(insn))
+				return c.handleException()
+			}
+			// mstatus.TVM traps SFENCE.VMA executed in S-mode.
+			if c.Priv == PrivSupervisor && c.Mstatus&MstatusTVM != 0 {
 				c.SetPendingException(CauseIllegalInsn, uint64(insn))
 				return c.handleException()
 			}
@@ -1513,6 +1528,15 @@ func (c *CPU) executeMRET() error {
 	return nil
 }
 
+// amoMisalignCause returns the trap cause for a misaligned atomic: LR faults
+// as a load, SC and the arithmetic AMOs fault as stores.
+func amoMisalignCause(funct5 uint32) int {
+	if funct5 == Funct5LR {
+		return CauseMisalignedLoad
+	}
+	return CauseMisalignedStore
+}
+
 // executeAMO executes atomic memory operations
 // Reference: tinyemu-2019-12-21/riscv_cpu_template.h:1376-1476
 func (c *CPU) executeAMO(insn uint32, funct3 uint32, rd, rs1, rs2 int) error {
@@ -1521,12 +1545,22 @@ func (c *CPU) executeAMO(insn uint32, funct3 uint32, rd, rs1, rs2 int) error {
 
 	switch funct3 {
 	case 2: // 32-bit AMO
+		// Natural-alignment check (.W = 4 bytes). LR faults as a load; SC
+		// and the arithmetic AMOs fault as stores.
+		if addr&3 != 0 {
+			c.SetPendingException(amoMisalignCause(funct5), addr)
+			return c.handleException()
+		}
 		return c.executeAMO32(insn, funct5, rd, addr, rs2)
 	case 3: // 64-bit AMO
 		// 64-bit AMO is RV64/RV128 only
 		// Reference: tinyemu-2019-12-21/riscv_cpu_template.h (XLEN >= 64)
 		if c.CurXLEN == XLEN32 {
 			c.SetPendingException(CauseIllegalInsn, uint64(insn))
+			return c.handleException()
+		}
+		if addr&7 != 0 { // natural-alignment check (.D = 8 bytes)
+			c.SetPendingException(amoMisalignCause(funct5), addr)
 			return c.handleException()
 		}
 		return c.executeAMO64(insn, funct5, rd, addr, rs2)

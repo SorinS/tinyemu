@@ -2936,3 +2936,70 @@ func TestInterruptCauseBitXLEN(t *testing.T) {
 		})
 	}
 }
+
+// TestAMOMisaligned: AMO/LR/SC to a misaligned address raise a misaligned
+// trap — store-misaligned for AMO/SC, load-misaligned for LR (2.3.1).
+func TestAMOMisaligned(t *testing.T) {
+	cases := []struct {
+		name      string
+		insn      uint32
+		addr      uint64
+		wantCause uint64
+	}{
+		{"AMOADD.W misaligned", 0x0021A0AF, 0x80000001, uint64(CauseMisalignedStore)},
+		{"LR.W misaligned", 0x1001A0AF, 0x80000002, uint64(CauseMisalignedLoad)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cpu := testCPU(t)
+			cpu.PC = 0x80000000
+			cpu.SetReg(3, tc.addr) // rs1 = x3 holds the address
+			writeInsn(cpu, cpu.PC, tc.insn)
+
+			cpu.Step()
+
+			if cpu.PendingException >= 0 {
+				t.Errorf("misaligned AMO did not trap (pending = %d)", cpu.PendingException)
+			}
+			if cpu.Mcause != tc.wantCause {
+				t.Errorf("Mcause = %d, want %d", cpu.Mcause, tc.wantCause)
+			}
+			if cpu.Mtval != tc.addr {
+				t.Errorf("Mtval = %#x, want faulting addr %#x", cpu.Mtval, tc.addr)
+			}
+		})
+	}
+}
+
+// TestWFITrapsOnTW: WFI below M-mode with mstatus.TW=1 is illegal (2.3.4).
+func TestWFITrapsOnTW(t *testing.T) {
+	cpu := testCPU(t)
+	cpu.PC = 0x80000000
+	cpu.Priv = PrivSupervisor
+	cpu.Mstatus |= MstatusTW
+	writeInsn(cpu, cpu.PC, 0x10500073) // WFI
+	cpu.Step()
+	expectIllegalTrap(t, cpu, 0x80000000, "WFI with mstatus.TW=1 in S-mode")
+}
+
+// TestSFenceVMATrapsOnTVM: SFENCE.VMA in S-mode with mstatus.TVM=1 is illegal (2.3.5).
+func TestSFenceVMATrapsOnTVM(t *testing.T) {
+	cpu := testCPU(t)
+	cpu.PC = 0x80000000
+	cpu.Priv = PrivSupervisor
+	cpu.Mstatus |= MstatusTVM
+	writeInsn(cpu, cpu.PC, 0x12000073) // SFENCE.VMA x0, x0
+	cpu.Step()
+	expectIllegalTrap(t, cpu, 0x80000000, "SFENCE.VMA with mstatus.TVM=1 in S-mode")
+}
+
+// TestSRETTrapsOnTSR: SRET in S-mode with mstatus.TSR=1 is illegal (2.3.6).
+func TestSRETTrapsOnTSR(t *testing.T) {
+	cpu := testCPU(t)
+	cpu.PC = 0x80000000
+	cpu.Priv = PrivSupervisor
+	cpu.Mstatus |= MstatusTSR
+	writeInsn(cpu, cpu.PC, 0x10200073) // SRET
+	cpu.Step()
+	expectIllegalTrap(t, cpu, 0x80000000, "SRET with mstatus.TSR=1 in S-mode")
+}
