@@ -2138,11 +2138,16 @@ func (c *CPU) opGroup7(rex uint8) error {
 		return nil
 	case 6: // LMSW — set low 4 bits of CR0 (PE/MP/EM/TS). Cannot clear PE.
 		v := uint16(c.readOperand(m, 2))
-		c.cr[0] = (c.cr[0] &^ 0xF) | uint64(v&0xF)
+		// LMSW may set PE but never clear it: there is no escape from
+		// protected mode via LMSW. Preserve a PE that is already set.
+		pe := c.cr[0] & uint64(CR0_PE)
+		c.cr[0] = (c.cr[0] &^ 0xF) | uint64(v&0xF) | pe
 		c.recomputeMode()
 		return nil
-	case 7: // INVLPG — invalidate the TLB entry covering m.ea.
-		c.tlb.invalidatePage(m.ea)
+	case 7: // INVLPG — invalidate the TLB entry covering the operand's
+		// linear address (segment base + effective address), not the
+		// bare EA: with a non-zero FS/GS base they differ.
+		c.tlb.invalidatePage(c.segBaseForModRM(m) + m.ea)
 		c.invalidateFetchBuffer()
 		return nil
 	}
@@ -2920,7 +2925,7 @@ func (c *CPU) opALUImmAL(op aluOp) error {
 
 // opGroup3 dispatches 0xF7 — Group 3 with non-byte operand size.
 // Sub-ops: 0=TEST r/m,imm, 1=reserved, 2=NOT, 3=NEG, 4=MUL, 5=IMUL,
-// 6=DIV, 7=IDIV. The 0xF6 byte-operand variant is not yet wired.
+// 6=DIV, 7=IDIV. Both the 0xF6 (byte) and 0xF7 (word+) forms route here.
 func (c *CPU) opGroup3(rex, operandSize uint8) error {
 	// Sub-op /0 and /1 (TEST) have a trailing immediate whose size
 	// matches the operand width (capped at 32 for 64-bit operands).
@@ -2979,6 +2984,18 @@ func (c *CPU) opGroup3(rex, operandSize uint8) error {
 func (c *CPU) opMUL(src uint64, operandSize uint8) error {
 	a := c.readReg(RAX, operandSize) & mask(operandSize)
 	src &= mask(operandSize)
+	if operandSize == 1 {
+		// 8-bit MUL is special: the 16-bit product fills AX (AH:AL),
+		// not DL:AL like the wider forms. CF/OF set when AH is nonzero.
+		prod := (a * src) & 0xFFFF
+		c.writeReg(RAX, prod, 2)
+		hi := prod >> 8
+		var fl flagBits
+		fl.cf = hi != 0
+		fl.of = hi != 0
+		c.setArithFlags(fl)
+		return nil
+	}
 	var hi, lo uint64
 	switch operandSize {
 	case 8:
@@ -2988,8 +3005,7 @@ func (c *CPU) opMUL(src uint64, operandSize uint8) error {
 		hi = prod >> (uint(operandSize) * 8)
 		lo = prod & mask(operandSize)
 	}
-	// Write back. For 8-bit MUL the entire product lands in AX (no
-	// RDX); we don't model the 8-bit form yet so 16/32/64 only.
+	// Write back: low half to rAX, high half to rDX (16/32/64 forms).
 	c.writeReg(RAX, lo, operandSize)
 	c.writeReg(RDX, hi, operandSize)
 	var fl flagBits
@@ -3007,6 +3023,18 @@ func (c *CPU) opMUL(src uint64, operandSize uint8) error {
 func (c *CPU) opIMUL1Op(src uint64, operandSize uint8) error {
 	a := c.readReg(RAX, operandSize) & mask(operandSize)
 	src &= mask(operandSize)
+	if operandSize == 1 {
+		// 8-bit IMUL is special: the 16-bit signed product fills AX
+		// (AH:AL), not DL:AL. CF/OF set when AH is not the sign
+		// extension of AL (the product doesn't fit in a signed byte).
+		p := int16(int8(uint8(a))) * int16(int8(uint8(src)))
+		c.writeReg(RAX, uint64(uint16(p)), 2)
+		var fl flagBits
+		fl.cf = int16(int8(uint8(p))) != p
+		fl.of = fl.cf
+		c.setArithFlags(fl)
+		return nil
+	}
 	// Sign-extend both to 64 bits, multiply, then split.
 	as := signExtend(a, operandSize)
 	ss := signExtend(src, operandSize)
