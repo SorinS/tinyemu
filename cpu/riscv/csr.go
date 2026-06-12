@@ -97,6 +97,19 @@ func (c *CPU) ReadCSR(csr uint32) (uint64, error) {
 		// This matches CLINT mtime calculation for consistency
 		// Note: TinyEMU doesn't implement TIME CSR (guest reads CLINT mtime directly)
 		// but for compatibility we provide it here
+		// counteren gates time just like cycle/instret (TM = bit 1).
+		if c.Priv < PrivMachine {
+			var counteren uint32
+			if c.Priv < PrivSupervisor {
+				counteren = c.Scounteren
+			} else {
+				counteren = c.Mcounteren
+			}
+			bit := csr & 0x1f
+			if (counteren>>bit)&1 == 0 {
+				return 0, ErrCSRPrivilege
+			}
+		}
 		var timeVal uint64
 		if c.TimeSource != nil {
 			timeVal = c.TimeSource.GetRTCTime()
@@ -374,9 +387,21 @@ func (c *CPU) writeMstatus(val uint64) {
 // writeSatp writes the SATP register with TLB flush
 // Rejects unsupported address translation modes (Sv57, Sv64)
 func (c *CPU) writeSatp(val uint64) {
-	// Check if the requested mode is supported
-	// Extract mode from bits 63:60
-	requestedMode := int(val >> 60)
+	// On RV32 satp is 32-bit; mask off any sign-extension carried in from
+	// the 32-bit source register so the mode bit (31), ASID and PPN are
+	// interpreted correctly (and GetSatpMode's >>31 isn't polluted).
+	if c.MaxXLEN == XLEN32 {
+		val &= 0xFFFFFFFF
+	}
+
+	// Check if the requested mode is supported. The mode field position
+	// depends on XLEN: bits 63:60 on RV64, a single bit at 31 on RV32.
+	var requestedMode int
+	if c.MaxXLEN == XLEN64 {
+		requestedMode = int(val >> 60)
+	} else {
+		requestedMode = int((val >> 31) & 1)
+	}
 	if c.MaxXLEN == XLEN64 {
 		// RV64: only support Bare, Sv39, Sv48
 		switch requestedMode {

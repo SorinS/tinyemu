@@ -1393,3 +1393,45 @@ func TestSatpPPNChangeFlushesTLB(t *testing.T) {
 		t.Errorf("satp PPN change did not flush the TLB (TLBRead[0].VAddr = %#x, want invalid)", cpu.TLBRead[0].VAddr)
 	}
 }
+
+// TestTimeCSRRespectsCounteren: reading the time CSR below M-mode requires
+// the TM bit in the relevant counteren, like cycle/instret (2.3.2).
+func TestTimeCSRRespectsCounteren(t *testing.T) {
+	cpu := csrTestCPU(t)
+	cpu.Priv = PrivSupervisor
+
+	// mcounteren.TM (bit 1) clear -> S-mode time read is denied.
+	cpu.Mcounteren = 0
+	if _, err := cpu.ReadCSR(CSRTime); err != ErrCSRPrivilege {
+		t.Errorf("time read without mcounteren.TM: err = %v, want ErrCSRPrivilege", err)
+	}
+
+	// TM set -> allowed.
+	cpu.Mcounteren = 1 << 1
+	if _, err := cpu.ReadCSR(CSRTime); err != nil {
+		t.Errorf("time read with mcounteren.TM set: err = %v, want nil", err)
+	}
+}
+
+// TestWriteSatpRV32MasksAndExtractsMode: on RV32, satp must be masked to 32
+// bits and its mode read from bit 31, so an Sv32 value arriving sign-extended
+// from a 32-bit register is accepted (2.3.7).
+func TestWriteSatpRV32MasksAndExtractsMode(t *testing.T) {
+	m := mem.NewPhysMemoryMap()
+	t.Cleanup(m.Close)
+	if _, err := m.RegisterRAM(0x80000000, 1024*1024, 0); err != nil {
+		t.Fatalf("RegisterRAM: %v", err)
+	}
+	cpu := NewCPU(m, XLEN32)
+
+	// Sv32 satp (MODE bit 31 set) as it would arrive sign-extended from a
+	// 32-bit source register.
+	cpu.writeSatp(0xFFFFFFFF80000000)
+
+	if cpu.Satp != 0x80000000 {
+		t.Errorf("Satp = %#x, want 0x80000000 (masked to 32 bits)", cpu.Satp)
+	}
+	if cpu.GetSatpMode() != SatpModeSv32 {
+		t.Errorf("GetSatpMode = %d, want Sv32 (%d)", cpu.GetSatpMode(), SatpModeSv32)
+	}
+}
