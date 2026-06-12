@@ -14,21 +14,42 @@ const (
 	sockPollFailed
 )
 
-// pollSocketOOB reports whether fd looks like it has genuine
-// out-of-band (urgent) data ready to read. We narrow the check to
-// POLLPRI WITHOUT POLLIN/POLLHUP because Darwin (and some Linux
-// configurations) fires POLLPRI spuriously when the kernel has any
-// out-of-band-ish state (peer half-close, error queue, etc.) — not just
-// real RFC-1122 urgent data. Mistakenly entering the OOB path makes
-// SoRecvOOB set tp.SndUp = SndUna + SbCC, after which every subsequent
-// data segment is tagged TH_URG. Real Linux receivers special-case URG,
-// which manifests as "first MTU comes through, then hang" (apk update
-// style).
-func pollSocketOOB(fd int) bool {
-	pollFds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLPRI}}
-	n, _ := unix.Poll(pollFds, 0) // timeout=0 for non-blocking check
-	rev := pollFds[0].Revents
-	return n > 0 && (rev&unix.POLLPRI) != 0 && (rev&(unix.POLLIN|unix.POLLHUP)) == 0
+// pollSocketsOOB checks many fds for genuine OOB (urgent) data in a SINGLE
+// poll() syscall and returns the set of fds that have it. Polling each socket
+// individually cost ~16% of CPU under network load (one poll() per socket per
+// network pass); batching collapses that to one poll() per pass regardless of
+// how many sockets are open.
+//
+// We narrow each fd's result to POLLPRI WITHOUT POLLIN/POLLHUP: Darwin (and
+// some Linux configs) fire POLLPRI spuriously when the kernel has any
+// out-of-band-ish state (peer half-close, error queue, etc.) — not just real
+// RFC-1122 urgent data. Mistakenly entering the OOB path makes SoRecvOOB set
+// tp.SndUp = SndUna + SbCC, after which every subsequent data segment is
+// tagged TH_URG; real receivers special-case URG, which manifests as "first
+// MTU comes through, then hang" (apk-update style).
+func pollSocketsOOB(fds []int) map[int]bool {
+	if len(fds) == 0 {
+		return nil
+	}
+	pfds := make([]unix.PollFd, len(fds))
+	for i, fd := range fds {
+		pfds[i] = unix.PollFd{Fd: int32(fd), Events: unix.POLLPRI}
+	}
+	n, _ := unix.Poll(pfds, 0)
+	if n <= 0 {
+		return nil
+	}
+	var out map[int]bool
+	for i := range pfds {
+		rev := pfds[i].Revents
+		if (rev&unix.POLLPRI) != 0 && (rev&(unix.POLLIN|unix.POLLHUP)) == 0 {
+			if out == nil {
+				out = make(map[int]bool)
+			}
+			out[fds[i]] = true
+		}
+	}
+	return out
 }
 
 // pollSocketWritable polls a connecting socket to see whether the

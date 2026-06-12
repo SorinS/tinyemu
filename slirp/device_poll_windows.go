@@ -20,5 +20,5 @@ const (
 	sockPollFailed
 )
 
-func pollSocketOOB(fd int) bool                  { return false }
-func pollSocketWritable(fd int) sockPollState    { return sockPollPending }
+func pollSocketsOOB(fds []int) map[int]bool   { return nil }
+func pollSocketWritable(fd int) sockPollState { return sockPollPending }

@@ -252,6 +252,23 @@ func (s *Slirp) processTCPSockets() {
 		sockets = append(sockets, so)
 	}
 
+	// Check all connected sockets for OOB (urgent) data in ONE batched
+	// poll() syscall rather than one poll() per socket. The per-socket
+	// version was ~16% of CPU under network load (it scales with the number
+	// of open connections × the network-poll rate). oobReady[fd] is true for
+	// fds that look like they have genuine urgent data.
+	var oobFds []int
+	for _, so := range sockets {
+		if (so.SoState&SSNoFDRef) != 0 || so.S < 0 {
+			continue
+		}
+		if (so.SoState & (SSFAcceptConn | SSIsFConnecting)) != 0 {
+			continue
+		}
+		oobFds = append(oobFds, so.S)
+	}
+	oobReady := pollSocketsOOB(oobFds)
+
 	for _, so := range sockets {
 		// Skip sockets without valid fd
 		// Reference: tinyemu-2019-12-21/slirp/slirp.c:399-400
@@ -288,10 +305,7 @@ func (s *Slirp) processTCPSockets() {
 		// (POLLIN | POLLHUP) are set in the same revents — that lets POLLPRI
 		// fire for real urgent data but ignores spurious wake-ups that
 		// coincide with normal recv.
-		hasOOB := false
-		if so.S >= 0 {
-			hasOOB = pollSocketOOB(so.S)
-		}
+		hasOOB := oobReady[so.S]
 
 		// Try to read from socket if we can receive and have buffer space
 		// Reference: tinyemu-2019-12-21/slirp/slirp.c:412-425
