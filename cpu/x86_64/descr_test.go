@@ -177,8 +177,8 @@ func TestINVLPG(t *testing.T) {
 	}
 }
 
-// TestLTR_LLDT: just verify the selector lands in seg[TR]/seg[LDTR].
-// The full descriptor walk arrives with M5c.
+// TestLTR_LLDT: verify the selector lands in seg[TR]/seg[LDTR]. LTR walks
+// the GDT, so a valid (Present) 64-bit TSS descriptor is planted first.
 func TestLTR_LLDT(t *testing.T) {
 	mm := mem.NewPhysMemoryMap()
 	t.Cleanup(mm.Close)
@@ -191,6 +191,12 @@ func TestLTR_LLDT(t *testing.T) {
 	c.SetSegAccess(CS, csLBit)
 	c.SetSegBase(CS, 0)
 	c.recomputeMode()
+
+	// Plant a valid available-64-bit-TSS descriptor at GDT[0x28] (GDTR
+	// base defaults to 0). Access byte 0x89 = P=1, DPL=0, S=0, type=9;
+	// base=0, limit=0x67. The high 8 bytes (base[63:32]) are zero.
+	_ = mm.Write64(0x28, 0x0000890000000067)
+	_ = mm.Write64(0x30, 0)
 
 	// mov ax, 0x28 ; ltr ax  ; mov ax, 0x50 ; lldt ax ; hlt
 	prog := []byte{

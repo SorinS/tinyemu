@@ -1999,8 +1999,22 @@ func (c *CPU) opGroup6(rex uint8) error {
 			if perr != nil {
 				return fmt.Errorf("LTR: translate GDT entry+8: %w", perr)
 			}
-			lo, _ := c.memMap.Read64(loPhys)
-			hi, _ := c.memMap.Read64(hiPhys)
+			lo, rerr := c.memMap.Read64(loPhys)
+			if rerr != nil {
+				return fmt.Errorf("LTR: read GDT entry: %w", rerr)
+			}
+			hi, rerr := c.memMap.Read64(hiPhys)
+			if rerr != nil {
+				return fmt.Errorf("LTR: read GDT entry+8: %w", rerr)
+			}
+			// Validate the descriptor's Present bit (lo[47]). An unmapped
+			// GDT reads back as zero (PhysMemoryMap returns 0 for unmapped
+			// addresses), so without this check a bogus GDTR would
+			// silently install a zero TR base/limit. P=0 means the
+			// selector does not reference a valid TSS.
+			if lo&(uint64(1)<<47) == 0 {
+				return fmt.Errorf("LTR: TSS descriptor for selector %#x not present", sel)
+			}
 			// SDM Vol.3 §3.5.2 — 64-bit TSS descriptor layout:
 			//   lo[15:0]   = limit[15:0]
 			//   lo[31:16]  = base[15:0]
