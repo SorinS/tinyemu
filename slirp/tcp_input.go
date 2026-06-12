@@ -2390,8 +2390,38 @@ func (s *Slirp) tcpConnect(inso *Socket, conn *net.TCPConn) {
 		so.SoState = SSNoFDRef // Don't select it yet, even though we have an FD
 	}
 
-	// Store the connection
-	so.Extra = conn
+	// Wire a raw, non-blocking fd into so.S. The slirp data plane
+	// (SoRead/SoWrite and the socket poll) operates on so.S, exactly like
+	// the outbound path, NOT on a Go net.Conn. The hostfwd inbound path
+	// only stored the Go *net.TCPConn here, so after the handshake no data
+	// ever bridged (curl connected, but the request was never read and the
+	// reply never written). Dup the connection's fd out of the Go runtime
+	// and hand ownership to slirp; close the Go conn (the dup keeps the
+	// socket open).
+	if raw, rerr := conn.SyscallConn(); rerr == nil {
+		dupFd := -1
+		_ = raw.Control(func(c uintptr) {
+			if d, derr := syscall.Dup(int(c)); derr == nil {
+				dupFd = d
+			}
+		})
+		conn.Close()
+		if dupFd < 0 {
+			if tp != nil {
+				tp.TCPClose()
+			}
+			return
+		}
+		_ = sockSetNonblock(dupFd)
+		so.S = dupFd
+		so.Extra = nil
+	} else {
+		conn.Close()
+		if tp != nil {
+			tp.TCPClose()
+		}
+		return
+	}
 
 	// Mark as incoming connection
 	// Reference: tinyemu-2019-12-21/slirp/tcp_subr.c:440-441
