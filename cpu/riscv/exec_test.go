@@ -2195,6 +2195,66 @@ func TestIllegalSRLI(t *testing.T) {
 
 // TestIllegalSLLIW tests that SLLIW rejects illegal encodings.
 // Reference: tinyemu-2019-12-21/riscv_cpu_template.h:992-995
+// expectIllegalTrap asserts that an illegal instruction at faultPC actually
+// trapped — the pending exception was consumed (handleException ran), the
+// recorded cause is CauseIllegalInsn, and Mepc points at the faulting
+// instruction. This checks real trap behavior rather than merely that
+// PendingException was set (which the CPU could leave set while silently
+// running past the instruction).
+func expectIllegalTrap(t *testing.T, cpu *CPU, faultPC uint64, name string) {
+	t.Helper()
+	if cpu.PendingException >= 0 {
+		t.Errorf("%s: illegal instruction did not trap (exception left pending = %d)", name, cpu.PendingException)
+	}
+	if cpu.Mcause != uint64(CauseIllegalInsn) {
+		t.Errorf("%s: Mcause = %d, want CauseIllegalInsn (%d)", name, cpu.Mcause, CauseIllegalInsn)
+	}
+	if cpu.Mepc != faultPC {
+		t.Errorf("%s: Mepc = %#x, want faulting PC %#x", name, cpu.Mepc, faultPC)
+	}
+}
+
+// TestIllegalInsnTakesTrapVector verifies that an illegal instruction
+// raised by a void execute* helper actually redirects PC to the trap vector
+// instead of silently continuing at PC+4. Covers OP, OP-32 and AMO encodings
+// that the other illegal-* tests don't, and pins the PC redirect directly.
+func TestIllegalInsnTakesTrapVector(t *testing.T) {
+	cases := []struct {
+		name string
+		insn uint32
+	}{
+		{"OP funct7=0x10", 0x203100b3},   // executeOp default
+		{"OP-32 funct7 bad", 0x2031003b}, // executeOp32 default
+		{"FENCE rd!=0", 0x0ff0008f},      // executeMiscMem illegal
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cpu := testCPU(t)
+			cpu.Reset()
+			const faultPC = uint64(0x80000000)
+			const tvec = uint64(0x80001000)
+			cpu.PC = faultPC
+			cpu.Mtvec = tvec
+			writeInsn(cpu, cpu.PC, tc.insn)
+
+			cpu.Step()
+
+			if cpu.PendingException >= 0 {
+				t.Errorf("illegal instruction did not trap (exception left pending = %d)", cpu.PendingException)
+			}
+			if cpu.PC != tvec {
+				t.Errorf("PC = %#x after trap, want trap vector %#x (CPU ran past the illegal insn?)", cpu.PC, tvec)
+			}
+			if cpu.Mepc != faultPC {
+				t.Errorf("Mepc = %#x, want faulting PC %#x", cpu.Mepc, faultPC)
+			}
+			if cpu.Mcause != uint64(CauseIllegalInsn) {
+				t.Errorf("Mcause = %d, want CauseIllegalInsn (%d)", cpu.Mcause, CauseIllegalInsn)
+			}
+		})
+	}
+}
+
 func TestIllegalSLLIW(t *testing.T) {
 	cpu := testCPU(t)
 
@@ -2221,9 +2281,7 @@ func TestIllegalSLLIW(t *testing.T) {
 			cpu.Step()
 
 			if tc.illegal {
-				if cpu.PendingException != CauseIllegalInsn {
-					t.Errorf("Expected illegal instruction exception for %s", tc.name)
-				}
+				expectIllegalTrap(t, cpu, 0x80000000, tc.name)
 			} else {
 				if cpu.PendingException >= 0 {
 					t.Errorf("Unexpected exception %d for %s", cpu.PendingException, tc.name)
@@ -2268,9 +2326,7 @@ func TestIllegalOPFunct7(t *testing.T) {
 			cpu.Step()
 
 			if tc.illegal {
-				if cpu.PendingException != CauseIllegalInsn {
-					t.Errorf("Expected illegal instruction exception for %s, got exception=%d", tc.name, cpu.PendingException)
-				}
+				expectIllegalTrap(t, cpu, 0x80000000, tc.name)
 			} else {
 				if cpu.PendingException >= 0 {
 					t.Errorf("Unexpected exception %d for %s", cpu.PendingException, tc.name)
@@ -2311,9 +2367,7 @@ func TestIllegalFENCE(t *testing.T) {
 			cpu.Step()
 
 			if tc.illegal {
-				if cpu.PendingException != CauseIllegalInsn {
-					t.Errorf("Expected illegal instruction exception for %s", tc.name)
-				}
+				expectIllegalTrap(t, cpu, 0x80000000, tc.name)
 			} else {
 				if cpu.PendingException >= 0 {
 					t.Errorf("Unexpected exception %d for %s", cpu.PendingException, tc.name)
@@ -2350,9 +2404,7 @@ func TestIllegalFENCEI(t *testing.T) {
 			cpu.Step()
 
 			if tc.illegal {
-				if cpu.PendingException != CauseIllegalInsn {
-					t.Errorf("Expected illegal instruction exception for %s", tc.name)
-				}
+				expectIllegalTrap(t, cpu, 0x80000000, tc.name)
 			} else {
 				if cpu.PendingException >= 0 {
 					t.Errorf("Unexpected exception %d for %s", cpu.PendingException, tc.name)

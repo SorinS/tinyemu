@@ -305,6 +305,14 @@ func (c *CPU) execute32(insn uint32, insnSize int) error {
 	funct3 := ExtractFunct3(insn)
 	funct7 := ExtractFunct7(insn)
 
+	// PC at the faulting instruction. Some void execute* helpers raise an
+	// illegal-instruction exception by setting PendingException and bumping
+	// PC, but cannot call handleException themselves; the post-switch check
+	// below takes that trap with PC rewound here. (Load/store/branch faults
+	// and the inline cases call handleException directly and clear the
+	// pending exception before returning, so they bypass that check.)
+	pcAtEntry := c.PC
+
 	// Reference: tinyemu-2019-12-21/riscv_cpu_template.h:778-942 (base integer instructions)
 	switch opcode {
 	case OpcodeLUI:
@@ -409,6 +417,14 @@ func (c *CPU) execute32(insn uint32, insnSize int) error {
 
 	default:
 		c.SetPendingException(CauseIllegalInsn, uint64(insn))
+		return c.handleException()
+	}
+
+	// A void helper raised an exception (e.g. an illegal OP-IMM/OP/OP-32/AMO
+	// encoding) without trapping. Rewind PC to the faulting instruction and
+	// take the trap now, instead of silently continuing at PC+4.
+	if c.PendingException >= 0 {
+		c.PC = pcAtEntry
 		return c.handleException()
 	}
 
