@@ -166,6 +166,22 @@ type CPU struct {
 
 	a20Mask uint64
 
+	// Instruction prefetch buffer. ifBufLip / ifBufPhys are the linear and
+	// physical addresses of ifBuf[0]; ifBufValid bytes are valid from there.
+	// fetch8/16/32/64 serve bytes straight out of ifBuf without translating
+	// per byte (the previous path did a TLB walk + GetRange for EVERY
+	// instruction byte — ~32% of CPU on a profile). Filled lazily by
+	// fillFetchBuffer on miss, ONLY from RAM: a non-RAM (MMIO) fetch leaves
+	// the buffer empty so each byte falls through to the per-byte translate
+	// path, preserving MMIO read semantics (no speculative read-ahead into
+	// device registers). Invalidated on every TLB flush / INVLPG / mode
+	// switch (so a CR3 swap can't surface stale bytes) and on any physical
+	// write overlapping the buffered range (self-modifying code).
+	ifBuf      [32]byte
+	ifBufLip   uint64
+	ifBufPhys  uint64
+	ifBufValid uint8
+
 	memMap *mem.PhysMemoryMap
 
 	// I/O port handlers, registered by the board. Port space is still
@@ -385,6 +401,7 @@ func (c *CPU) Reset() {
 
 	c.efer = 0
 	c.tlb.flushAll()
+	c.invalidateFetchBuffer()
 	c.msrFSBase = 0
 	c.msrGSBase = 0
 	c.msrKernelGSBase = 0
@@ -561,6 +578,7 @@ func (c *CPU) SetEFER(v uint64) {
 	}
 	if (old^c.efer)&(EFER_NXE|EFER_LMA|EFER_LME) != 0 {
 		c.tlb.flushAll()
+		c.invalidateFetchBuffer()
 	}
 	c.recomputeMode()
 }

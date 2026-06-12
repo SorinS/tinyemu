@@ -194,6 +194,7 @@ func (c *CPU) writeMem8(addr uint64, v uint8) {
 			}()
 		}
 	}
+	c.maybeInvalidateFetchBufferPhys(phys&c.a20Mask, 1)
 	if err := c.memMap.Write8(phys, v); err != nil {
 		panic(pageFaultPanic{Err: &PageFaultError{Addr: addr}})
 	}
@@ -211,6 +212,7 @@ func (c *CPU) writeMem16(addr uint64, v uint16) {
 		if perr != nil {
 			panic(pageFaultPanic{Err: perr})
 		}
+		c.maybeInvalidateFetchBufferPhys(phys&c.a20Mask, 2)
 		if err := c.memMap.Write16(phys, v); err != nil {
 			panic(pageFaultPanic{Err: &PageFaultError{Addr: addr}})
 		}
@@ -226,6 +228,7 @@ func (c *CPU) writeMem32(addr uint64, v uint32) {
 		if perr != nil {
 			panic(pageFaultPanic{Err: perr})
 		}
+		c.maybeInvalidateFetchBufferPhys(phys&c.a20Mask, 4)
 		if err := c.memMap.Write32(phys, v); err != nil {
 			panic(pageFaultPanic{Err: &PageFaultError{Addr: addr}})
 		}
@@ -289,26 +292,123 @@ func (c *CPU) lip() uint64 {
 }
 
 // fetch8 reads the next instruction byte and advances RIP.
+// fetch8 reads the next instruction byte and advances RIP. Fast path: serve
+// from the prefetch buffer (no per-byte translate/GetRange). Slow path:
+// refill the buffer, or — for non-RAM fetches — read the single byte.
 func (c *CPU) fetch8() uint8 {
-	phys, perr := c.translateForFetch(c.lip())
+	lip := c.lip()
+	off := lip - c.ifBufLip
+	if off < uint64(c.ifBufValid) {
+		b := c.ifBuf[off]
+		c.rip++
+		return b
+	}
+	return c.fetch8Slow(lip)
+}
+
+// fetch8Slow handles a prefetch-buffer miss: try to refill from RAM and
+// serve byte 0; if the fetch target is not RAM, fall back to the per-byte
+// translate + Read8 path (this leaves the buffer empty so MMIO fetches are
+// never speculatively read-ahead). Separated so fetch8's fast path stays
+// inlinable.
+func (c *CPU) fetch8Slow(lip uint64) uint8 {
+	if c.fillFetchBuffer(lip) {
+		b := c.ifBuf[0]
+		c.rip++
+		return b
+	}
+	// Non-RAM fetch (rare): translate + read one byte, no buffering.
+	phys, perr := c.translateForFetch(lip)
 	if perr != nil {
 		panic(pageFaultPanic{Err: perr})
 	}
-	v, err := c.memMap.Read8(phys)
+	v, err := c.memMap.Read8(phys & c.a20Mask)
 	if err != nil {
-		panic(pageFaultPanic{Err: &PageFaultError{Addr: c.lip()}})
+		panic(pageFaultPanic{Err: &PageFaultError{Addr: lip}})
 	}
 	c.rip++
 	return v
 }
 
+// fillFetchBuffer translates `lip` and, if it lands in RAM, copies up to
+// len(ifBuf) bytes (stopping at the page boundary) straight from the
+// backing slice into ifBuf. Returns true if the buffer was filled (RAM),
+// false if the target is non-RAM (caller falls back to a single byte read).
+// A page fault during translation propagates via panic, unwinding the
+// in-flight Step exactly as the old per-byte path did.
+func (c *CPU) fillFetchBuffer(lip uint64) bool {
+	pageOff := lip & 0xFFF
+	n := uint64(len(c.ifBuf))
+	if pageOff+n > 0x1000 {
+		n = 0x1000 - pageOff
+	}
+	phys, perr := c.translateForFetch(lip)
+	if perr != nil {
+		panic(pageFaultPanic{Err: perr})
+	}
+	paddr := phys & c.a20Mask
+	pr := c.memMap.GetRange(paddr)
+	if pr == nil || !pr.IsRAM {
+		c.ifBufValid = 0
+		return false
+	}
+	regOff := paddr - pr.Addr
+	// Clamp to what the range actually backs (a page may straddle the end
+	// of a RAM region — fill only the part that's really RAM).
+	if avail := uint64(len(pr.PhysMem)) - regOff; avail < n {
+		n = avail
+	}
+	copy(c.ifBuf[:n], pr.PhysMem[regOff:regOff+n])
+	c.ifBufLip = lip
+	c.ifBufPhys = paddr
+	c.ifBufValid = uint8(n)
+	return true
+}
+
+// invalidateFetchBuffer drops the prefetch buffer so the next fetch
+// refills. Called from every TLB-flush path (Reset, CR3/CR0/CR4/EFER
+// changes, INVLPG, mode switch) so a translation change can't surface
+// stale instruction bytes.
+func (c *CPU) invalidateFetchBuffer() {
+	c.ifBufValid = 0
+}
+
+// maybeInvalidateFetchBufferPhys clears the prefetch buffer if the
+// physical range [addr, addr+size) overlaps the buffered bytes. Called
+// from the physical-write paths so self-modifying code (and two-pass test
+// fixtures) doesn't serve stale instruction bytes.
+func (c *CPU) maybeInvalidateFetchBufferPhys(addr uint64, size uint64) {
+	if c.ifBufValid == 0 {
+		return
+	}
+	bufEnd := c.ifBufPhys + uint64(c.ifBufValid)
+	if addr < bufEnd && c.ifBufPhys < addr+size {
+		c.ifBufValid = 0
+	}
+}
+
 func (c *CPU) fetch16() uint16 {
+	lip := c.lip()
+	off := lip - c.ifBufLip
+	if off+2 <= uint64(c.ifBufValid) {
+		v := uint16(c.ifBuf[off]) | uint16(c.ifBuf[off+1])<<8
+		c.rip += 2
+		return v
+	}
 	a := uint16(c.fetch8())
 	b := uint16(c.fetch8())
 	return a | b<<8
 }
 
 func (c *CPU) fetch32() uint32 {
+	lip := c.lip()
+	off := lip - c.ifBufLip
+	if off+4 <= uint64(c.ifBufValid) {
+		v := uint32(c.ifBuf[off]) | uint32(c.ifBuf[off+1])<<8 |
+			uint32(c.ifBuf[off+2])<<16 | uint32(c.ifBuf[off+3])<<24
+		c.rip += 4
+		return v
+	}
 	a := uint32(c.fetch8())
 	b := uint32(c.fetch8())
 	cc := uint32(c.fetch8())

@@ -2143,6 +2143,7 @@ func (c *CPU) opGroup7(rex uint8) error {
 		return nil
 	case 7: // INVLPG — invalidate the TLB entry covering m.ea.
 		c.tlb.invalidatePage(m.ea)
+		c.invalidateFetchBuffer()
 		return nil
 	}
 	return unimplemented("Group 7 /%d", m.reg)
@@ -2220,6 +2221,7 @@ func (c *CPU) writeCR(n int, v uint64) {
 		}
 		if oldPG != newPG || oldWP != newWP {
 			c.tlb.flushAll()
+			c.invalidateFetchBuffer()
 		}
 		c.recomputeMode()
 		return
@@ -2229,6 +2231,7 @@ func (c *CPU) writeCR(n int, v uint64) {
 		// install itself happens after the flush so the next translation
 		// walks under the new root.
 		c.tlb.flushNonGlobal()
+		c.invalidateFetchBuffer()
 		c.cr[3] = v
 		return
 	}
@@ -2239,6 +2242,7 @@ func (c *CPU) writeCR(n int, v uint64) {
 		const flushMask = CR4_PGE | CR4_PAE | CR4_PSE | CR4_SMEP | CR4_SMAP | CR4_PCIDE
 		if (c.cr[4]^v)&flushMask != 0 {
 			c.tlb.flushAll()
+			c.invalidateFetchBuffer()
 		}
 	}
 	c.cr[n] = v
