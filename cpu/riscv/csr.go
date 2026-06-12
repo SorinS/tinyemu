@@ -139,6 +139,11 @@ func (c *CPU) ReadCSR(csr uint32) (uint64, error) {
 	case CSRSip:
 		return uint64(c.Mip & c.Mideleg), nil
 	case CSRSatp:
+		// mstatus.TVM traps S-mode satp access (read and write), same rule
+		// as SFENCE.VMA. M-mode is exempt.
+		if c.Priv == PrivSupervisor && c.Mstatus&MstatusTVM != 0 {
+			return 0, ErrCSRPrivilege
+		}
 		return c.Satp, nil
 
 	// Machine-level CSRs
@@ -269,6 +274,10 @@ func (c *CPU) WriteCSR(csr uint32, val uint64) error {
 		mask := c.Mideleg
 		c.Mip = (c.Mip &^ mask) | (uint32(val) & mask)
 	case CSRSatp:
+		// mstatus.TVM traps S-mode satp access (read and write).
+		if c.Priv == PrivSupervisor && c.Mstatus&MstatusTVM != 0 {
+			return ErrCSRPrivilege
+		}
 		c.writeSatp(val)
 
 	// Machine-level CSRs

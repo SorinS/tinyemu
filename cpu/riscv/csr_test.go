@@ -1435,3 +1435,25 @@ func TestWriteSatpRV32MasksAndExtractsMode(t *testing.T) {
 		t.Errorf("GetSatpMode = %d, want Sv32 (%d)", cpu.GetSatpMode(), SatpModeSv32)
 	}
 }
+
+// TestSatpAccessTrapsOnTVM: with mstatus.TVM=1, S-mode reads and writes of
+// the satp CSR trap (illegal), same rule as SFENCE.VMA. M-mode is exempt
+// (completes 2.3.5).
+func TestSatpAccessTrapsOnTVM(t *testing.T) {
+	cpu := csrTestCPU(t)
+	cpu.Priv = PrivSupervisor
+	cpu.Mstatus |= MstatusTVM
+
+	if _, err := cpu.ReadCSR(CSRSatp); err != ErrCSRPrivilege {
+		t.Errorf("satp read (S-mode, TVM=1): err = %v, want ErrCSRPrivilege", err)
+	}
+	if err := cpu.WriteCSR(CSRSatp, 0); err != ErrCSRPrivilege {
+		t.Errorf("satp write (S-mode, TVM=1): err = %v, want ErrCSRPrivilege", err)
+	}
+
+	// M-mode is exempt from TVM.
+	cpu.Priv = PrivMachine
+	if _, err := cpu.ReadCSR(CSRSatp); err != nil {
+		t.Errorf("satp read (M-mode, TVM=1): err = %v, want nil (M-mode exempt)", err)
+	}
+}
