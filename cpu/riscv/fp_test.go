@@ -3,6 +3,8 @@ package riscv
 import (
 	"math"
 	"testing"
+
+	"github.com/jtolio/tinyemu-go/mem"
 )
 
 // Helper to convert float32 to its bit representation
@@ -1305,5 +1307,59 @@ func TestInvalidFPFormat(t *testing.T) {
 
 	if cpu.Mcause != CauseIllegalInsn {
 		t.Errorf("expected illegal instruction for quad format, got mcause=%d", cpu.Mcause)
+	}
+}
+
+// TestFPConversionsRV32 verifies the RV64-only FP conversions/moves
+// (FCVT.L/LU and FMV.X.D/FMV.D.X) raise illegal-instruction on RV32, while
+// the RV32-legal W/WU and FMV.X.W/FMV.W.X variants still execute (2.3.8).
+func TestFPConversionsRV32(t *testing.T) {
+	newRV32 := func() *CPU {
+		m := mem.NewPhysMemoryMap()
+		t.Cleanup(m.Close)
+		if _, err := m.RegisterRAM(0x80000000, 1024*1024, 0); err != nil {
+			t.Fatalf("RegisterRAM: %v", err)
+		}
+		c := NewCPU(m, XLEN32)
+		c.PC = 0x80000000
+		c.FS = FSDirty // enable the FP unit
+		return c
+	}
+
+	illegal := []struct {
+		name string
+		insn uint32
+	}{
+		{"FCVT.L.S", 0xC0208153}, // rs2=2 (L), fmt=0 (S) — RV64 only
+		{"FMV.X.D", 0xE2008153},  // 0x1C fmt=1 — RV64 only
+	}
+	for _, tc := range illegal {
+		t.Run("illegal/"+tc.name, func(t *testing.T) {
+			c := newRV32()
+			writeInsn(c, c.PC, tc.insn)
+			c.Step()
+			expectIllegalTrap(t, c, 0x80000000, tc.name)
+		})
+	}
+
+	legal := []struct {
+		name string
+		insn uint32
+	}{
+		{"FCVT.W.S", 0xC0008153}, // rs2=0 (W) — legal on RV32
+		{"FMV.X.W", 0xE0008153},  // 0x1C fmt=0 — legal on RV32
+	}
+	for _, tc := range legal {
+		t.Run("legal/"+tc.name, func(t *testing.T) {
+			c := newRV32()
+			writeInsn(c, c.PC, tc.insn)
+			c.Step()
+			if c.PendingException >= 0 {
+				t.Errorf("%s wrongly trapped on RV32 (pending=%d)", tc.name, c.PendingException)
+			}
+			if c.PC != 0x80000004 {
+				t.Errorf("%s did not advance PC (PC=%#x) — wrongly rejected on RV32", tc.name, c.PC)
+			}
+		})
 	}
 }

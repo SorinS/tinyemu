@@ -612,6 +612,11 @@ func (c *CPU) executeFPOp(insn uint32) error {
 			c.SetPendingException(CauseIllegalInsn, uint64(insn))
 			return c.handleException()
 		}
+		// FCVT.L/LU.S/D (rs2 = 2/3) yield a 64-bit integer: RV64 only.
+		if (rs2 == 2 || rs2 == 3) && c.CurXLEN == XLEN32 {
+			c.SetPendingException(CauseIllegalInsn, uint64(insn))
+			return c.handleException()
+		}
 		var val uint64
 		switch fmt {
 		case 0: // From F32
@@ -653,6 +658,11 @@ func (c *CPU) executeFPOp(insn uint32) error {
 	case 0x1A: // FCVT integer to float
 		rm := c.getInsnRM(rmBits)
 		if rm < 0 {
+			c.SetPendingException(CauseIllegalInsn, uint64(insn))
+			return c.handleException()
+		}
+		// FCVT.S/D.L/LU (rs2 = 2/3) source a 64-bit integer: RV64 only.
+		if (rs2 == 2 || rs2 == 3) && c.CurXLEN == XLEN32 {
 			c.SetPendingException(CauseIllegalInsn, uint64(insn))
 			return c.handleException()
 		}
@@ -707,7 +717,11 @@ func (c *CPU) executeFPOp(insn uint32) error {
 				// Get raw 32-bit value, sign-extend to 64 bits
 				val := int32(c.FPReg[rs1])
 				c.SetReg(rd, uint64(int64(val)))
-			case 1: // FMV.X.D
+			case 1: // FMV.X.D — RV64 only
+				if c.CurXLEN == XLEN32 {
+					c.SetPendingException(CauseIllegalInsn, uint64(insn))
+					return c.handleException()
+				}
 				c.SetReg(rd, c.FPReg[rs1])
 			default:
 				c.SetPendingException(CauseIllegalInsn, uint64(insn))
@@ -740,7 +754,11 @@ func (c *CPU) executeFPOp(insn uint32) error {
 			// NaN-box the 32-bit value
 			c.FPReg[rd] = F32High | uint64(uint32(c.GetReg(rs1)))
 			c.FS = FSDirty
-		case 1: // FMV.D.X
+		case 1: // FMV.D.X — RV64 only
+			if c.CurXLEN == XLEN32 {
+				c.SetPendingException(CauseIllegalInsn, uint64(insn))
+				return c.handleException()
+			}
 			c.FPReg[rd] = c.GetReg(rs1)
 			c.FS = FSDirty
 		default:
