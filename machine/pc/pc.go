@@ -109,6 +109,11 @@ type PC struct {
 
 	shutdownRequested bool
 	shutdownExitCode  int
+
+	// pm1aCnt is the PIIX4 ACPI PM1a control register (PMBASE+4). Bit 0
+	// (SCI_EN) must read back; bit 13 (SLP_EN) is the write-only soft-off
+	// trigger handled in registerACPIPMControl.
+	pm1aCnt uint16
 }
 
 // New creates a new x86 PC machine.
@@ -218,6 +223,7 @@ func New(cfg Config) (*PC, error) {
 			// aligned I/O address in bits [15:6].
 			if base := (uint16(d.config[0x40]) | uint16(d.config[0x41])<<8) & 0xFFC0; base != 0 {
 				p.registerACPIPMTimer(base + 0x08)
+				p.registerACPIPMControl(base + 0x04)
 			}
 		case off == 0x80: // PMREGMISC — bit 0 = PMIOSE
 			applyWrite(d, off, val, size)
@@ -232,6 +238,7 @@ func New(cfg Config) (*PC, error) {
 	// delays; if it never advances, delay loops hang. Derived from the
 	// host clock so Stall() actually waits.
 	p.registerACPIPMTimer(acpiPMBase + 0x08)
+	p.registerACPIPMControl(acpiPMBase + 0x04)
 
 	// (0,1,1): IDE controller. Class 0x010180 = "IDE, ProgIF 0x80
 	// (legacy ports, bus-master capable)". Reports IRQ 14, INT A. The
@@ -819,6 +826,28 @@ func (p *PC) registerACPIPMTimer(port uint16) {
 	p.io.RegisterRead32(port, port, func(uint16) uint32 {
 		ticks := uint64(time.Since(start).Seconds() * 3579545.0)
 		return uint32(ticks & 0xFFFFFF) // 24-bit PM timer
+	})
+}
+
+// registerACPIPMControl wires the PIIX4 ACPI PM1a control register
+// (PM1a_CNT at PMBASE+4). A guest enters a sleep state by writing SLP_EN
+// (bit 13) with the target type in SLP_TYP (bits 12:10). We model only S5
+// soft-off, so any SLP_EN write powers the machine down — this is what
+// OVMF's EfiResetShutdown (IoWrite16 to PMBASE+4) and Linux's poweroff do.
+// Reads return the stored control word so SCI_EN (bit 0, set when the OS
+// switches the chipset into ACPI mode) reads back. SLP_EN is write-only
+// and self-clearing, so it is never stored.
+func (p *PC) registerACPIPMControl(port uint16) {
+	p.io.RegisterRead16(port, port, func(uint16) uint32 {
+		return uint32(p.pm1aCnt)
+	})
+	p.io.RegisterWrite16(port, port, func(_ uint16, v uint32) {
+		if v&(1<<13) != 0 { // SLP_EN → request soft-off (S5)
+			p.shutdownRequested = true
+			p.shutdownExitCode = 0
+			return
+		}
+		p.pm1aCnt = uint16(v) &^ (1 << 13)
 	})
 }
 
