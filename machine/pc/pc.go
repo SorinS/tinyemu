@@ -773,32 +773,65 @@ func (p *PC) AttachNet(es *virtio.EthernetDevice) error {
 	net := virtio.NewNetCore(p.memMap, irq, es)
 	transport := virtio.NewLegacyTransport(net.Device())
 
-	end := ioBase + uint16(transport.IOSize()) - 1
+	ioSize := uint16(transport.IOSize())
 	t := transport
-	p.io.RegisterRead(ioBase, end, func(port uint16) uint32 {
-		return t.IORead(port-ioBase, 1)
-	})
-	p.io.RegisterWrite(ioBase, end, func(port uint16, val uint32) {
-		t.IOWrite(port-ioBase, val, 1)
-	})
-	p.io.RegisterRead16(ioBase, end-1, func(port uint16) uint32 {
-		return t.IORead(port-ioBase, 2)
-	})
-	p.io.RegisterWrite16(ioBase, end-1, func(port uint16, val uint32) {
-		t.IOWrite(port-ioBase, val, 2)
-	})
-	p.io.RegisterRead32(ioBase, end-3, func(port uint16) uint32 {
-		return t.IORead(port-ioBase, 4)
-	})
-	p.io.RegisterWrite32(ioBase, end-3, func(port uint16, val uint32) {
-		t.IOWrite(port-ioBase, val, 4)
-	})
+	registerVirtioIOPorts := func(base uint16) {
+		end := base + ioSize - 1
+		p.io.RegisterRead(base, end, func(port uint16) uint32 {
+			return t.IORead(port-base, 1)
+		})
+		p.io.RegisterWrite(base, end, func(port uint16, val uint32) {
+			t.IOWrite(port-base, val, 1)
+		})
+		p.io.RegisterRead16(base, end-1, func(port uint16) uint32 {
+			return t.IORead(port-base, 2)
+		})
+		p.io.RegisterWrite16(base, end-1, func(port uint16, val uint32) {
+			t.IOWrite(port-base, val, 2)
+		})
+		p.io.RegisterRead32(base, end-3, func(port uint16) uint32 {
+			return t.IORead(port-base, 4)
+		})
+		p.io.RegisterWrite32(base, end-3, func(port uint16, val uint32) {
+			t.IOWrite(port-base, val, 4)
+		})
+	}
+	clearVirtioIOPorts := func(base uint16) {
+		end := base + ioSize - 1
+		p.io.RegisterRead(base, end, nil)
+		p.io.RegisterWrite(base, end, nil)
+		p.io.RegisterRead16(base, end-1, nil)
+		p.io.RegisterWrite16(base, end-1, nil)
+		p.io.RegisterRead32(base, end-3, nil)
+		p.io.RegisterWrite32(base, end-3, nil)
+	}
+	registerVirtioIOPorts(ioBase)
 
 	// PCI device: vendor 0x1AF4, transitional net device 0x1000,
 	// subsystem 0x0001 (net), class 0x020000 (network controller).
 	pciDev := NewPCIDevice("virtio-net", 0x1AF4, 0x1000, 0x020000, 0x00)
 	pciDev.SetIRQLine(virtioNetPCIIRQ, 0x01)
 	pciDev.SetIOBAR(0, uint32(ioBase), 64)
+	// Follow BAR0 if firmware relocates the I/O region. OVMF's PCI
+	// enumeration reassigns BARs (it moved this device to 0xC000), so
+	// without this the guest's virtio register writes — including the
+	// queue PFNs — land at the original ioBase and are lost, leaving the
+	// RX/TX queues unconfigured. (The block device already does this; the
+	// net device used to omit it, which is why OVMF/UEFI networking saw a
+	// NIC but never moved a frame.)
+	curBase := ioBase
+	pciDev.SetBARChangeHandler(func(idx int, newBase uint32, isIO bool) {
+		if idx != 0 || !isIO {
+			return
+		}
+		nb := uint16(newBase)
+		if nb == curBase {
+			return
+		}
+		clearVirtioIOPorts(curBase)
+		registerVirtioIOPorts(nb)
+		curBase = nb
+	})
 	pciDev.setU16(0x2C, 0x1AF4) // subsys vendor
 	pciDev.setU16(0x2E, 0x0001) // subsys device = net
 	p.pciHost.Bus().AddDevice(slot, 0, pciDev)

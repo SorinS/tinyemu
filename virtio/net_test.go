@@ -50,6 +50,11 @@ func setupNetQueues(t *testing.T, net *Net, memMap *mem.PhysMemoryMap) {
 	ramBase := uint64(0x80000000)
 	dev := net.Device()
 
+	// Negotiate MRG_RXBUF (the Linux virtio_net path) so the header is the
+	// 12-byte NetHeaderSize these tests assume. The OVMF/UEFI path (no
+	// MRG_RXBUF → 10-byte header) is covered by TestNetHeaderSizeByFeature.
+	dev.GuestFeatures = NetFeatureMAC | NetFeatureMRG_RXBUF
+
 	// Set up RX queue (queue 0)
 	rxDescAddr := ramBase
 	rxAvailAddr := ramBase + 0x1000
@@ -73,6 +78,25 @@ func setupNetQueues(t *testing.T, net *Net, memMap *mem.PhysMemoryMap) {
 	dev.write(nil, MMIOQueueAvailLow, uint32(txAvailAddr), 2)
 	dev.write(nil, MMIOQueueUsedLow, uint32(txUsedAddr), 2)
 	dev.write(nil, MMIOQueueReady, 1, 2)
+}
+
+// TestNetHeaderSizeByFeature: the virtio-net header size must follow the
+// NEGOTIATED MRG_RXBUF feature, not what the device offered. Linux acks
+// MRG_RXBUF → 12-byte header; OVMF's VirtioNetDxe does not → legacy 10-byte
+// header. Using a fixed 12 mis-framed every UEFI-networking packet by 2
+// bytes (the reason a Go web server on go-boot couldn't be reached).
+func TestNetHeaderSizeByFeature(t *testing.T) {
+	net, _, _, _, _ := newTestNet(t)
+
+	net.dev.GuestFeatures = NetFeatureMAC // no MRG_RXBUF (OVMF path)
+	if got := net.hdrSize(); got != 10 {
+		t.Errorf("hdrSize without MRG_RXBUF = %d, want 10", got)
+	}
+
+	net.dev.GuestFeatures = NetFeatureMAC | NetFeatureMRG_RXBUF // Linux path
+	if got := net.hdrSize(); got != NetHeaderSize {
+		t.Errorf("hdrSize with MRG_RXBUF = %d, want %d", got, NetHeaderSize)
+	}
 }
 
 // TestNetCreation tests basic network device creation.

@@ -202,28 +202,42 @@ func (n *Net) Device() *Device {
 	return n.dev
 }
 
+// hdrSize returns the virtio-net header size for the negotiated features.
+// With VIRTIO_NET_F_MRG_RXBUF the header is 12 bytes (includes num_buffers);
+// without it (e.g. OVMF's VirtioNetDxe, which doesn't negotiate MRG_RXBUF)
+// it is the legacy 10 bytes. The wrong size mis-frames every packet by 2
+// bytes, so it must track what the guest actually ACKed, not what we
+// offered. (Linux acks MRG_RXBUF → 12; OVMF doesn't → 10.)
+func (n *Net) hdrSize() int {
+	if n.dev.GuestFeatures&NetFeatureMRG_RXBUF != 0 {
+		return NetHeaderSize // 12
+	}
+	return 10
+}
+
 // recvRequest handles incoming requests from the guest.
 // For the network device, this handles TX queue (guest -> network) packets.
 //
 // Reference: tinyemu-2019-12-21/virtio.c:1153-1175 (virtio_net_recv_request)
 func (n *Net) recvRequest(dev *Device, queueIdx int, descIdx int, readSize int, writeSize int) int {
+	headerSize := n.hdrSize()
 	if DebugNetRX {
 		fmt.Fprintf(debugNetWriter, "[VIRTIO-NET] recvRequest queue=%d desc=%d readSize=%d writeSize=%d hdr=%d\n",
-			queueIdx, descIdx, readSize, writeSize, n.headerSize)
+			queueIdx, descIdx, readSize, writeSize, headerSize)
 	}
 	if queueIdx == NetQueueTX {
 		// Guest is sending a packet to the network
 		// Skip the VirtIO net header
-		if readSize <= n.headerSize {
+		if readSize <= headerSize {
 			// No actual packet data
 			dev.ConsumeDesc(queueIdx, descIdx, 0)
 			return 0
 		}
 
 		// Read the packet data (after header)
-		packetLen := readSize - n.headerSize
+		packetLen := readSize - headerSize
 		buf := make([]byte, packetLen)
-		if err := dev.MemcpyFromQueue(buf, queueIdx, descIdx, n.headerSize, packetLen); err != nil {
+		if err := dev.MemcpyFromQueue(buf, queueIdx, descIdx, headerSize, packetLen); err != nil {
 			dev.ConsumeDesc(queueIdx, descIdx, 0)
 			return 0
 		}
@@ -327,24 +341,26 @@ func (n *Net) WritePacket(buf []byte) {
 	_ = readSize // unused for RX
 
 	// Total length = header + packet
-	totalLen := n.headerSize + len(buf)
+	headerSize := n.hdrSize()
+	totalLen := headerSize + len(buf)
 	if totalLen > writeSize {
 		return // packet too large for buffer
 	}
 
 	// Write header. With VIRTIO_NET_F_MRG_RXBUF negotiated, the 12-byte
 	// header's last 2 bytes are num_buffers — must be at least 1, otherwise
-	// the guest treats the descriptor as empty.
-	header := make([]byte, n.headerSize)
-	if n.headerSize >= 12 {
+	// the guest treats the descriptor as empty. Without it the header is
+	// the legacy 10 bytes and has no num_buffers field.
+	header := make([]byte, headerSize)
+	if headerSize >= 12 {
 		header[10] = 0x01 // num_buffers = 1 (little-endian)
 	}
-	if err := n.dev.MemcpyToQueue(NetQueueRX, int(descIdx), 0, header, n.headerSize); err != nil {
+	if err := n.dev.MemcpyToQueue(NetQueueRX, int(descIdx), 0, header, headerSize); err != nil {
 		return
 	}
 
 	// Write packet data after header
-	if err := n.dev.MemcpyToQueue(NetQueueRX, int(descIdx), n.headerSize, buf, len(buf)); err != nil {
+	if err := n.dev.MemcpyToQueue(NetQueueRX, int(descIdx), headerSize, buf, len(buf)); err != nil {
 		return
 	}
 
