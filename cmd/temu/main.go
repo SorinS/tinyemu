@@ -62,6 +62,7 @@ var (
 	machineType = flag.String("machine", "riscv64", "machine type (riscv64, riscv32, x86, or x86_64)")
 	smpCount    = flag.Int("smp", 1, "number of CPUs (reserved for future use)")
 	netUser     = flag.Bool("net-user", false, "enable user-mode networking (slirp)")
+	netHostfwd  = flag.String("net-hostfwd", "", "forward host port(s) into the guest over slirp, e.g. tcp:8080:80 (host 127.0.0.1:8080 -> guest 10.0.2.15:80); comma-separated")
 	apicFlag    = flag.Bool("apic", false, "wire a real local APIC (x86_64; off = legacy 8259 PIC)")
 	debugMode   = flag.Bool("debug", false, "enable debug output")
 
@@ -352,6 +353,11 @@ func run() int {
 			fmt.Fprintf(os.Stderr, "Error: board has no network attach path\n")
 			return 1
 		}
+		if err := ApplyHostfwd(es, *netHostfwd); err != nil {
+			fmt.Fprintf(os.Stderr, "Error applying -net-hostfwd: %v\n", err)
+			return 1
+		}
+
 		ethDevs = append(ethDevs, es)
 
 		// Set carrier state
