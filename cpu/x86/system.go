@@ -349,7 +349,7 @@ func (c *CPU) handleLAR(operandSize uint8) error {
 	} else {
 		sel = c.readMem16(c.segBaseForModRM(mr) + mr.ea)
 	}
-	access, ok := c.descriptorAccessByte(sel)
+	access, flags, ok := c.descriptorAccessByte(sel)
 	if !ok {
 		c.setZF(false)
 		return nil
@@ -358,8 +358,10 @@ func (c *CPU) handleLAR(operandSize uint8) error {
 	if operandSize == 2 {
 		c.SetReg16(reg16FromModRM(int(mr.reg)), uint16(access)<<8)
 	} else {
-		// 32-bit: bits 15:8 = access byte, bits 23:20 = flags upper nibble.
-		c.SetReg32(int(mr.reg), uint32(access)<<8)
+		// 32-bit: bits 15:8 = access byte, bits 23:20 = the G/D-B/L/AVL
+		// flags nibble (descriptor byte 6, high nibble). Per SDM the LAR
+		// result is the descriptor's high dword masked with 0x00F0FF00.
+		c.SetReg32(int(mr.reg), uint32(access)<<8|uint32(flags)<<20)
 	}
 	return nil
 }
@@ -390,9 +392,9 @@ func (c *CPU) handleLSL(operandSize uint8) error {
 
 // descriptorAccessByte fetches the access byte of the descriptor named by
 // selector. Returns ok=false for null selectors or out-of-range indexes.
-func (c *CPU) descriptorAccessByte(selector uint16) (uint8, bool) {
+func (c *CPU) descriptorAccessByte(selector uint16) (access uint8, flags uint8, ok bool) {
 	if selector == 0 {
-		return 0, false
+		return 0, 0, false
 	}
 	index := (selector >> 3) & 0x1FFF
 	ti := (selector >> 2) & 1
@@ -405,9 +407,11 @@ func (c *CPU) descriptorAccessByte(selector uint16) (uint8, bool) {
 		limit = c.segLimit[LDTR]
 	}
 	if uint32(index)*8+7 > limit {
-		return 0, false
+		return 0, 0, false
 	}
-	return c.readMem8(base + uint32(index)*8 + 5), true
+	descBase := base + uint32(index)*8
+	// Byte 5 = access-rights byte; byte 6 high nibble = G/D-B/L/AVL flags.
+	return c.readMem8(descBase + 5), c.readMem8(descBase+6) >> 4, true
 }
 
 // descriptorLimit returns the byte-granular limit field of the descriptor.

@@ -404,6 +404,9 @@ func (c *CPU) raiseGeneralProtectionFault(errorCode uint32) {
 // checkStackLimit verifies that a stack access of the given size at the given
 // offset is within the stack segment bounds. If not, it raises #SS.
 func (c *CPU) checkStackLimit(offset uint32, size uint32) {
+	if size == 0 {
+		return // nothing to check; avoids size-1 underflow below
+	}
 	limit := c.segLimit[SS]
 	access := c.segAccess[SS]
 	segType := access & 0x0F
@@ -578,6 +581,15 @@ func (c *CPU) translateAddress(lin uint32, write, user, fetch bool) uint32 {
 
 	// 4 MB page (PSE).
 	if pde&0x80 != 0 && c.cr[4]&CR4_PSE != 0 {
+		// Set Accessed (and Dirty on write) in the PDE, like the 4 KB
+		// path below — a 4 MB page tracks A/D in its single PDE.
+		newPde := pde | 0x20
+		if write {
+			newPde |= 0x40
+		}
+		if newPde != pde {
+			c.writePhys32(pdeAddr, newPde)
+		}
 		phys := (pde & 0xFFC00000) | (lin & 0x3FFFFF)
 		c.tlb.insert(lin, phys,
 			pde&0x02 != 0,

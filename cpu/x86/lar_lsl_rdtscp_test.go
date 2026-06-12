@@ -33,9 +33,10 @@ func TestLAR_ValidSelector(t *testing.T) {
 	if !c.getZF() {
 		t.Errorf("ZF not set for valid selector")
 	}
-	// Access byte 0x9A → result has 0x9A in bits [15:8].
-	if got := c.GetReg32(EAX); got != 0x9A00 {
-		t.Errorf("LAR result = 0x%08X, want 0x00009A00", got)
+	// 32-bit LAR result: access byte 0x9A in bits [15:8], and the flags
+	// nibble (G=1, D/B=1 from descriptor byte 6 = 0xCF) in bits [23:20].
+	if got := c.GetReg32(EAX); got != 0x00C09A00 {
+		t.Errorf("LAR result = 0x%08X, want 0x00C09A00", got)
 	}
 }
 

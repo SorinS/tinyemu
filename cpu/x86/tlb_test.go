@@ -95,3 +95,45 @@ func TestTLBFlushAllInvalidates(t *testing.T) {
 	}()
 	_ = c.translateAddress(0xC10597E8, false, false, false)
 }
+
+// TestPSE4MBSetsAccessedDirty: a 4 MB PSE page must set the Accessed bit in
+// its PDE on access and the Dirty bit on write, like 4 KB pages (§3.3).
+func TestPSE4MBSetsAccessedDirty(t *testing.T) {
+	c := newTestCPU(t)
+	pgdAddr := uint32(0x4000)
+	for i := uint32(0); i < 0x1000; i += 4 {
+		c.writeMem32(pgdAddr+i, 0)
+	}
+	// 4 MB PSE PDE for linear 0..4 MB → phys 0..4 MB. PS(0x80) + P/RW/US,
+	// base 0. A (0x20) and D (0x40) start clear.
+	c.writeMem32(pgdAddr+0, 0x80|0x07)
+	c.SetCR(4, c.GetCR(4)|CR4_PSE)
+	c.SetCR(3, pgdAddr)
+	c.SetCR(0, c.GetCR(0)|CR0_PG)
+
+	// Read access (page 0x1): sets A, not D.
+	_ = c.translateAddress(0x00001000, false, false, false)
+	if pde := c.readPhys32(pgdAddr); pde&0x20 == 0 {
+		t.Errorf("PSE read did not set Accessed (PDE=%#x)", pde)
+	} else if pde&0x40 != 0 {
+		t.Errorf("PSE read wrongly set Dirty (PDE=%#x)", pde)
+	}
+
+	// Write access (different 4 KB page → TLB miss → re-walk): sets D.
+	_ = c.translateAddress(0x00002000, true, false, false)
+	if pde := c.readPhys32(pgdAddr); pde&0x40 == 0 {
+		t.Errorf("PSE write did not set Dirty (PDE=%#x)", pde)
+	}
+}
+
+// TestCheckStackLimitZeroSize: a zero-size stack check must not underflow
+// size-1 and spuriously fault (§3.3).
+func TestCheckStackLimitZeroSize(t *testing.T) {
+	c := newTestCPU(t)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("checkStackLimit(0, 0) faulted: %v", r)
+		}
+	}()
+	c.checkStackLimit(0, 0)
+}
