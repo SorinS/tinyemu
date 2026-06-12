@@ -540,16 +540,19 @@ func (p *PC) LoadBIOS(biosData []byte, kernelData []byte, initrdData []byte, cmd
 			}
 			return nil
 		}
-		_, err := p.loadBZImage(kernelData, initrdData, cmdLine)
-		if err == nil {
+		_, bzErr := p.loadBZImage(kernelData, initrdData, cmdLine)
+		if bzErr == nil {
 			return nil
 		}
-		// If bzImage parsing fails, try vmlinux ELF direct boot
-		_, err = p.loadVMLinux(kernelData, initrdData, cmdLine)
-		if err == nil {
+		// If bzImage parsing fails, try vmlinux ELF direct boot.
+		_, vmErr := p.loadVMLinux(kernelData, initrdData, cmdLine)
+		if vmErr == nil {
 			return nil
 		}
-		// If both fail, fall through to BIOS ROM load
+		// A kernel was supplied but no loader accepted it. Fail loudly
+		// rather than silently booting the BIOS ROM and ignoring --kernel
+		// (mirrors the 64-bit path above).
+		return fmt.Errorf("32-bit kernel load failed (bzImage: %v; vmlinux: %v)", bzErr, vmErr)
 	}
 
 	// Copy the firmware into the high window and the low legacy shadow.

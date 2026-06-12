@@ -387,3 +387,21 @@ func (p *PC) readPhys8(addr uint32) uint8 {
 	v, _ := p.memMap.Read8(uint64(addr))
 	return v
 }
+
+// TestLoadBIOSRejectsBadKernel: a non-empty but unrecognized --kernel must
+// fail loudly, not silently fall back to booting the BIOS ROM (4.1.4).
+func TestLoadBIOSRejectsBadKernel(t *testing.T) {
+	pc, err := New(Config{RAMSize: 16 << 20})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer pc.Close()
+
+	bios := make([]byte, 64*1024)
+	bios[0xFFF0] = 0xF4 // HLT
+	garbage := []byte("this is not a kernel image at all, just bytes")
+
+	if err := pc.LoadBIOS(bios, garbage, nil, ""); err == nil {
+		t.Errorf("LoadBIOS accepted a malformed kernel (silently booted BIOS instead of erroring)")
+	}
+}

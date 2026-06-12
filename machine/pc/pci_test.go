@@ -27,9 +27,9 @@ func newPCITestRig(t *testing.T) (*IOPortDispatcher, *PCIHost) {
 // a specific configuration-space register.
 func pciCmd(bus, dev, fn, reg uint32) uint32 {
 	return 0x80000000 |
-		(bus & 0xFF) << 16 |
-		(dev & 0x1F) << 11 |
-		(fn & 0x07) << 8 |
+		(bus&0xFF)<<16 |
+		(dev&0x1F)<<11 |
+		(fn&0x07)<<8 |
 		(reg & 0xFC)
 }
 
@@ -323,5 +323,31 @@ func TestPCIBARSizing(t *testing.T) {
 	outl32(io, 0xCF8, pciCmd(0, 1, 1, 0x20))
 	if got := inl32(io, 0xCFC); got != 0xC001 {
 		t.Fatalf("BAR4 after restore = %08X, want 0xC001", got)
+	}
+}
+
+// TestPCIPrefetchableBARPreserved: firmware reprogramming a prefetchable
+// memory BAR must preserve the hardwired type nibble (bit 3 prefetchable,
+// bit 0 = 0 memory), not just bit 0 (4.1.2).
+func TestPCIPrefetchableBARPreserved(t *testing.T) {
+	io, host := newPCITestRig(t)
+	dev := NewPCIDevice("test", 0x8086, 0x1237, 0x060000, 0x00)
+	dev.SetMemBAR(0, 0xF0000000, 0x1000000, true) // 16 MiB, prefetchable
+	host.Bus().AddDevice(0, 0, dev)
+
+	// Firmware writes a new base with the low type nibble as zero.
+	outl32(io, 0xCF8, pciCmd(0, 0, 0, 0x10))
+	outl32(io, 0xCFC, 0xE0000000)
+	outl32(io, 0xCF8, pciCmd(0, 0, 0, 0x10))
+	got := inl32(io, 0xCFC)
+
+	if got&0x8 == 0 {
+		t.Errorf("BAR0 = %08X — prefetchable bit (3) lost after reprogramming", got)
+	}
+	if got&0x1 != 0 {
+		t.Errorf("BAR0 = %08X — memory BAR wrongly has I/O bit 0 set", got)
+	}
+	if got&0xFF000000 != 0xE0000000 {
+		t.Errorf("BAR0 base = %08X, want 0xE0000000", got)
 	}
 }

@@ -360,8 +360,16 @@ func writeBAR(d *PCIDevice, off uint32, val uint32, size int) {
 		uint32(d.config[barOff+1])<<8 |
 		uint32(d.config[barOff+2])<<16 |
 		uint32(d.config[barOff+3])<<24
-	prev := cur           // base before this write, for change detection
-	typeBits := cur & 0x1 // bit 0 = I/O indicator (memory leaves it 0)
+	prev := cur // base before this write, for change detection
+	// Preserve the device's hardwired type bits: for an I/O BAR that's
+	// bits 1:0; for a memory BAR it's the low 4 bits (bit 0 = 0, bits 2:1
+	// = 32/64-bit type, bit 3 = prefetchable). Bit 0 distinguishes them.
+	var typeBits uint32
+	if cur&0x1 != 0 {
+		typeBits = cur & 0x3 // I/O BAR
+	} else {
+		typeBits = cur & 0xF // memory BAR (keeps type + prefetchable)
+	}
 	switch size {
 	case 1:
 		shift := (off - barOff) * 8

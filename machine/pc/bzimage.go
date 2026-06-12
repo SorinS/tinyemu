@@ -194,12 +194,16 @@ func (p *PC) loadBZImage(kernelData, initrdData []byte, cmdLine string) (uint32,
 
 	// Set up initrd if provided
 	if len(initrdData) > 0 {
-		// Load initrd just below the top of RAM, aligned to page boundary
-		initrdAddr := uint32(p.ramSize) - uint32(len(initrdData))
-		initrdAddr &= ^uint32(0xFFF) // Page align
-		if initrdAddr < 0x100000 {
-			return 0, fmt.Errorf("initrd too large for available RAM")
+		// Load initrd just below the top of RAM, aligned to page boundary.
+		// Compute in 64-bit and require the result to fit the 32-bit boot
+		// protocol's address space — uint32(p.ramSize) would silently
+		// truncate for RAM > 4 GiB, placing the initrd at a wrong address.
+		top := p.ramSize - uint64(len(initrdData))
+		top &^= 0xFFF // page align
+		if top < 0x100000 || top > 0xFFFFFFFF {
+			return 0, fmt.Errorf("initrd does not fit the 32-bit boot address space (ramSize=%#x, initrd=%d bytes)", p.ramSize, len(initrdData))
 		}
+		initrdAddr := uint32(top)
 		for i, b := range initrdData {
 			p.writePhys8(initrdAddr+uint32(i), b)
 		}
@@ -322,13 +326,19 @@ func (p *PC) writeE820Map(setupAddr uint32) {
 		size uint64
 		typ  uint32
 	}
+	// Extended RAM above 1 MB. Guard the subtraction: for ramSize < 1 MB it
+	// would wrap to a near-2^64 size and hand the kernel a bogus map.
+	extMem := uint64(0)
+	if p.ramSize > 0x100000 {
+		extMem = p.ramSize - 0x100000
+	}
 	entries := []e820Entry{
 		// Low memory: 0..640 KB usable RAM (standard PC layout).
 		{addr: 0x00000000, size: 0x9F000, typ: 1},
 		// 0xA0000..0x100000: reserved (BIOS/VGA region).
 		{addr: 0x000A0000, size: 0x60000, typ: 2},
 		// Extended memory: from 1 MB to end of RAM.
-		{addr: 0x00100000, size: p.ramSize - 0x100000, typ: 1},
+		{addr: 0x00100000, size: extMem, typ: 1},
 	}
 	p.patchBootParam(setupAddr+e820NumEntriesOff, uint8(len(entries)))
 	for i, e := range entries {

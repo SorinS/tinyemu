@@ -26,8 +26,8 @@ func newATATestRig(t *testing.T, sectors int64) (*IOPortDispatcher, *PIC8259, *A
 	pic.Register(io)
 	// Unmask the cascade (master IRQ 2) and slave's IRQ 6 (= overall IRQ 14)
 	// so the tests can observe IRQs.
-	pic.imr = 0xFB        // unmask master IRQ 2
-	pic.slave.imr = 0xBF  // unmask slave IRQ 6 (= IRQ 14)
+	pic.imr = 0xFB       // unmask master IRQ 2
+	pic.slave.imr = 0xBF // unmask slave IRQ 6 (= IRQ 14)
 	// Configure the vector bases the way Linux would (master 0x20, slave 0x28).
 	pic.icw2 = 0x20
 	pic.slave.icw2 = 0x28
@@ -105,12 +105,12 @@ func TestATAReadOneSector(t *testing.T) {
 	}
 
 	// Program the task file: LBA28=7, count=1.
-	io.Write8(0x1F6, 0x40)        // drive 0 + LBA mode
-	io.Write8(0x1F2, 1)            // sector count
-	io.Write8(0x1F3, 7)            // LBA[7:0]
-	io.Write8(0x1F4, 0)            // LBA[15:8]
-	io.Write8(0x1F5, 0)            // LBA[23:16]
-	io.Write8(0x1F7, 0x20)        // READ SECTORS
+	io.Write8(0x1F6, 0x40) // drive 0 + LBA mode
+	io.Write8(0x1F2, 1)    // sector count
+	io.Write8(0x1F3, 7)    // LBA[7:0]
+	io.Write8(0x1F4, 0)    // LBA[15:8]
+	io.Write8(0x1F5, 0)    // LBA[23:16]
+	io.Write8(0x1F7, 0x20) // READ SECTORS
 
 	st := io.Read8(0x1F7)
 	if st&ataSR_DRQ == 0 || st&ataSR_ERR != 0 {
@@ -526,5 +526,19 @@ func TestATANoDeviceAborts(t *testing.T) {
 	st := io.Read8(0x1F7)
 	if st&ataSR_ERR == 0 {
 		t.Errorf("expected ERR when no device attached, status=%02X", st)
+	}
+}
+
+// TestATAPILastLBANoUnderflow: a backing smaller than one 2048-byte CD block
+// (here 512 bytes = 1 sector) makes GetSectorCount()/4 == 0; the last-LBA
+// computation must not underflow to 0xFFFFFFFF (a phantom 8 TB disc) (4.1.5).
+func TestATAPILastLBANoUnderflow(t *testing.T) {
+	bd, err := devices.NewMemoryBlockDevice(devices.SectorSize) // 1 sector
+	if err != nil {
+		t.Fatalf("new block device: %v", err)
+	}
+	cd := NewCDROMController(nil, bd)
+	if got := cd.atapiLastLBA(); got != 0 {
+		t.Errorf("atapiLastLBA = %#x, want 0 (sub-CD-block device must not underflow)", got)
 	}
 }

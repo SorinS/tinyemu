@@ -778,6 +778,19 @@ func (a *ATAController) fillIdentifyPacketBuffer() {
 // dispatchPacketCommand parses the 12-byte SCSI command the host just
 // pushed into packetCmd and produces the appropriate response. Most
 // commands set a.atapiData to bytes the host must then drain.
+//
+// atapiLastLBA returns the last addressable 2048-byte CD block of the
+// backing device (512-byte sectors / 4), or 0 for an empty device. Without
+// the zero guard the subtraction underflows to 0xFFFFFFFF — a phantom 8 TB
+// disc — for a zero-sector backing.
+func (a *ATAController) atapiLastLBA() uint32 {
+	blocks := a.device.GetSectorCount() / 4
+	if blocks <= 0 {
+		return 0
+	}
+	return uint32(blocks - 1)
+}
+
 func (a *ATAController) dispatchPacketCommand() {
 	a.awaitingPacket = false
 	op := a.packetCmd[0]
@@ -814,7 +827,7 @@ func (a *ATAController) dispatchPacketCommand() {
 
 	case mmcREAD_CAPACITY:
 		// 8-byte response: last LBA (big-endian) + block size (big-endian).
-		lastLBA := uint32(a.device.GetSectorCount()/4) - 1 // sectors are 2048 = 4×512
+		lastLBA := a.atapiLastLBA() // sectors are 2048 = 4×512
 		buf := []byte{
 			byte(lastLBA >> 24), byte(lastLBA >> 16),
 			byte(lastLBA >> 8), byte(lastLBA),
@@ -865,7 +878,7 @@ func (a *ATAController) dispatchPacketCommand() {
 	case mmcREAD_TOC:
 		alloc := int(a.packetCmd[7])<<8 | int(a.packetCmd[8])
 		// Build a minimal single-session TOC: header + one track descriptor.
-		lastLBA := uint32(a.device.GetSectorCount()/4) - 1
+		lastLBA := a.atapiLastLBA()
 		buf := []byte{
 			0x00, 0x12, // TOC data length = 18
 			0x01, 0x01, // first / last track

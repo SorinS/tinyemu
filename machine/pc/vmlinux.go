@@ -231,14 +231,20 @@ func (p *PC) setupE820Map(bootParamsAddr uint32) {
 	const e820EntrySize = 20    // 8 + 8 + 4 bytes
 
 	ramSize := uint64(p.ramSize)
+	// Guard the subtraction: for ramSize < 1 MB it would wrap to a
+	// near-2^64 size and hand the kernel a bogus E820 map.
+	extMem := uint64(0)
+	if ramSize > 0x100000 {
+		extMem = ramSize - 0x100000
+	}
 	entries := []struct {
 		addr uint64
 		size uint64
 		typ  uint32
 	}{
-		{0x00000000, 0x000A0000, 1},                    // Low RAM (640KB)
-		{0x000A0000, 0x00060000, 2},                    // Reserved: VGA + BIOS shadow
-		{0x00100000, ramSize - 0x00100000, 1},          // Extended RAM
+		{0x00000000, 0x000A0000, 1}, // Low RAM (640KB)
+		{0x000A0000, 0x00060000, 2}, // Reserved: VGA + BIOS shadow
+		{0x00100000, extMem, 1},     // Extended RAM
 	}
 
 	for i, e := range entries {
