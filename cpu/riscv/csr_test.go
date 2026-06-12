@@ -676,7 +676,7 @@ func TestWriteSatp(t *testing.T) {
 }
 
 // TestWriteSatpSameMode tests SATP write without mode change doesn't flush TLB
-func TestWriteSatpSameMode(t *testing.T) {
+func TestWriteSatpSameValueNoFlush(t *testing.T) {
 	cpu := csrTestCPU(t)
 	cpu.Priv = PrivMachine
 
@@ -684,16 +684,15 @@ func TestWriteSatpSameMode(t *testing.T) {
 	satpVal := uint64(8)<<60 | 0x12345
 	cpu.WriteCSR(CSRSatp, satpVal)
 
-	// Set TLB entries after initial mode change
+	// Set a live TLB entry after the initial write
 	cpu.TLBRead[0].VAddr = 0x1000
 
-	// Write to SATP with same mode (just different PPN)
-	newSatpVal := uint64(8)<<60 | 0x67890
-	cpu.WriteCSR(CSRSatp, newSatpVal)
+	// Rewrite the *identical* SATP value: no translation change, no flush.
+	// (A PPN or mode change does flush — see TestSatpPPNChangeFlushesTLB.)
+	cpu.WriteCSR(CSRSatp, satpVal)
 
-	// TLB should NOT be flushed since mode didn't change
 	if cpu.TLBRead[0].VAddr == ^uint64(0) {
-		t.Error("TLB should NOT be flushed when SATP mode unchanged")
+		t.Error("TLB should NOT be flushed when SATP is rewritten with the same value")
 	}
 }
 
@@ -1372,5 +1371,25 @@ func TestWriteMstatusFSStoredSeparately(t *testing.T) {
 	fsInMstatus := (val >> MstatusFSShift) & 3
 	if fsInMstatus != FSDirty {
 		t.Errorf("FS in mstatus read = %d, want %d", fsInMstatus, FSDirty)
+	}
+}
+
+// TestSatpPPNChangeFlushesTLB: writing satp with a new root page-table PPN
+// but the same translation mode (e.g. a context switch between two Sv39
+// processes) must flush the TLB, otherwise stale entries from the previous
+// address space survive.
+func TestSatpPPNChangeFlushesTLB(t *testing.T) {
+	cpu := csrTestCPU(t)
+	mode := uint64(SatpModeSv39) << 60
+
+	// Establish an initial Sv39 mapping, then seed a live TLB entry.
+	cpu.writeSatp(mode | 0x100)
+	cpu.TLBRead[0].VAddr = 0x1000
+
+	// Switch to a different root page table — same Sv39 mode, new PPN.
+	cpu.writeSatp(mode | 0x200)
+
+	if cpu.TLBRead[0].VAddr != ^uint64(0) {
+		t.Errorf("satp PPN change did not flush the TLB (TLBRead[0].VAddr = %#x, want invalid)", cpu.TLBRead[0].VAddr)
 	}
 }

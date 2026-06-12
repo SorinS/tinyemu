@@ -181,12 +181,23 @@ func ctz32(val uint32) int {
 	return n
 }
 
+// interruptCauseBit returns the mcause/scause interrupt flag for the current
+// XLEN: bit 63 on RV64, bit 31 on RV32.
+func (c *CPU) interruptCauseBit() uint64 {
+	if c.CurXLEN == XLEN32 {
+		return 1 << 31
+	}
+	return 1 << 63
+}
+
 // raiseInterrupt raises an interrupt with the given cause
 // Per TinyEMU: xPIE = IE bit for current privilege mode (not xIE)
 // Reference: tinyemu-2019-12-21/riscv_cpu.c:1042-1120 (raise_exception2)
 func (c *CPU) raiseInterrupt(cause int) {
-	// Interrupt cause has MSB set
-	fullCause := uint64(cause) | CauseInterrupt
+	// Interrupt cause has the XLEN MSB set: bit 63 on RV64, bit 31 on RV32.
+	// Using the fixed CauseInterrupt (1<<63) would put the bit in the upper
+	// half on RV32, where the guest's 32-bit mcause read can't see it.
+	fullCause := uint64(cause) | c.interruptCauseBit()
 
 	// Determine if delegated to S-mode
 	delegated := false

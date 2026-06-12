@@ -397,12 +397,15 @@ func (c *CPU) writeSatp(val uint64) {
 		}
 	}
 
-	oldMode := c.GetSatpMode()
+	oldSatp := c.Satp
 	c.Satp = val
-	newMode := c.GetSatpMode()
 
-	// Flush TLB if mode changed
-	if oldMode != newMode {
+	// Flush the TLB whenever the translation changes — not just on a mode
+	// change but also when the root page-table PPN changes (e.g. a context
+	// switch between two processes both in Sv39). Otherwise stale entries
+	// from the previous address space survive. Matches the C TinyEMU
+	// reference, which flushes on every satp write.
+	if oldSatp != val {
 		c.FlushTLB()
 	}
 }

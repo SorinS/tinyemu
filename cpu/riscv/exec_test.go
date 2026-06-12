@@ -2907,3 +2907,32 @@ func TestRV32MulHighVs64(t *testing.T) {
 		t.Errorf("RV64 MULH 0x7FFFFFFF * 0x7FFFFFFF: got 0x%016X, want 0x%016X", got64, want64)
 	}
 }
+
+// TestInterruptCauseBitXLEN: the mcause interrupt flag must sit at the XLEN
+// MSB — bit 63 on RV64, bit 31 on RV32 — so the guest's mcause read sees it.
+func TestInterruptCauseBitXLEN(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		xlen    XLEN
+		wantBit uint64
+	}{
+		{"RV64", XLEN64, 1 << 63},
+		{"RV32", XLEN32, 1 << 31},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := mem.NewPhysMemoryMap()
+			t.Cleanup(m.Close)
+			if _, err := m.RegisterRAM(0x80000000, 1024*1024, 0); err != nil {
+				t.Fatalf("RegisterRAM: %v", err)
+			}
+			cpu := NewCPU(m, tc.xlen)
+			cpu.Priv = PrivMachine
+			cpu.PC = 0x80000000
+			const cause = 7 // machine timer interrupt
+			cpu.raiseInterrupt(cause)
+			if cpu.Mcause != (tc.wantBit | uint64(cause)) {
+				t.Errorf("Mcause = %#x, want %#x (interrupt bit + cause)", cpu.Mcause, tc.wantBit|uint64(cause))
+			}
+		})
+	}
+}
