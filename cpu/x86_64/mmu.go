@@ -61,6 +61,9 @@ const (
 type PageFaultError struct {
 	Addr      uint64
 	ErrorCode uint32
+	// NonCanonical marks a refusal due to a non-canonical linear address.
+	// Such accesses are delivered as #GP(0), not #PF, and do not load CR2.
+	NonCanonical bool
 }
 
 func (e *PageFaultError) Error() string {
@@ -91,13 +94,10 @@ func IsCanonicalAddr(addr uint64) bool {
 // semantics — the cpu/x86 backend uses the same two-step pattern.
 func (c *CPU) Translate(linAddr uint64, isWrite, isUser, isFetch bool) (uint64, *PageFaultError) {
 	if !IsCanonicalAddr(linAddr) {
-		// Non-canonical addresses raise #GP, not #PF, in real hardware
-		// — but #PF is what M1's only caller (the data-path memory
-		// accessors) reports today. Phase 4 (long-mode entry / fault
-		// delivery) re-routes this to #GP. Until then we surface it
-		// through PageFaultError with errorCode=0 so tests can detect
-		// "translate refused" cleanly.
-		return 0, &PageFaultError{Addr: linAddr}
+		// A non-canonical linear address faults as #GP(0), not #PF, and
+		// does not load CR2. The NonCanonical marker routes it to the
+		// #GP vector at delivery time.
+		return 0, &PageFaultError{Addr: linAddr, NonCanonical: true}
 	}
 
 	// TLB fast path. A hit means the cached translation is valid and

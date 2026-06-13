@@ -149,6 +149,19 @@ func (c *CPU) Step() (err error) {
 			switch ex := r.(type) {
 			case pageFaultPanic:
 				c.rip = origRIP
+				if ex.Err.NonCanonical {
+					// A non-canonical linear address is #GP(0), not #PF:
+					// deliver vector 13 with error code 0 and do NOT load
+					// CR2 (only #PF writes CR2).
+					if c.segLimit[IDTR] > 0 {
+						if derr := c.deliverInterrupt(13, true, 0); derr == nil {
+							err = nil
+							return
+						}
+					}
+					err = ex.Err
+					return
+				}
 				c.cr[2] = ex.Err.Addr
 				// Try IDT-based delivery first. If no IDT is configured
 				// (limit 0) or the gate is bogus, surface the original
