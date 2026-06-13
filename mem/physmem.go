@@ -5,7 +5,6 @@ package mem
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 )
 
 // Memory subsystem constants
@@ -34,12 +33,13 @@ const (
 
 // Error definitions
 var (
-	ErrTooManyRanges   = errors.New("too many memory ranges")
-	ErrInvalidSize     = errors.New("invalid size (must be page-aligned and non-zero)")
-	ErrInvalidAddress  = errors.New("invalid address")
-	ErrNoMemoryRange   = errors.New("no memory range at address")
-	ErrReadOnly        = errors.New("write to read-only memory")
-	ErrUnsupportedSize = errors.New("unsupported access size for device")
+	ErrTooManyRanges     = errors.New("too many memory ranges")
+	ErrInvalidSize       = errors.New("invalid size (must be page-aligned and non-zero)")
+	ErrInvalidAddress    = errors.New("invalid address")
+	ErrNoMemoryRange     = errors.New("no memory range at address")
+	ErrReadOnly          = errors.New("write to read-only memory")
+	ErrUnsupportedSize   = errors.New("unsupported access size for device")
+	ErrInvalidAccessSize = errors.New("invalid access size (must be 1, 2, 4, or 8 bytes)")
 )
 
 // DeviceReadFunc is called when a device region is read.
@@ -294,9 +294,7 @@ func (pr *PhysMemoryRange) GetDirtyBits() []uint32 {
 	}
 
 	// Clear new current buffer
-	for i := range pr.DirtyBits {
-		pr.DirtyBits[i] = 0
-	}
+	clear(pr.DirtyBits)
 
 	return result
 }
@@ -555,7 +553,7 @@ func (m *PhysMemoryMap) Read(paddr uint64, size int) (uint64, error) {
 	case 8:
 		return m.Read64(paddr)
 	default:
-		return 0, fmt.Errorf("invalid read size: %d", size)
+		return 0, ErrInvalidAccessSize
 	}
 }
 
@@ -572,7 +570,7 @@ func (m *PhysMemoryMap) Write(paddr uint64, val uint64, size int) error {
 	case 8:
 		return m.Write64(paddr, val)
 	default:
-		return fmt.Errorf("invalid write size: %d", size)
+		return ErrInvalidAccessSize
 	}
 }
 

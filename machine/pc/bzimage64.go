@@ -64,9 +64,7 @@ func (p *PC) loadBZImage64(kernelData, initrdData []byte, cmdLine string) error 
 		kernelAddr = 0x100000
 	}
 	kernelFileLen := len(kernelData) - setupBytes
-	for i := setupBytes; i < len(kernelData); i++ {
-		p.writePhys8(kernelAddr+uint32(i-setupBytes), kernelData[i])
-	}
+	p.writePhysBlock(kernelAddr, kernelData[setupBytes:])
 
 	// Zero the BSS region. Linux's boot protocol requires the
 	// bootloader to ensure (init_size - file_size) bytes past the
@@ -135,9 +133,7 @@ func (p *PC) loadBZImage64(kernelData, initrdData []byte, cmdLine string) error 
 		if initrdAddr < 0x100000 {
 			return fmt.Errorf("initrd too large for available RAM")
 		}
-		for i, b := range initrdData {
-			p.writePhys8(initrdAddr+uint32(i), b)
-		}
+		p.writePhysBlock(initrdAddr, initrdData)
 		p.patchBootParam32(setupAddr+0x218, initrdAddr)
 		p.patchBootParam32(setupAddr+0x21C, uint32(len(initrdData)))
 	}

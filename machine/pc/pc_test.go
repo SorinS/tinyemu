@@ -405,3 +405,27 @@ func TestLoadBIOSRejectsBadKernel(t *testing.T) {
 		t.Errorf("LoadBIOS accepted a malformed kernel (silently booted BIOS instead of erroring)")
 	}
 }
+
+// TestWritePhysBlock: the block-copy loader helper must produce the same
+// bytes in guest RAM as byte-wise writes (4.2.1).
+func TestWritePhysBlock(t *testing.T) {
+	pc, err := New(Config{RAMSize: 16 << 20})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer pc.Close()
+
+	data := make([]byte, 4096+123) // spans a page boundary + tail
+	for i := range data {
+		data[i] = byte(i*7 + 1)
+	}
+	const addr = uint32(0x200000)
+	pc.writePhysBlock(addr, data)
+
+	for i, want := range data {
+		got, _ := pc.memMap.Read8(uint64(addr) + uint64(i))
+		if got != want {
+			t.Fatalf("byte %d: got %#x, want %#x", i, got, want)
+		}
+	}
+}

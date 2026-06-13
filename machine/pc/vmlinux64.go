@@ -52,9 +52,7 @@ func (p *PC) loadVMLinux64(kernelData, initrdData []byte, cmdLine string) error 
 		if _, err := prog.ReadAt(data, 0); err != nil {
 			return fmt.Errorf("read PT_LOAD @ paddr %#x: %w", prog.Paddr, err)
 		}
-		for i, b := range data {
-			p.writePhys8(uint32(prog.Paddr)+uint32(i), b)
-		}
+		p.writePhysBlock(uint32(prog.Paddr), data)
 		// Zero the BSS slice (memsz - filesz) at the end of the
 		// segment. Use the direct PhysMem slice when the destination
 		// is within a RAM range; falls back to writePhys8 otherwise.
@@ -65,9 +63,7 @@ func (p *PC) loadVMLinux64(kernelData, initrdData []byte, cmdLine string) error 
 			if rng != nil && rng.IsRAM {
 				off := zeroStart - rng.Addr
 				if off+zeroLen <= uint64(len(rng.PhysMem)) {
-					for i := off; i < off+zeroLen; i++ {
-						rng.PhysMem[i] = 0
-					}
+					clear(rng.PhysMem[off : off+zeroLen])
 					continue
 				}
 			}
@@ -116,9 +112,7 @@ func (p *PC) loadVMLinux64(kernelData, initrdData []byte, cmdLine string) error 
 		if initrdAddr < 0x100000 {
 			return fmt.Errorf("initrd too large")
 		}
-		for i, b := range initrdData {
-			p.writePhys8(initrdAddr+uint32(i), b)
-		}
+		p.writePhysBlock(initrdAddr, initrdData)
 		p.patchBootParam32(setupAddr+0x218, initrdAddr)
 		p.patchBootParam32(setupAddr+0x21C, uint32(len(initrdData)))
 	}

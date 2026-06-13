@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jtolio/tinyemu-go/cpu/x86"
+	"github.com/jtolio/tinyemu-go/mem"
 )
 
 // Boot protocol constants from Linux Documentation/x86/boot.rst.
@@ -163,9 +164,7 @@ func (p *PC) loadBZImage(kernelData, initrdData []byte, cmdLine string) (uint32,
 	// Load protected-mode kernel to 0x100000
 	kernelStart := setupBytes
 	kernelAddr := uint32(0x100000)
-	for i := kernelStart; i < len(kernelData); i++ {
-		p.writePhys8(kernelAddr+uint32(i-kernelStart), kernelData[i])
-	}
+	p.writePhysBlock(kernelAddr, kernelData[kernelStart:])
 
 	// Set up command line
 	cmdLineAddr := uint32(0x99000) // Place cmdline in setup area vicinity
@@ -204,9 +203,7 @@ func (p *PC) loadBZImage(kernelData, initrdData []byte, cmdLine string) (uint32,
 			return 0, fmt.Errorf("initrd does not fit the 32-bit boot address space (ramSize=%#x, initrd=%d bytes)", p.ramSize, len(initrdData))
 		}
 		initrdAddr := uint32(top)
-		for i, b := range initrdData {
-			p.writePhys8(initrdAddr+uint32(i), b)
-		}
+		p.writePhysBlock(initrdAddr, initrdData)
 		p.patchBootParam32(setupAddr+0x218, initrdAddr)   // ramdisk_image
 		p.patchBootParam32(setupAddr+0x21C, uint32(len(initrdData))) // ramdisk_size
 	}
@@ -269,6 +266,25 @@ func (p *PC) loadBZImage(kernelData, initrdData []byte, cmdLine string) (uint32,
 // writePhys8 writes a byte to physical memory.
 func (p *PC) writePhys8(addr uint32, val uint8) {
 	p.memMap.Write8(uint64(addr), val)
+}
+
+// writePhysBlock copies data to guest physical memory starting at addr.
+// When the whole block lands in one writable, non-dirty-tracked RAM region
+// (the common case for kernel/initrd loads), it does a single slice copy
+// instead of one Write8 per byte — tens of millions of calls for a large
+// kernel+initrd. Falls back to byte-wise writes for any other region.
+func (p *PC) writePhysBlock(addr uint32, data []byte) {
+	if pr := p.memMap.GetRange(uint64(addr)); pr != nil && pr.IsRAM &&
+		pr.RAMFlags&mem.RAMFlagROM == 0 && pr.DirtyBits == nil {
+		off := uint64(addr) - pr.Addr
+		if off+uint64(len(data)) <= uint64(len(pr.PhysMem)) {
+			copy(pr.PhysMem[off:], data)
+			return
+		}
+	}
+	for i, b := range data {
+		p.writePhys8(addr+uint32(i), b)
+	}
 }
 
 // patchBootParam patches a single byte in the zero page.

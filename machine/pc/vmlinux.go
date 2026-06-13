@@ -57,9 +57,7 @@ func (p *PC) loadVMLinux(kernelData, initrdData []byte, cmdLine string) (uint32,
 			return 0, fmt.Errorf("short read for segment at paddr 0x%08X: got %d, want %d", paddr, n, filesz)
 		}
 
-		for i := uint32(0); i < filesz; i++ {
-			p.writePhys8(paddr+i, data[i])
-		}
+		p.writePhysBlock(paddr, data[:filesz])
 
 		// Zero BSS (Memsz > Filesz)
 		for i := filesz; i < memsz; i++ {

@@ -107,9 +107,7 @@ func (p *PC) loadPVH64(kernelData, initrdData []byte, cmdLine string) error {
 		if _, err := prog.ReadAt(data, 0); err != nil {
 			return fmt.Errorf("read PT_LOAD @ paddr %#x: %w", prog.Paddr, err)
 		}
-		for i, b := range data {
-			p.writePhys8(uint32(prog.Paddr)+uint32(i), b)
-		}
+		p.writePhysBlock(uint32(prog.Paddr), data)
 		if prog.Memsz > prog.Filesz {
 			zeroStart := prog.Paddr + prog.Filesz
 			zeroLen := prog.Memsz - prog.Filesz
@@ -117,9 +115,7 @@ func (p *PC) loadPVH64(kernelData, initrdData []byte, cmdLine string) error {
 			if rng != nil && rng.IsRAM {
 				off := zeroStart - rng.Addr
 				if off+zeroLen <= uint64(len(rng.PhysMem)) {
-					for i := off; i < off+zeroLen; i++ {
-						rng.PhysMem[i] = 0
-					}
+					clear(rng.PhysMem[off : off+zeroLen])
 					continue
 				}
 			}
@@ -171,9 +167,7 @@ func (p *PC) loadPVH64(kernelData, initrdData []byte, cmdLine string) error {
 			return fmt.Errorf("initrd doesn't fit below the kernel load region (%d bytes, %d MiB RAM)",
 				len(initrdData), p.ramSize>>20)
 		}
-		for i, b := range initrdData {
-			p.writePhys8(initrdAddr+uint32(i), b)
-		}
+		p.writePhysBlock(initrdAddr, initrdData)
 		// hvm_modlist_entry:
 		//   0x00  uint64 paddr          — module bytes in guest RAM
 		//   0x08  uint64 size           — bytes
