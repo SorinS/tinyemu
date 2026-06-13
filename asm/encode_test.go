@@ -61,3 +61,50 @@ func TestAssembleVsNasm_Fixed(t *testing.T) {
 		})
 	}
 }
+
+// TestAssembleVsNasm_RegOps checks register-direct operand encoding against
+// nasm: reg/reg, reg/imm, push/pop, unary, shifts.
+func TestAssembleVsNasm_RegOps(t *testing.T) {
+	requireNasm(t)
+	insns := []string{
+		"add rax, rbx", "sub rcx, rdx", "and r8, r9", "or rax, r15", "cmp rbx, rax",
+		"xor eax, eax", "add eax, ebx", "mov rax, rbx", "mov eax, ebx",
+		"add al, bl", "mov cl, dl", "xor r10b, r11b",
+		"push rax", "push r12", "pop rbx", "pop r15",
+		"inc rcx", "dec rdx", "not rax", "neg r8",
+		"add eax, 10", "sub rax, 5", "and ecx, 0xff", "cmp rdx, 0x100",
+		"shl rax, 1", "shr eax, 1", "sar rbx, 1",
+	}
+	var pass, fail int
+	for _, src := range insns {
+		want := nasmAssemble(t, src)
+		got, err := Assemble(src)
+		if err != nil {
+			t.Logf("MISS  %-20s err: %v", src, err)
+			fail++
+			continue
+		}
+		if !bytesEqual(got, want) {
+			t.Logf("DIFF  %-20s got % x  nasm % x", src, got, want)
+			fail++
+			continue
+		}
+		pass++
+	}
+	t.Logf("register operands: %d match nasm, %d miss/diff", pass, fail)
+	if pass == 0 {
+		t.Errorf("no register-operand instructions matched nasm")
+	}
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

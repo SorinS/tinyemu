@@ -1,6 +1,7 @@
 package asm
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -192,7 +193,7 @@ func substWord(t string, i, s int) string {
 		if m[2] != "" { // +r: the size bit moves to bit 3
 			n <<= 3
 		}
-		return strings.ToLower(strconv.FormatInt(base|n, 16)) + m[2]
+		return fmt.Sprintf("%02x", base|n) + m[2]
 	case osRe.MatchString(t):
 		m := osRe.FindStringSubmatch(t)
 		sz := "sm"

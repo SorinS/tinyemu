@@ -20,7 +20,42 @@ import (
 var insnsDat string
 
 // table is the complete, macro-expanded instruction table, parsed once.
-var table = expandMacros(parseTable(insnsDat))
+var table = buildTable(insnsDat)
+
+// buildTable parses insns.dat, dispatching the generator macros ($arith,
+// $shift) and size-expanding the rest. Generator/modifier macros not yet
+// reimplemented ($br jumps, $eshift/$xshift APX, $k mask, $hint) are skipped
+// here rather than mis-expanded — tracked by skippedMacros for visibility.
+var skippedMacros []string
+
+func buildTable(data string) []Form {
+	var forms []Form
+	for _, raw := range strings.Split(data, "\n") {
+		line := strings.TrimRight(raw, " \t\r")
+		if line == "" || line[0] == ';' {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "$arith"):
+			forms = append(forms, genEightfold(arithMembers, arithTemplates)...)
+		case strings.HasPrefix(line, "$shift"):
+			forms = append(forms, genEightfold(shiftMembers, shiftTemplates)...)
+		case strings.HasPrefix(line, "$eshift"), strings.HasPrefix(line, "$xshift"),
+			strings.HasPrefix(line, "$br"), strings.HasPrefix(line, "$k "),
+			strings.HasPrefix(line, "$hint"):
+			skippedMacros = append(skippedMacros, line)
+		default:
+			if f, ok := parseLine(line); ok {
+				if f.Macro != "" {
+					forms = append(forms, expandForm(f)...)
+				} else {
+					forms = append(forms, f)
+				}
+			}
+		}
+	}
+	return forms
+}
 
 // Table returns the complete set of x86/x86-64 encoding forms from NASM's
 // instruction table, with all size-macro families expanded. The slice is
