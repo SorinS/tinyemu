@@ -74,6 +74,11 @@ func matchForm(f *Form, ops []operand) bool {
 	if len(f.Operands) != len(ops) {
 		return false
 	}
+	for _, fl := range f.Flags {
+		if fl == "NOLONG" {
+			return false // form is invalid in 64-bit (long) mode
+		}
+	}
 	for i, tok := range f.Operands {
 		if !matchOperand(stripMods(tok), ops[i]) {
 			return false
@@ -167,7 +172,7 @@ func encodeForm(f *Form, ops []operand) ([]byte, error) {
 
 	noW := false
 	for _, t := range strings.Fields(f.Code) {
-		if t == "nw" {
+		if t == "nw" || t == "o64nw" {
 			noW = true
 		}
 	}
@@ -177,6 +182,12 @@ func encodeForm(f *Form, ops []operand) ([]byte, error) {
 		case isHexByte(tok):
 			b, _ := strconv.ParseUint(tok, 16, 8)
 			opcode = append(opcode, byte(b))
+		case tok == "0f38":
+			opcode = append(opcode, 0x0f, 0x38)
+		case tok == "0f3a":
+			opcode = append(opcode, 0x0f, 0x3a)
+		case tok == "wait":
+			opcode = append(opcode, 0x9b) // x87 FWAIT prefix (F-variant of FNxxx)
 		case len(tok) == 4 && tok[2:] == "+r" && isHexByte(tok[:2]):
 			b, _ := strconv.ParseUint(tok[:2], 16, 8)
 			r := regOp
@@ -224,10 +235,12 @@ func encodeForm(f *Form, ops []operand) ([]byte, error) {
 			imm = appendLE(imm, immVal(immOp), 4)
 		case tok == "iq":
 			imm = appendLE(imm, immVal(immOp), 8)
-		case tok == "o32" || tok == "o8" || tok == "osz" || tok == "osm" || tok == "odf" || tok == "nw" ||
+		case tok == "o32" || tok == "o8" || tok == "osz" || tok == "osm" || tok == "odf" || tok == "nw" || tok == "o64nw" ||
 			tok == "a16" || tok == "a32" || tok == "a64" || tok == "asz" || tok == "adf" ||
-			strings.HasPrefix(tok, "norex") || strings.HasPrefix(tok, "nof") ||
-			tok == "nohi" || tok == "np" || tok == "hle" || tok == "hlexr" || tok == "wait" || tok == "resb":
+			strings.HasPrefix(tok, "norex") || strings.HasPrefix(tok, "nof") || strings.HasPrefix(tok, "norep") ||
+			tok == "repe" || tok == "repne" || tok == "rep" ||
+			tok == "nohi" || tok == "np" || tok == "hle" || tok == "hlexr" || strings.HasPrefix(tok, "hlen") ||
+			tok == "wait" || tok == "resb":
 			// Prefix/constraint markers with no byte output in this mode.
 		default:
 			return nil, fmt.Errorf("unsupported code token %q (in %q)", tok, f.Code)
