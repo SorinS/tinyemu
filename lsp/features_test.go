@@ -6,6 +6,8 @@ import (
 )
 
 func TestLineDiagnostic(t *testing.T) {
+	// Labels the buffer defines, so branch operands resolve.
+	labels := map[string]int64{"done": 0, "start": 0}
 	cases := []struct {
 		line     string
 		wantDiag bool
@@ -16,11 +18,14 @@ func TestLineDiagnostic(t *testing.T) {
 		{"  ; a comment", false, 0},  // comment
 		{"  BITS 64", false, 0},      // directive
 		{"  add rax, [rbx+rcx*4]", false, 0},
+		{"  je    done", false, 0},             // branch to a known label → no diagnostic
+		{"  jmp   start", false, 0},            // branch to a known label → no diagnostic
+		{"  je    nowhere", true, 1},           // branch to an undefined label → error
 		{"  movxx rax, rbx", true, 1},          // unknown mnemonic → error
 		{"  vaddps xmm0, xmm1, xmm2", true, 3}, // real insn, unsupported → hint
 	}
 	for _, c := range cases {
-		d, _ := lineDiagnostic(c.line)
+		d, _ := lineDiagnostic(c.line, labels)
 		if (d != nil) != c.wantDiag {
 			t.Errorf("lineDiagnostic(%q): diag=%v, want %v", c.line, d, c.wantDiag)
 			continue
@@ -32,11 +37,11 @@ func TestLineDiagnostic(t *testing.T) {
 }
 
 func TestHover(t *testing.T) {
-	h := hover("  mov rax, rbx")
+	h := hover("  mov rax, rbx", nil)
 	if !strings.Contains(h, "MOV") || !strings.Contains(h, "48 89 d8") {
 		t.Errorf("hover(mov rax,rbx) missing mnemonic/bytes:\n%s", h)
 	}
-	if hover("  notaninsn x, y") != "" {
+	if hover("  notaninsn x, y", nil) != "" {
 		t.Errorf("hover on unknown mnemonic should be empty")
 	}
 }

@@ -63,3 +63,29 @@ func TestAssembleProgram_Jumps(t *testing.T) {
 		t.Errorf("%d jump programs differ from nasm", fail)
 	}
 }
+
+// TestAssembleLine_LabelContext covers the editor/LSP entry points: a single
+// line that branches to a label assembles when the label is known, and reports
+// an undefined target otherwise. (Regression: per-line diagnostics used to flag
+// every label jump as "cannot parse operand".)
+func TestAssembleLine_LabelContext(t *testing.T) {
+	src := "start:\n  je done\n  jmp start\ndone:\n  ret\n"
+	labels := CollectLabels(src)
+	if _, ok := labels["start"]; !ok {
+		t.Fatalf("CollectLabels missed 'start': %v", labels)
+	}
+	if _, ok := labels["done"]; !ok {
+		t.Fatalf("CollectLabels missed 'done': %v", labels)
+	}
+	for _, line := range []string{"je done", "jmp start", "  loop: dec rcx"} {
+		if _, err := AssembleLine(line, labels); err != nil {
+			t.Errorf("AssembleLine(%q) with labels: %v", line, err)
+		}
+	}
+	if _, err := AssembleLine("je nowhere", labels); err == nil {
+		t.Errorf("AssembleLine(je nowhere): want undefined-target error, got nil")
+	}
+	if b, err := AssembleLine("done:", labels); err != nil || b != nil {
+		t.Errorf("AssembleLine(label-only) = %x, %v; want nil, nil", b, err)
+	}
+}

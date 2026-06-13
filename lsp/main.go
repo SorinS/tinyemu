@@ -12,6 +12,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/jtolio/tinyemu-go/asm"
 )
 
 func main() {
@@ -145,9 +147,10 @@ func (s *server) notify(w *bufio.Writer, method string, params any) {
 
 func (s *server) publishDiagnostics(w *bufio.Writer, uri string) {
 	text := s.docs[uri]
+	labels := asm.CollectLabels(text)
 	var diags []lspDiagnostic
 	for i, line := range strings.Split(text, "\n") {
-		d, _ := lineDiagnostic(line)
+		d, _ := lineDiagnostic(line, labels)
 		if d == nil {
 			continue
 		}
@@ -164,7 +167,8 @@ func (s *server) publishDiagnostics(w *bufio.Writer, uri string) {
 
 func (s *server) hover(p posParams) any {
 	line := s.lineAt(p)
-	md := hover(line)
+	labels := asm.CollectLabels(s.docs[p.TextDocument.URI])
+	md := hover(line, labels)
 	if md == "" {
 		return nil
 	}

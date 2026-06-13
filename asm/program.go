@@ -74,6 +74,42 @@ func AssembleProgram(src string) ([]byte, error) {
 	return out, nil
 }
 
+// CollectLabels returns the label names defined in a program, each mapped to
+// 0. It lets editor tooling assemble individual lines (e.g. for diagnostics)
+// with relative-branch targets resolved — the addresses are irrelevant to
+// whether a line is valid.
+func CollectLabels(src string) map[string]int64 {
+	labels := map[string]int64{}
+	for _, raw := range strings.Split(src, "\n") {
+		line := strings.TrimSpace(stripComment(raw))
+		for line != "" {
+			c := strings.IndexByte(line, ':')
+			if c < 0 || !isLabelName(line[:c]) {
+				break
+			}
+			labels[strings.TrimSpace(line[:c])] = 0
+			line = strings.TrimSpace(line[c+1:])
+		}
+	}
+	return labels
+}
+
+// AssembleLine assembles a single source line — stripping any leading label
+// and comment — resolving a relative branch against labels (typically from
+// CollectLabels over the whole buffer). It is the line-level counterpart of
+// AssembleProgram, for editor tooling. A label-only or blank line yields
+// (nil, nil).
+func AssembleLine(line string, labels map[string]int64) ([]byte, error) {
+	s := strings.TrimSpace(stripComment(line))
+	if c := strings.IndexByte(s, ':'); c >= 0 && isLabelName(s[:c]) {
+		s = strings.TrimSpace(s[c+1:])
+	}
+	if s == "" {
+		return nil, nil
+	}
+	return assembleInsn(s, 0, labels)
+}
+
 // assembleInsn encodes one instruction at address addr, resolving a relative
 // branch to a label/numeric target; everything else falls to Assemble.
 func assembleInsn(src string, addr int64, labels map[string]int64) ([]byte, error) {

@@ -84,7 +84,7 @@ type diagnostic struct {
 	message  string
 }
 
-func lineDiagnostic(line string) (*diagnostic, string) {
+func lineDiagnostic(line string, labels map[string]int64) (*diagnostic, string) {
 	insn := instructionText(line)
 	if insn == "" {
 		return nil, ""
@@ -93,21 +93,25 @@ func lineDiagnostic(line string) (*diagnostic, string) {
 	if directives[mnem] {
 		return nil, ""
 	}
-	b, err := asm.Assemble(insn)
+	b, err := asm.AssembleLine(line, labels)
 	if err == nil {
 		return nil, bytesHex(b)
+	}
+	msg := cleanErr(err)
+	if strings.Contains(msg, "undefined branch target") {
+		return &diagnostic{severity: 1, message: "asm: " + msg}, ""
 	}
 	if mnemonicSet[mnem] {
 		// Real instruction, but our encoder doesn't reach it yet — a hint,
 		// not an error, so valid code isn't flagged red.
-		return &diagnostic{severity: 3, message: "asm: encoding not yet supported (" + cleanErr(err) + ")"}, ""
+		return &diagnostic{severity: 3, message: "asm: encoding not yet supported (" + msg + ")"}, ""
 	}
 	return &diagnostic{severity: 1, message: "unknown instruction: " + firstWord(insn)}, ""
 }
 
 // hover returns markdown describing the instruction on a line: its assembled
 // bytes (if any) and the matching table forms (operand signatures + flags).
-func hover(line string) string {
+func hover(line string, labels map[string]int64) string {
 	insn := instructionText(line)
 	if insn == "" {
 		return ""
@@ -118,7 +122,7 @@ func hover(line string) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%s**\n\n", mnem)
-	if bytes, err := asm.Assemble(insn); err == nil {
+	if bytes, err := asm.AssembleLine(line, labels); err == nil && len(bytes) > 0 {
 		fmt.Fprintf(&b, "encodes to `%s` (%d bytes)\n\n", bytesHex(bytes), len(bytes))
 	}
 	b.WriteString("forms:\n")
