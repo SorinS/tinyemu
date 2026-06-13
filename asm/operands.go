@@ -100,6 +100,11 @@ func parseOperand(s string) (operand, bool) {
 			break
 		}
 	}
+	// Accept the MASM-style "ptr" keyword (as emitted by x/arch's Intel
+	// syntax: "qword ptr [rax]", "ptr [rax]") — treat it as a no-op.
+	if l := strings.ToLower(s); strings.HasPrefix(l, "ptr ") || strings.HasPrefix(l, "ptr[") {
+		s = strings.TrimSpace(s[3:])
+	}
 	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
 		return parseMem(s[1:len(s)-1], size)
 	}

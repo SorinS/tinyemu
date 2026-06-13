@@ -9,4 +9,7 @@ require (
 	lukechampine.com/uint128 v1.3.0
 )
 
-require github.com/ulikunitz/xz v0.5.15
+require (
+	github.com/ulikunitz/xz v0.5.15
+	golang.org/x/arch v0.11.0
+)
