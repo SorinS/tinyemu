@@ -9,10 +9,11 @@ import (
 type opKind int
 
 const (
-	opNone opKind = iota
-	opReg         // a general-purpose register
-	opImm         // an integer immediate
-	opMem         // a memory reference
+	opNone   opKind = iota
+	opReg           // a general-purpose register
+	opImm           // an integer immediate
+	opMem           // a memory reference
+	opTarget        // a relative branch target (imm holds the displacement)
 )
 
 // operand is a parsed source operand.

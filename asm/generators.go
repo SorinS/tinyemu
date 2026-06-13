@@ -60,6 +60,38 @@ var shiftTemplates = []string{
 
 func hex2(v int) string { return fmt.Sprintf("%02x", v) }
 
+// condCodes are the x86 condition mnemonics (with aliases) and their 4-bit
+// codes — Jcc opcode is 70+cc (rel8) / 0F 80+cc (rel32).
+var condCodes = []struct {
+	name string
+	cc   int
+}{
+	{"O", 0}, {"NO", 1}, {"B", 2}, {"C", 2}, {"NAE", 2}, {"AE", 3}, {"NB", 3}, {"NC", 3},
+	{"E", 4}, {"Z", 4}, {"NE", 5}, {"NZ", 5}, {"BE", 6}, {"NA", 6}, {"A", 7}, {"NBE", 7},
+	{"S", 8}, {"NS", 9}, {"P", 10}, {"PE", 10}, {"NP", 11}, {"PO", 11},
+	{"L", 12}, {"NGE", 12}, {"GE", 13}, {"NL", 13}, {"LE", 14}, {"NG", 14}, {"G", 15}, {"NLE", 15},
+}
+
+// genBr produces the relative-branch forms NASM emits from the $br macro:
+// JMP (short EB / near E9), CALL (near E8), and Jcc over all condition codes
+// (short 70+cc / near 0F 80+cc). Operand type "short" = rel8, "near" = rel32.
+func genBr() []Form {
+	var out []Form
+	add := func(line string) {
+		if f, ok := parseLine(line); ok {
+			out = append(out, f)
+		}
+	}
+	add("JMP short\t[i: os eb rel8]\t8086")
+	add("JMP near\t[i: os e9 rel]\t8086")
+	add("CALL near\t[i: os e8 rel]\t8086")
+	for _, c := range condCodes {
+		add(fmt.Sprintf("J%s short\t[i: os %s rel8]\t8086", c.name, hex2(0x70+c.cc)))
+		add(fmt.Sprintf("J%s near\t[i: os 0f %s rel]\t386", c.name, hex2(0x80+c.cc)))
+	}
+	return out
+}
+
 // genEightfold instantiates a set of templates for each family member and
 // runs them through parseLine + the size expander.
 func genEightfold(members []eightfoldMember, templates []string) []Form {

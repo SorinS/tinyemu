@@ -54,6 +54,9 @@ func buildTable(data string) []Form {
 			}
 		}
 	}
+	// The relative-branch forms ($br: JMP/Jcc/CALL) are generated here rather
+	// than from the skipped $br template lines.
+	forms = append(forms, genBr()...)
 	return forms
 }
 

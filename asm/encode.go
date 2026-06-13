@@ -25,6 +25,15 @@ func Assemble(src string) ([]byte, error) {
 		ops[i] = op
 	}
 
+	// nasm peephole: "mov r64, imm" with imm in [0, 0xFFFFFFFF] is emitted as
+	// the 32-bit "mov r32, imm" (which zero-extends to 64 bits) — 5-6 bytes
+	// instead of the REX.W imm32 form's 7. Negative or wider immediates keep
+	// the 64-bit form.
+	if mnem == "MOV" && len(ops) == 2 && ops[0].kind == opReg && ops[0].size == 64 &&
+		ops[1].kind == opImm && ops[1].imm >= 0 && ops[1].imm <= 0xFFFFFFFF {
+		ops[0].size = 32
+	}
+
 	var firstErr error
 	for i := range table {
 		f := &table[i]
@@ -127,6 +136,8 @@ func matchOperand(tok string, op operand) bool {
 		return op.kind == opImm && fitsSigned(op.imm, 8)
 	case tok == "sdword64":
 		return op.kind == opImm && fitsSigned(op.imm, 32)
+	case tok == "short", tok == "near", tok == "near|short":
+		return op.kind == opTarget
 	}
 	return false
 }
@@ -235,6 +246,12 @@ func encodeForm(f *Form, ops []operand) ([]byte, error) {
 			imm = appendLE(imm, immVal(immOp), 4)
 		case tok == "iq":
 			imm = appendLE(imm, immVal(immOp), 8)
+		case tok == "rel8":
+			imm = append(imm, byte(immVal(immOp))) // branch displacement (rel8)
+		case tok == "rel" || tok == "rel32":
+			imm = appendLE(imm, immVal(immOp), 4) // branch displacement (rel32)
+		case tok == "os":
+			// branch operand-size marker — no prefix in 64-bit mode.
 		case tok == "o32" || tok == "o8" || tok == "osz" || tok == "osm" || tok == "odf" || tok == "nw" || tok == "o64nw" ||
 			tok == "a16" || tok == "a32" || tok == "a64" || tok == "asz" || tok == "adf" ||
 			strings.HasPrefix(tok, "norex") || strings.HasPrefix(tok, "nof") || strings.HasPrefix(tok, "norep") ||
