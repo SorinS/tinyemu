@@ -12,17 +12,29 @@ const (
 	opNone opKind = iota
 	opReg         // a general-purpose register
 	opImm         // an integer immediate
+	opMem         // a memory reference
 )
 
-// operand is a parsed source operand. (Memory operands arrive in a later
-// slice; for now: registers and immediates.)
+// operand is a parsed source operand.
 type operand struct {
 	kind     opKind
-	reg      int   // register number 0..15
-	size     int   // register width in bits: 8/16/32/64
-	highByte bool  // ah/ch/dh/bh — the legacy high-byte registers (no REX)
+	reg      int   // register number 0..15 (opReg)
+	size     int   // register width in bits: 8/16/32/64 (opReg)
+	highByte bool  // ah/ch/dh/bh — legacy high-byte registers (no REX)
 	needRex  bool  // spl/bpl/sil/dil or r8..r15 — presence forces/uses REX
-	imm      int64 // immediate value
+	imm      int64 // immediate value (opImm)
+
+	// Memory reference (opMem): [base + index*scale + disp].
+	memBase    int   // base register 0..15, or -1 for none
+	memIndex   int   // index register 0..15, or -1 for none
+	memScale   int   // 1/2/4/8
+	memDisp    int64 // displacement
+	memHasDisp bool
+	memSize    int  // operand size from a size keyword (byte/word/…); 0 if absent
+	memRip     bool // RIP-relative ([rel …] / [rip+…])
+	baseRex    bool // base is r8..r15
+	indexRex   bool // index is r8..r15
+	baseSize   int  // address-register width (32 → needs 67 prefix; default 64)
 }
 
 // gpr is a general-purpose register's encoding facts.
@@ -33,24 +45,18 @@ type gpr struct {
 	needRex  bool
 }
 
-// gprByName maps every GPR spelling to its encoding facts.
 var gprByName = buildGPRTable()
 
 func buildGPRTable() map[string]gpr {
 	m := make(map[string]gpr, 80)
-	add := func(name string, num, size int, high, rex bool) {
-		m[name] = gpr{num, size, high, rex}
-	}
-	n64 := []string{"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi"}
-	n32 := []string{"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"}
-	n16 := []string{"ax", "cx", "dx", "bx", "sp", "bp", "si", "di"}
-	for i, n := range n64 {
+	add := func(name string, num, size int, high, rex bool) { m[name] = gpr{num, size, high, rex} }
+	for i, n := range []string{"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi"} {
 		add(n, i, 64, false, false)
 	}
-	for i, n := range n32 {
+	for i, n := range []string{"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"} {
 		add(n, i, 32, false, false)
 	}
-	for i, n := range n16 {
+	for i, n := range []string{"ax", "cx", "dx", "bx", "sp", "bp", "si", "di"} {
 		add(n, i, 16, false, false)
 	}
 	for i, n := range []string{"al", "cl", "dl", "bl"} {
@@ -72,9 +78,30 @@ func buildGPRTable() map[string]gpr {
 	return m
 }
 
+// sizeKeywords maps NASM operand-size keywords to bit widths.
+var sizeKeywords = []struct {
+	word string
+	bits int
+}{
+	{"byte", 8}, {"word", 16}, {"dword", 32}, {"qword", 64},
+	{"tword", 80}, {"oword", 128}, {"yword", 256}, {"zword", 512},
+}
+
 // parseOperand classifies one source operand string.
 func parseOperand(s string) (operand, bool) {
 	s = strings.TrimSpace(s)
+	size := 0
+	low := strings.ToLower(s)
+	for _, kw := range sizeKeywords {
+		if strings.HasPrefix(low, kw.word+" ") || strings.HasPrefix(low, kw.word+"[") {
+			size = kw.bits
+			s = strings.TrimSpace(s[len(kw.word):])
+			break
+		}
+	}
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		return parseMem(s[1:len(s)-1], size)
+	}
 	if g, ok := gprByName[strings.ToLower(s)]; ok {
 		return operand{kind: opReg, reg: g.num, size: g.size, highByte: g.highByte, needRex: g.needRex}, true
 	}
@@ -82,6 +109,58 @@ func parseOperand(s string) (operand, bool) {
 		return operand{kind: opImm, imm: v}, true
 	}
 	return operand{}, false
+}
+
+// parseMem parses the inside of a memory reference: base + index*scale + disp.
+func parseMem(inner string, size int) (operand, bool) {
+	op := operand{kind: opMem, memSize: size, memBase: -1, memIndex: -1, memScale: 1, baseSize: 64}
+	inner = strings.ReplaceAll(inner, "-", "+-") // keep signs when splitting on '+'
+	for _, term := range strings.Split(inner, "+") {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			continue
+		}
+		neg := false
+		if strings.HasPrefix(term, "-") {
+			neg, term = true, strings.TrimSpace(term[1:])
+		}
+		if star := strings.IndexByte(term, '*'); star >= 0 { // index*scale
+			rname := strings.ToLower(strings.TrimSpace(term[:star]))
+			scale, err := strconv.Atoi(strings.TrimSpace(term[star+1:]))
+			g, ok := gprByName[rname]
+			if !ok || err != nil || (scale != 1 && scale != 2 && scale != 4 && scale != 8) {
+				return op, false
+			}
+			op.memIndex, op.memScale, op.indexRex, op.baseSize = g.num, scale, g.needRex, g.size
+			continue
+		}
+		lower := strings.ToLower(term)
+		if lower == "rip" {
+			op.memRip = true
+			continue
+		}
+		if g, ok := gprByName[lower]; ok {
+			switch {
+			case op.memBase == -1:
+				op.memBase, op.baseRex, op.baseSize = g.num, g.needRex, g.size
+			case op.memIndex == -1:
+				op.memIndex, op.memScale, op.indexRex = g.num, 1, g.needRex
+			default:
+				return op, false
+			}
+			continue
+		}
+		v, ok := parseImm(lower)
+		if !ok {
+			return op, false
+		}
+		if neg {
+			v = -v
+		}
+		op.memDisp += v
+		op.memHasDisp = true
+	}
+	return op, true
 }
 
 // parseImm parses a decimal or 0x-hex integer literal with optional sign.
@@ -103,8 +182,7 @@ func parseImm(s string) (int64, bool) {
 		v = int64(u)
 	} else {
 		var err error
-		v, err = strconv.ParseInt(s, 10, 64)
-		if err != nil {
+		if v, err = strconv.ParseInt(s, 10, 64); err != nil {
 			return 0, false
 		}
 	}
@@ -114,22 +192,16 @@ func parseImm(s string) (int64, bool) {
 	return v, true
 }
 
-// fitsSigned reports whether v fits in a signed n-bit field.
 func fitsSigned(v int64, bits int) bool {
 	if bits >= 64 {
 		return true
 	}
-	lo := int64(-1) << (bits - 1)
-	hi := int64(1)<<(bits-1) - 1
-	return v >= lo && v <= hi
+	return v >= int64(-1)<<(bits-1) && v <= int64(1)<<(bits-1)-1
 }
 
-// fitsUnsigned reports whether v fits in an n-bit field (signed or unsigned).
 func fitsImm(v int64, bits int) bool {
 	if bits >= 64 {
 		return true
 	}
-	hi := int64(1)<<bits - 1
-	lo := int64(-1) << (bits - 1)
-	return v >= lo && v <= hi
+	return v >= int64(-1)<<(bits-1) && v <= int64(1)<<bits-1
 }

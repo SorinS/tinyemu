@@ -9,8 +9,9 @@ import (
 )
 
 // nasmAssemble assembles one 64-bit instruction with the real nasm and
-// returns the raw bytes — the oracle the encoder is held to.
-func nasmAssemble(t *testing.T, src string) []byte {
+// returns the raw bytes — the oracle the encoder is held to. ok is false if
+// nasm itself rejected the source (a test-input problem, not an encoder bug).
+func nasmAssemble(t *testing.T, src string) (b []byte, ok bool) {
 	t.Helper()
 	dir := t.TempDir()
 	in := filepath.Join(dir, "in.asm")
@@ -18,15 +19,14 @@ func nasmAssemble(t *testing.T, src string) []byte {
 	if err := os.WriteFile(in, []byte("BITS 64\n"+src+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("nasm", "-f", "bin", "-o", out, in)
-	if b, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("nasm failed for %q: %v\n%s", src, err, b)
+	if err := exec.Command("nasm", "-f", "bin", "-o", out, in).Run(); err != nil {
+		return nil, false
 	}
 	b, err := os.ReadFile(out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return b
+	return b, true
 }
 
 func requireNasm(t *testing.T) {
@@ -50,7 +50,10 @@ func TestAssembleVsNasm_Fixed(t *testing.T) {
 	}
 	for _, src := range insns {
 		t.Run(src, func(t *testing.T) {
-			want := nasmAssemble(t, src)
+			want, ok := nasmAssemble(t, src)
+			if !ok {
+				t.Fatalf("nasm rejected %q", src)
+			}
 			got, err := Assemble(src)
 			if err != nil {
 				t.Fatalf("Assemble(%q): %v", src, err)
@@ -77,7 +80,11 @@ func TestAssembleVsNasm_RegOps(t *testing.T) {
 	}
 	var pass, fail int
 	for _, src := range insns {
-		want := nasmAssemble(t, src)
+		want, ok := nasmAssemble(t, src)
+		if !ok {
+			t.Logf("SKIP  %s (nasm rejected)", src)
+			continue
+		}
 		got, err := Assemble(src)
 		if err != nil {
 			t.Logf("MISS  %-20s err: %v", src, err)
@@ -107,4 +114,44 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// TestAssembleVsNasm_Mem checks memory-operand encoding (ModRM/SIB/disp/
+// RIP-relative + the rsp/rbp/r12/r13 special cases) against nasm.
+func TestAssembleVsNasm_Mem(t *testing.T) {
+	requireNasm(t)
+	insns := []string{
+		"mov rax, [rbx]", "mov [rbx], rax", "mov rax, [rbx+8]", "mov rax, [rbx-8]",
+		"mov rax, [rbx+0x100]", "mov rax, [rsp]", "mov rax, [rbp]", "mov rax, [r12]",
+		"mov rax, [r13]", "mov rax, [rbx+rcx]", "mov rax, [rbx+rcx*4]",
+		"mov rax, [rbx+rcx*4+8]", "mov rax, [rax+r8*8+0x10]", "mov rax, [r8+r9]",
+		"mov rax, [0x1000]", "mov eax, [rbx]", "mov al, [rbx]",
+		"lea rax, [rbx+rcx*2+4]",
+		"add rax, [rbx]", "sub [rbx+8], rcx", "and ecx, [rdx]",
+		"inc qword [rax]", "dec dword [rbx]", "neg byte [rcx]",
+		"mov dword [rax], 1", "mov byte [rbx], 5", "add qword [rsp+8], 0x20",
+	}
+	var pass, fail int
+	for _, src := range insns {
+		want, ok := nasmAssemble(t, src)
+		if !ok {
+			t.Logf("SKIP  %s (nasm rejected)", src)
+			continue
+		}
+		got, err := Assemble(src)
+		switch {
+		case err != nil:
+			t.Logf("MISS  %-26s err: %v", src, err)
+			fail++
+		case !bytesEqual(got, want):
+			t.Logf("DIFF  %-26s got % x  nasm % x", src, got, want)
+			fail++
+		default:
+			pass++
+		}
+	}
+	t.Logf("memory operands: %d match nasm, %d miss/diff", pass, fail)
+	if pass == 0 {
+		t.Errorf("no memory-operand instructions matched nasm")
+	}
 }

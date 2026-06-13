@@ -10,11 +10,11 @@ import (
 // to machine code. Coverage is data-driven from the NASM table and grows as
 // code-string tokens are implemented; unsupported forms return an error
 // rather than wrong bytes. Byte-exactness is checked against nasm in the
-// differential tests. (Memory operands arrive in a later slice.)
+// differential tests.
 func Assemble(src string) ([]byte, error) {
 	mnem, opStrs := parseInsn(src)
 	if mnem == "" {
-		return nil, nil // blank / comment-only line
+		return nil, nil
 	}
 	ops := make([]operand, len(opStrs))
 	for i, s := range opStrs {
@@ -48,8 +48,7 @@ func Assemble(src string) ([]byte, error) {
 	return nil, fmt.Errorf("asm %q: no matching encoding form", src)
 }
 
-// parseInsn splits a source line into an upper-case mnemonic and its operand
-// strings. Comments (';') are stripped.
+// parseInsn splits a source line into an upper-case mnemonic and operands.
 func parseInsn(src string) (mnem string, ops []string) {
 	if c := strings.IndexByte(src, ';'); c >= 0 {
 		src = src[:c]
@@ -71,8 +70,6 @@ func parseInsn(src string) (mnem string, ops []string) {
 	return mnem, ops
 }
 
-// matchForm reports whether the parsed operands satisfy a form's operand-type
-// signature.
 func matchForm(f *Form, ops []operand) bool {
 	if len(f.Operands) != len(ops) {
 		return false
@@ -85,8 +82,7 @@ func matchForm(f *Form, ops []operand) bool {
 	return true
 }
 
-// stripMods removes operand-type modifiers we don't yet act on: '?', '*' and
-// '|flag' suffixes.
+// stripMods removes operand-type modifiers we don't yet act on.
 func stripMods(tok string) string {
 	if i := strings.IndexByte(tok, '|'); i >= 0 {
 		tok = tok[:i]
@@ -105,7 +101,15 @@ func matchOperand(tok string, op operand) bool {
 	case tok == "reg8", tok == "reg16", tok == "reg32", tok == "reg64":
 		return op.kind == opReg && op.size == regTokSize(tok)
 	case tok == "rm8", tok == "rm16", tok == "rm32", tok == "rm64":
-		return op.kind == opReg && op.size == regTokSize(tok) // register form (mem later)
+		n := regTokSize(tok)
+		if op.kind == opReg {
+			return op.size == n
+		}
+		return op.kind == opMem && (op.memSize == n || op.memSize == 0)
+	case tok == "mem":
+		return op.kind == opMem
+	case tok == "mem8", tok == "mem16", tok == "mem32", tok == "mem64":
+		return op.kind == opMem && (op.memSize == regTokSize(tok) || op.memSize == 0)
 	case tok == "imm":
 		return op.kind == opImm
 	case tok == "imm8", tok == "imm16", tok == "imm32":
@@ -122,7 +126,6 @@ func matchOperand(tok string, op operand) bool {
 	return false
 }
 
-// regTokSize returns the bit width encoded in a reg8/rm32/imm16-style token.
 func regTokSize(tok string) int {
 	switch {
 	case strings.HasSuffix(tok, "8"):
@@ -156,36 +159,16 @@ func encodeForm(f *Form, ops []operand) ([]byte, error) {
 		}
 	}
 
-	var legacy []byte // 66/F2/F3 legacy prefixes
-	var rexW, rexR, rexB, rexForced bool
-	var opcode []byte
+	var legacy []byte
+	var rexW, rexR, rexX, rexB, rexForced bool
+	var opcode, imm []byte
 	haveModRM := false
-	var modReg, modRM byte
-	var imm []byte
+	var regField byte
 
-	// "nw" marks an operand whose 64-bit size is the long-mode default
-	// (push/pop, near jumps): REX.W must NOT be emitted even though o64 is
-	// present.
 	noW := false
 	for _, t := range strings.Fields(f.Code) {
 		if t == "nw" {
 			noW = true
-		}
-	}
-
-	use := func(o *operand, isReg bool) {
-		if o == nil || o.kind != opReg {
-			return
-		}
-		if o.num8() >= 8 {
-			if isReg {
-				rexR = true
-			} else {
-				rexB = true
-			}
-		}
-		if o.needRex {
-			rexForced = true
 		}
 	}
 
@@ -200,8 +183,8 @@ func encodeForm(f *Form, ops []operand) ([]byte, error) {
 			if r == nil {
 				r = rmOp
 			}
-			if r == nil {
-				return nil, fmt.Errorf("%s: +r with no register operand", tok)
+			if r == nil || r.kind != opReg {
+				return nil, fmt.Errorf("+r needs a register operand")
 			}
 			opcode = append(opcode, byte(b)+byte(r.reg&7))
 			if r.reg >= 8 {
@@ -211,18 +194,18 @@ func encodeForm(f *Form, ops []operand) ([]byte, error) {
 				rexForced = true
 			}
 		case tok == "/r":
-			if regOp == nil || rmOp == nil {
-				return nil, fmt.Errorf("/r needs reg and rm operands")
+			if regOp == nil {
+				return nil, fmt.Errorf("/r needs a reg operand")
 			}
-			haveModRM, modReg, modRM = true, byte(regOp.reg&7), byte(rmOp.reg&7)
-			use(regOp, true)
-			use(rmOp, false)
+			haveModRM, regField = true, byte(regOp.reg&7)
+			if regOp.reg >= 8 {
+				rexR = true
+			}
+			if regOp.needRex {
+				rexForced = true
+			}
 		case len(tok) == 2 && tok[0] == '/' && tok[1] >= '0' && tok[1] <= '7':
-			if rmOp == nil {
-				return nil, fmt.Errorf("/digit needs an rm operand")
-			}
-			haveModRM, modReg, modRM = true, tok[1]-'0', byte(rmOp.reg&7)
-			use(rmOp, false)
+			haveModRM, regField = true, tok[1]-'0'
 		case tok == "o16":
 			legacy = append(legacy, 0x66)
 		case tok == "o64":
@@ -251,12 +234,38 @@ func encodeForm(f *Form, ops []operand) ([]byte, error) {
 		}
 	}
 
-	// Assemble in canonical order: legacy prefixes, REX, opcode, ModRM, imm.
+	// ModRM (+ SIB + displacement), built once the reg field and rm operand
+	// are known.
+	var modrm []byte
+	if haveModRM {
+		if rmOp == nil {
+			return nil, fmt.Errorf("ModRM needs an rm operand")
+		}
+		if rmOp.kind == opReg {
+			modrm = []byte{0xC0 | regField<<3 | byte(rmOp.reg&7)}
+			if rmOp.reg >= 8 {
+				rexB = true
+			}
+			if rmOp.needRex {
+				rexForced = true
+			}
+		} else {
+			mb, rX, rB, err := encodeMem(rmOp, regField)
+			if err != nil {
+				return nil, err
+			}
+			modrm, rexX, rexB = mb, rexX || rX, rexB || rB
+			if rmOp.baseSize == 32 {
+				legacy = append([]byte{0x67}, legacy...) // 32-bit address size
+			}
+		}
+	}
+
 	if noW {
 		rexW = false
 	}
 	out := legacy
-	if rexW || rexR || rexB || rexForced {
+	if rexW || rexR || rexX || rexB || rexForced {
 		var rex byte = 0x40
 		if rexW {
 			rex |= 0x08
@@ -264,20 +273,82 @@ func encodeForm(f *Form, ops []operand) ([]byte, error) {
 		if rexR {
 			rex |= 0x04
 		}
+		if rexX {
+			rex |= 0x02
+		}
 		if rexB {
 			rex |= 0x01
 		}
 		out = append(out, rex)
 	}
 	out = append(out, opcode...)
-	if haveModRM {
-		out = append(out, 0xC0|modReg<<3|modRM) // mod=11 (register-direct)
-	}
+	out = append(out, modrm...)
 	out = append(out, imm...)
 	return out, nil
 }
 
-func (o *operand) num8() int { return o.reg }
+// encodeMem builds the ModRM (+ SIB + displacement) bytes for a memory
+// operand, given the ModRM.reg field value, and reports whether REX.X / REX.B
+// are needed.
+func encodeMem(m *operand, reg byte) (out []byte, rexX, rexB bool, err error) {
+	if m.memRip {
+		out = []byte{reg<<3 | 0x05} // mod=00, rm=101 → RIP-relative disp32
+		return appendLE(out, m.memDisp, 4), false, false, nil
+	}
+	base, index := m.memBase, m.memIndex
+	if index == 4 {
+		return nil, false, false, fmt.Errorf("rsp cannot be an index register")
+	}
+	if index >= 0 && m.indexRex {
+		rexX = true
+	}
+	if base >= 0 && m.baseRex {
+		rexB = true
+	}
+
+	useSIB := index >= 0 || base < 0 || (base&7) == 4
+
+	var mod byte
+	var disp []byte
+	switch {
+	case base < 0:
+		mod, disp = 0, appendLE(nil, m.memDisp, 4) // disp32, no base
+	case !m.memHasDisp && (base&7) != 5:
+		mod = 0
+	case fitsSigned(m.memDisp, 8):
+		mod, disp = 1, []byte{byte(m.memDisp)}
+	default:
+		mod, disp = 2, appendLE(nil, m.memDisp, 4)
+	}
+	if base >= 0 && (base&7) == 5 && mod == 0 { // rbp/r13: force disp8=0
+		mod, disp = 1, []byte{0}
+	}
+
+	if useSIB {
+		var scaleBits byte
+		switch m.memScale {
+		case 2:
+			scaleBits = 1
+		case 4:
+			scaleBits = 2
+		case 8:
+			scaleBits = 3
+		}
+		idx := byte(4) // 100 = no index
+		if index >= 0 {
+			idx = byte(index & 7)
+		}
+		bse := byte(5) // 101 = no base (with mod=00 → disp32)
+		if base >= 0 {
+			bse = byte(base & 7)
+		}
+		out = append(out, mod<<6|reg<<3|4) // rm=100 → SIB follows
+		out = append(out, scaleBits<<6|idx<<3|bse)
+	} else {
+		out = append(out, mod<<6|reg<<3|byte(base&7))
+	}
+	return append(out, disp...), rexX, rexB, nil
+}
 
 func immVal(o *operand) int64 {
 	if o == nil {
@@ -286,7 +357,6 @@ func immVal(o *operand) int64 {
 	return o.imm
 }
 
-// appendLE appends the low n bytes of v in little-endian order.
 func appendLE(b []byte, v int64, n int) []byte {
 	for i := 0; i < n; i++ {
 		b = append(b, byte(v>>(8*i)))
@@ -294,7 +364,6 @@ func appendLE(b []byte, v int64, n int) []byte {
 	return b
 }
 
-// isHexByte reports whether tok is a two-digit lowercase-hex opcode byte.
 func isHexByte(tok string) bool {
 	if len(tok) != 2 {
 		return false
