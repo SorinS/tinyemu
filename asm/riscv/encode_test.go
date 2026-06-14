@@ -81,7 +81,13 @@ func TestRISCV_DifferentialLLVMMC(t *testing.T) {
 		// U-type
 		"lui gp, 0x12345", "auipc a0, 0x1000",
 		// system
-		"ecall", "ebreak",
+		"ecall", "ebreak", "mret", "sret", "wfi",
+		// Zicsr
+		"csrrw a0, mstatus, a1", "csrrs a0, mtvec, zero", "csrrc t0, sepc, t1",
+		"csrrwi a0, 0x340, 5", "csrrsi a0, mie, 1",
+		"csrr a0, mhartid", "csrw mtvec, a0", "csrs sstatus, a1",
+		// fence
+		"fence", "fence rw, rw", "fence.i", "fence r, w",
 	}
 	var pass, fail int
 	for _, src := range cases {

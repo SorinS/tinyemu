@@ -24,7 +24,10 @@ const (
 	fmtB                    // rs1, rs2, imm (branch, PC-relative)
 	fmtU                    // rd, imm20
 	fmtJ                    // rd, imm (jump, PC-relative)
-	fmtNone                 // no operands (ecall/ebreak)
+	fmtNone                 // no operands; full word from opcode|funct3|funct7 (ecall/mret/…)
+	fmtCSR                  // rd, csr, rs1
+	fmtCSRI                 // rd, csr, uimm5
+	fmtFence                // fence [pred, succ]
 )
 
 // insn is one instruction's encoding template.
@@ -85,8 +88,17 @@ var table = []insn{
 	{"lui", fmtU, 0x37, 0x0, 0x00}, {"auipc", fmtU, 0x17, 0x0, 0x00},
 	// --- J-type ---
 	{"jal", fmtJ, 0x6F, 0x0, 0x00},
-	// --- System ---
+	// --- System (full word via funct7 in [31:25]) ---
 	{"ecall", fmtNone, 0x73, 0x0, 0x000}, {"ebreak", fmtNone, 0x73, 0x0, 0x001},
+	{"mret", fmtNone, 0x73, 0x0, 0x302}, {"sret", fmtNone, 0x73, 0x0, 0x102},
+	{"wfi", fmtNone, 0x73, 0x0, 0x105},
+	// --- Zicsr ---
+	{"csrrw", fmtCSR, 0x73, 0x1, 0x00}, {"csrrs", fmtCSR, 0x73, 0x2, 0x00},
+	{"csrrc", fmtCSR, 0x73, 0x3, 0x00},
+	{"csrrwi", fmtCSRI, 0x73, 0x5, 0x00}, {"csrrsi", fmtCSRI, 0x73, 0x6, 0x00},
+	{"csrrci", fmtCSRI, 0x73, 0x7, 0x00},
+	// --- FENCE ---
+	{"fence", fmtFence, 0x0F, 0x0, 0x00}, {"fence.i", fmtNone, 0x0F, 0x1, 0x00},
 }
 
 var byName = func() map[string]*insn {

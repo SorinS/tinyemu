@@ -8,6 +8,24 @@ import (
 // xreg returns the ABI name for register n (0..31).
 func xreg(n uint32) string { return abiNames[n&0x1F] }
 
+// fenceStr renders a 4-bit fence ordering set (i=8,o=4,r=2,w=1) as flag letters.
+func fenceStr(v uint32) string {
+	s := ""
+	if v&8 != 0 {
+		s += "i"
+	}
+	if v&4 != 0 {
+		s += "o"
+	}
+	if v&2 != 0 {
+		s += "r"
+	}
+	if v&1 != 0 {
+		s += "w"
+	}
+	return s
+}
+
 // signExtend sign-extends the low n bits of v.
 func signExtend(v uint32, n uint) int64 {
 	shift := 64 - n
@@ -118,13 +136,44 @@ func Disassemble(code []byte) (text string, length int, err error) {
 			((w>>31)&1)<<20|((w>>21)&0x3FF)<<1|((w>>20)&1)<<11|((w>>12)&0xFF)<<12, 21)
 		return fmt.Sprintf("jal %s, %d", xreg(rd), imm), 4, nil
 
-	case 0x73: // system
-		switch w >> 20 {
-		case 0x000:
-			return "ecall", 4, nil
-		case 0x001:
-			return "ebreak", 4, nil
+	case 0x0F: // fence / fence.i
+		if funct3 == 0x1 {
+			return "fence.i", 4, nil
 		}
+		imm := (w >> 20) & 0xFFF
+		pred, succ := (imm>>4)&0xF, imm&0xF
+		if pred == 0xF && succ == 0xF {
+			return "fence", 4, nil
+		}
+		return fmt.Sprintf("fence %s, %s", fenceStr(pred), fenceStr(succ)), 4, nil
+
+	case 0x73: // system + Zicsr
+		if funct3 == 0 {
+			switch w >> 20 {
+			case 0x000:
+				return "ecall", 4, nil
+			case 0x001:
+				return "ebreak", 4, nil
+			case 0x302:
+				return "mret", 4, nil
+			case 0x102:
+				return "sret", 4, nil
+			case 0x105:
+				return "wfi", 4, nil
+			}
+			break
+		}
+		csr := (w >> 20) & 0xFFF
+		in := find(func(x *insn) bool {
+			return x.opcode == 0x73 && (x.format == fmtCSR || x.format == fmtCSRI) && x.funct3 == funct3
+		})
+		if in == nil {
+			break
+		}
+		if in.format == fmtCSRI {
+			return fmt.Sprintf("%s %s, %s, %d", in.name, xreg(rd), csrName(csr), rs1), 4, nil
+		}
+		return fmt.Sprintf("%s %s, %s, %s", in.name, xreg(rd), csrName(csr), xreg(rs1)), 4, nil
 	}
 	return "", 0, fmt.Errorf("riscv: cannot decode %#08x", w)
 }

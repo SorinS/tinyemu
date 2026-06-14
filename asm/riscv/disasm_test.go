@@ -44,7 +44,9 @@ func TestRISCV_RoundTrip(t *testing.T) {
 		"beq x1, x2, 16", "bne a0, a1, -8", "blt a0, a1, 256", "bgeu a0, a1, 2048",
 		"jal ra, 32", "jal zero, -16",
 		"lui gp, 0x12345", "auipc a0, 0x1000",
-		"ecall", "ebreak",
+		"ecall", "ebreak", "mret", "sret", "wfi",
+		"csrrw a0, mstatus, a1", "csrrs a0, mtvec, zero", "csrrwi a0, 0x340, 5",
+		"fence", "fence rw, rw", "fence.i", "fence r, w",
 	}
 	for _, src := range insns {
 		mine, err := Assemble(src)

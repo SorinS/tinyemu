@@ -4,6 +4,7 @@ package riscv
 // like completion). They expand to base instructions in expandPseudo.
 var pseudoNames = []string{
 	"nop", "ret", "mv", "not", "neg", "seqz", "snez", "li", "j", "jr", "beqz", "bnez",
+	"csrr", "csrw", "csrs", "csrc", "csrwi", "csrsi", "csrci",
 }
 
 // Mnemonics returns every assemblable instruction mnemonic — base table plus
@@ -73,6 +74,34 @@ func expandPseudo(mnem string, ops []string) (string, []string) {
 	case "bnez":
 		if len(ops) == 2 {
 			return "bne", []string{ops[0], "zero", ops[1]}
+		}
+	case "csrr": // csrr rd, csr  →  csrrs rd, csr, zero
+		if len(ops) == 2 {
+			return "csrrs", []string{ops[0], ops[1], "zero"}
+		}
+	case "csrw": // csrw csr, rs  →  csrrw zero, csr, rs
+		if len(ops) == 2 {
+			return "csrrw", []string{"zero", ops[0], ops[1]}
+		}
+	case "csrs":
+		if len(ops) == 2 {
+			return "csrrs", []string{"zero", ops[0], ops[1]}
+		}
+	case "csrc":
+		if len(ops) == 2 {
+			return "csrrc", []string{"zero", ops[0], ops[1]}
+		}
+	case "csrwi":
+		if len(ops) == 2 {
+			return "csrrwi", []string{"zero", ops[0], ops[1]}
+		}
+	case "csrsi":
+		if len(ops) == 2 {
+			return "csrrsi", []string{"zero", ops[0], ops[1]}
+		}
+	case "csrci":
+		if len(ops) == 2 {
+			return "csrrci", []string{"zero", ops[0], ops[1]}
 		}
 	}
 	return mnem, ops

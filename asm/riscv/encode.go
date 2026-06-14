@@ -139,6 +139,60 @@ func encode(in *insn, ops []string) (uint32, error) {
 		}
 		return in.opcode | bit(imm, 20)<<31 | bits(imm, 10, 1)<<21 | bit(imm, 11)<<20 |
 			bits(imm, 19, 12)<<12 | u(rd)<<7, nil
+
+	case fmtCSR:
+		if len(ops) != 3 {
+			return 0, fmt.Errorf("%s: want rd, csr, rs1", in.name)
+		}
+		rd, err := reg(ops[0])
+		if err != nil {
+			return 0, err
+		}
+		csr, ok := parseCSR(ops[1])
+		if !ok {
+			return 0, fmt.Errorf("bad CSR %q", ops[1])
+		}
+		rs1, err := reg(ops[2])
+		if err != nil {
+			return 0, err
+		}
+		return base | csr<<20 | u(rs1)<<15 | u(rd)<<7, nil
+
+	case fmtCSRI:
+		if len(ops) != 3 {
+			return 0, fmt.Errorf("%s: want rd, csr, uimm", in.name)
+		}
+		rd, err := reg(ops[0])
+		if err != nil {
+			return 0, err
+		}
+		csr, ok := parseCSR(ops[1])
+		if !ok {
+			return 0, fmt.Errorf("bad CSR %q", ops[1])
+		}
+		uimm, err := parseImm(ops[2])
+		if err != nil {
+			return 0, err
+		}
+		if uimm < 0 || uimm > 31 {
+			return 0, fmt.Errorf("csr uimm %d out of 0..31", uimm)
+		}
+		return base | csr<<20 | uint32(uimm)<<15 | u(rd)<<7, nil
+
+	case fmtFence:
+		pred, succ := uint32(0xF), uint32(0xF) // default = fence iorw, iorw
+		if len(ops) == 2 {
+			var ok bool
+			if pred, ok = parseFenceFlags(ops[0]); !ok {
+				return 0, fmt.Errorf("bad fence predecessor %q", ops[0])
+			}
+			if succ, ok = parseFenceFlags(ops[1]); !ok {
+				return 0, fmt.Errorf("bad fence successor %q", ops[1])
+			}
+		} else if len(ops) != 0 {
+			return 0, fmt.Errorf("fence: want no operands or pred, succ")
+		}
+		return base | (pred<<4|succ)<<20, nil
 	}
 	return 0, fmt.Errorf("unhandled format for %s", in.name)
 }
@@ -255,6 +309,28 @@ func parseMem(s string) (off int64, base int, err error) {
 	}
 	base, err = reg(baseStr)
 	return
+}
+
+// parseFenceFlags parses a fence ordering set like "rw" or "iorw" into its
+// 4-bit value (i=8, o=4, r=2, w=1).
+func parseFenceFlags(s string) (uint32, bool) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	var v uint32
+	for _, c := range s {
+		switch c {
+		case 'i':
+			v |= 8
+		case 'o':
+			v |= 4
+		case 'r':
+			v |= 2
+		case 'w':
+			v |= 1
+		default:
+			return 0, false
+		}
+	}
+	return v, true
 }
 
 // parseImm parses a signed decimal or hex (0x) immediate.
