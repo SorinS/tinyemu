@@ -18,6 +18,12 @@ func Disassemble(code []byte, bits int) (text string, length int, err error) {
 	return x86asm.IntelSyntax(inst, 0, nil), inst.Len, nil
 }
 
+// DisassembleMode is Disassemble keyed by the assembler's Mode (Bits32 /
+// Bits64) instead of a raw bit width, for symmetry with AssembleMode.
+func DisassembleMode(code []byte, mode Mode) (text string, length int, err error) {
+	return Disassemble(code, int(mode))
+}
+
 // DisassembleAll decodes every instruction in code, returning one Intel-syntax
 // line per instruction. It stops and returns the lines decoded so far plus the
 // error on the first byte it cannot decode.

@@ -167,8 +167,9 @@ func formsMarkdown(mnem string, limit int) string {
 }
 
 // hover returns markdown describing the instruction on a line: its assembled
-// bytes (if any) and the matching table forms (operand signatures).
-func hover(line string, labels map[string]int64) string {
+// bytes, the canonical disassembly of those bytes (a cross-check, via x/arch),
+// and the matching table forms. mode selects 32- vs 64-bit encoding/decoding.
+func hover(line string, labels map[string]int64, mode asm.Mode) string {
 	insn := instructionText(line)
 	if insn == "" {
 		return ""
@@ -179,8 +180,11 @@ func hover(line string, labels map[string]int64) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%s**\n\n", mnem)
-	if bytes, err := asm.AssembleLine(line, labels); err == nil && len(bytes) > 0 {
+	if bytes, err := asm.AssembleLineMode(line, labels, mode); err == nil && len(bytes) > 0 {
 		fmt.Fprintf(&b, "encodes to `%s` (%d bytes)\n\n", bytesHex(bytes), len(bytes))
+		if text, n, derr := asm.DisassembleMode(bytes, mode); derr == nil && n == len(bytes) {
+			fmt.Fprintf(&b, "decodes to `%s`\n\n", text)
+		}
 	}
 	b.WriteString(formsMarkdown(mnem, 12))
 	return b.String()

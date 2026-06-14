@@ -178,8 +178,9 @@ func (s *server) publishDiagnostics(w *bufio.Writer, uri string) {
 
 func (s *server) hover(p posParams) any {
 	line := s.lineAt(p)
-	labels := asm.CollectLabels(s.docs[p.TextDocument.URI])
-	md := hover(line, labels)
+	doc := s.docs[p.TextDocument.URI]
+	labels := asm.CollectLabels(doc)
+	md := hover(line, labels, asm.DetectBits(doc))
 	if md == "" {
 		return nil
 	}
