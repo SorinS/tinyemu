@@ -44,3 +44,39 @@ func TestServerFlow(t *testing.T) {
 		t.Errorf("hover over 'mov rax, rbx' should show its bytes:\n%s", buf.String())
 	}
 }
+
+func TestServerRun(t *testing.T) {
+	srv := &server{docs: map[string]string{
+		"file:///r.asm": "  mov rax, 5\n  add rax, 3\n  ret\n",
+	}}
+	var buf bytes.Buffer
+	w := bufio.NewWriter(&buf)
+
+	rp, _ := json.Marshal(runParams{TextDocument: textDocumentID{URI: "file:///r.asm"}, Line: -1})
+	srv.handle(&rpcMessage{Method: "asm/run", ID: json.RawMessage("3"), Params: rp}, w)
+	w.Flush()
+
+	var resp struct {
+		Result runResult `json:"result"`
+	}
+	body := buf.String()
+	if i := strings.Index(body, "\r\n\r\n"); i >= 0 {
+		body = body[i+4:]
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode: %v\n%s", err, buf.String())
+	}
+	if resp.Result.Stop != "completed" {
+		t.Fatalf("stop = %q, want completed:\n%s", resp.Result.Stop, buf.String())
+	}
+	// line 1 (add rax, 3) leaves rax = 8.
+	var found bool
+	for _, l := range resp.Result.Lines {
+		if l.Line == 1 && strings.Contains(l.Text, "rax=0x8") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected line 1 annotation 'rax=0x8', got %+v", resp.Result.Lines)
+	}
+}

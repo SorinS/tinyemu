@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/jtolio/tinyemu-go/asm"
+	"github.com/jtolio/tinyemu-go/asm/emu"
 )
 
 // mnemonics is the set + sorted list of instruction mnemonics from the table,
@@ -160,6 +161,20 @@ func bytesHex(b []byte) string {
 	parts := make([]string, len(b))
 	for i, x := range b {
 		parts[i] = fmt.Sprintf("%02x", x)
+	}
+	return strings.Join(parts, " ")
+}
+
+// formatLineState renders the register/flag changes a line made as a compact
+// inline annotation, e.g. "rax=0x5 rdi=0x8 ZF=1". Empty if the line changed
+// nothing observable (the caller then skips the annotation).
+func formatLineState(ls emu.LineState) string {
+	parts := make([]string, 0, len(ls.Changed)+len(ls.Flags))
+	for _, rv := range ls.Changed {
+		parts = append(parts, fmt.Sprintf("%s=%#x", rv.Name, rv.Value))
+	}
+	for _, rv := range ls.Flags {
+		parts = append(parts, fmt.Sprintf("%s=%d", rv.Name, rv.Value))
 	}
 	return strings.Join(parts, " ")
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/jtolio/tinyemu-go/asm"
+	"github.com/jtolio/tinyemu-go/asm/emu"
 )
 
 func main() {
@@ -121,6 +122,10 @@ func (s *server) handle(msg *rpcMessage, w *bufio.Writer) {
 		var p posParams
 		json.Unmarshal(msg.Params, &p)
 		s.reply(w, msg.ID, s.completion(p))
+	case "asm/run":
+		var p runParams
+		json.Unmarshal(msg.Params, &p)
+		s.reply(w, msg.ID, s.runProgram(p))
 	default:
 		if len(msg.ID) > 0 { // a request we don't handle — must answer
 			s.reply(w, msg.ID, nil)
@@ -200,6 +205,33 @@ func (s *server) completion(p posParams) any {
 	return items
 }
 
+// runProgram is the custom "asm/run" request: assemble the buffer, execute it
+// in the emulator, and return per-line register/flag changes for inline
+// display. Run-to-cursor when Line >= 0; whole program otherwise. This is
+// on-demand only (an editor command/keymap), never tied to didChange.
+func (s *server) runProgram(p runParams) any {
+	src := s.docs[p.TextDocument.URI]
+	opts := emu.Options{StopBeforeLine: -1}
+	if p.Line >= 0 {
+		opts.StopBeforeLine = p.Line
+	}
+	if len(p.Breakpoints) > 0 {
+		opts.Breakpoints = map[int]bool{}
+		for _, l := range p.Breakpoints {
+			opts.Breakpoints[l] = true
+		}
+	}
+	res, err := emu.Run(src, opts)
+	if err != nil {
+		return runResult{Stop: "assemble-error", StopLine: -1, Error: cleanErr(err)}
+	}
+	out := runResult{Stop: res.Stop, StopLine: res.StopLine, Steps: res.Steps, Error: res.Error}
+	for _, ls := range res.Lines {
+		out.Lines = append(out.Lines, runLine{Line: ls.Line, Text: formatLineState(ls)})
+	}
+	return out
+}
+
 func (s *server) lineAt(p posParams) string {
 	lines := strings.Split(s.docs[p.TextDocument.URI], "\n")
 	if p.Position.Line < 0 || p.Position.Line >= len(lines) {
@@ -268,6 +300,24 @@ type completionItem struct {
 	Label  string `json:"label"`
 	Kind   int    `json:"kind"`
 	Detail string `json:"detail"`
+}
+
+// asm/run request + result (custom, non-standard LSP method).
+type runParams struct {
+	TextDocument textDocumentID `json:"textDocument"`
+	Line         int            `json:"line"`        // run-to-cursor line; <0 = whole program
+	Breakpoints  []int          `json:"breakpoints"` // optional stop-before lines
+}
+type runLine struct {
+	Line int    `json:"line"` // 0-based source line
+	Text string `json:"text"` // inline annotation, e.g. "rax=0x5 ZF=1"
+}
+type runResult struct {
+	Lines    []runLine `json:"lines"`
+	Stop     string    `json:"stop"`     // why the run ended
+	StopLine int       `json:"stopLine"` // line about to execute when stopped, or -1
+	Steps    int       `json:"steps"`
+	Error    string    `json:"error,omitempty"`
 }
 
 func initializeResult() any {

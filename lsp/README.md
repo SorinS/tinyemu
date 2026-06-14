@@ -42,9 +42,47 @@ Open a `.asm`/`.nasm` file and you'll get diagnostics as you type, `K` for
 hover, and completion. (If `.asm` files don't get a filetype, add
 `vim.filetype.add({ extension = { asm = "asm", nasm = "nasm" } })`.)
 
+## Live emulation (inline register/flag state)
+
+The reason this lives in an emulator repo: the server can **run your code**.
+The custom `asm/run` request assembles the buffer, executes it in the
+tinyemu-go x86-64 CPU (flat long mode, a small sandbox — code at 1 MiB, a
+stack seeded with a sentinel return address, power-on registers), and returns
+the register/flag changes for each source line. The editor paints those as
+inline virtual text — a live view of what the code actually does.
+
+Drop [`nvim/asm-live.lua`](nvim/asm-live.lua) on your `runtimepath` (or copy it
+into `~/.config/nvim/lua/`) and add keymaps when the client attaches:
+
+```lua
+vim.api.nvim_create_autocmd("LspAttach", {
+  callback = function(args)
+    local c = vim.lsp.get_client_by_id(args.data.client_id)
+    if c and c.name == "asm-lsp" then
+      local live = require("asm-live")
+      vim.keymap.set("n", "<leader>rr", live.run,            { buffer = args.buf, desc = "asm: run buffer" })
+      vim.keymap.set("n", "<leader>rc", live.run_to_cursor,  { buffer = args.buf, desc = "asm: run to cursor" })
+      vim.keymap.set("n", "<leader>rx", live.clear,          { buffer = args.buf, desc = "asm: clear state" })
+    end
+  end,
+})
+```
+
+Open `example.asm`, press `<leader>rr`, and each executed line gets an
+annotation like `rax=0x5  ZF=1`. `<leader>rc` runs only up to the cursor line
+(marked `◀ cursor`). The status line reports how the run ended: `completed`
+(a balanced `ret`), `reached-line`, `max-steps` (an unbroken loop), `fault`
+(a guest exception — there's no IDT, so faults are reported, not vectored), or
+`ran-outside-program`.
+
+Notes:
+- Registers start at their power-on values — all zero except `rdx=0x600` — so
+  `mov rax, rbx` early on shows `rax=0x0`. Set up inputs explicitly.
+- It runs on an explicit keymap, never on edit, so a runaway loop can't churn.
+- Loops show the **last** iteration's state per line.
+
 ## Roadmap
 
-The standard LSP surface is in place. The differentiator — and the reason this
-lives in an emulator repo — is **execution-backed features**: "run to cursor",
-inline register/flag state, and "evaluate selection", using the tinyemu-go CPU
-as the backend. That's the next step.
+Next: breakpoints (the `breakpoints` field of `asm/run` is already wired
+through the backend), an "evaluate selection" command, and a full-register
+floating window / panel for the line under the cursor.
