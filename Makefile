@@ -121,6 +121,11 @@ test-cpu-riscv: ## Run RISC-V CPU tests
 	$(call echo,"Running RISC-V CPU tests")
 	go test -v -count=1 ./cpu/riscv/...
 
+.PHONY: test-riscv-spike
+test-riscv-spike: ## Differential-test cpu/riscv against Spike (needs spike + riscv64-unknown-elf-gcc)
+	$(call echo,"Differential testing cpu/riscv vs Spike")
+	go test -v -count=1 -run TestSpikeDiff ./cpu/riscv/
+
 .PHONY: test-cpu-x86
 test-cpu-x86: ## Run x86 CPU tests
 	$(call echo,"Running x86 CPU tests")
