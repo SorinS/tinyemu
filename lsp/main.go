@@ -122,6 +122,10 @@ func (s *server) handle(msg *rpcMessage, w *bufio.Writer) {
 		var p posParams
 		json.Unmarshal(msg.Params, &p)
 		s.reply(w, msg.ID, s.completion(p))
+	case "textDocument/signatureHelp":
+		var p posParams
+		json.Unmarshal(msg.Params, &p)
+		s.reply(w, msg.ID, s.signatureHelp(p))
 	case "asm/run":
 		var p runParams
 		json.Unmarshal(msg.Params, &p)
@@ -199,12 +203,24 @@ func (s *server) completion(p posParams) any {
 	}
 	items := []completionItem{}
 	for _, m := range completions(line[start:col]) {
-		items = append(items, completionItem{Label: m, Kind: 3, Detail: "instruction"}) // 3 = Function
+		it := completionItem{Label: m, Kind: 3, Detail: "instruction"} // 3 = Function
+		if doc := formsMarkdown(m, 8); doc != "" {
+			it.Documentation = &markupContent{Kind: "markdown", Value: doc}
+		}
+		items = append(items, it)
 		if len(items) >= 200 {
 			break
 		}
 	}
 	return items
+}
+
+func (s *server) signatureHelp(p posParams) any {
+	r := buildSignatureHelp(s.lineAt(p), p.Position.Character)
+	if r == nil {
+		return nil
+	}
+	return r
 }
 
 // runProgram is the custom "asm/run" request: assemble the buffer, execute it
@@ -299,9 +315,24 @@ type hoverResult struct {
 	Contents markupContent `json:"contents"`
 }
 type completionItem struct {
-	Label  string `json:"label"`
-	Kind   int    `json:"kind"`
-	Detail string `json:"detail"`
+	Label         string         `json:"label"`
+	Kind          int            `json:"kind"`
+	Detail        string         `json:"detail"`
+	Documentation *markupContent `json:"documentation,omitempty"`
+}
+
+// signatureHelp request result types.
+type parameterInformation struct {
+	Label [2]int `json:"label"` // [start,end] offsets into the signature label
+}
+type signatureInformation struct {
+	Label      string                 `json:"label"`
+	Parameters []parameterInformation `json:"parameters"`
+}
+type signatureHelpResult struct {
+	Signatures      []signatureInformation `json:"signatures"`
+	ActiveSignature int                    `json:"activeSignature"`
+	ActiveParameter int                    `json:"activeParameter"`
 }
 
 // asm/run request + result (custom, non-standard LSP method).
@@ -325,9 +356,10 @@ type runResult struct {
 func initializeResult() any {
 	return map[string]any{
 		"capabilities": map[string]any{
-			"textDocumentSync":   1, // full document sync
-			"hoverProvider":      true,
-			"completionProvider": map[string]any{"triggerCharacters": []string{}},
+			"textDocumentSync":      1, // full document sync
+			"hoverProvider":         true,
+			"completionProvider":    map[string]any{"triggerCharacters": []string{}},
+			"signatureHelpProvider": map[string]any{"triggerCharacters": []string{" ", ","}},
 		},
 		"serverInfo": map[string]any{"name": "asm-lsp", "version": "0.1"},
 	}

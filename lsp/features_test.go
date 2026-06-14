@@ -46,6 +46,42 @@ func TestHover(t *testing.T) {
 	}
 }
 
+func TestSignatureHelp(t *testing.T) {
+	// Typing the second operand of "add eax, " → active parameter 1, and at
+	// least one signature with two operands.
+	line := "  add eax, "
+	r := buildSignatureHelp(line, len(line))
+	if r == nil {
+		t.Fatal("expected signature help for 'add'")
+	}
+	if r.ActiveParameter != 1 {
+		t.Errorf("ActiveParameter = %d, want 1", r.ActiveParameter)
+	}
+	if len(r.Signatures) == 0 {
+		t.Fatal("no signatures")
+	}
+	// Every signature label should start with the mnemonic.
+	for _, s := range r.Signatures {
+		if !strings.HasPrefix(s.Label, "ADD ") {
+			t.Errorf("signature label %q doesn't start with mnemonic", s.Label)
+		}
+		// Parameter offsets must index into the label.
+		for _, p := range s.Parameters {
+			if p.Label[0] < 0 || p.Label[1] > len(s.Label) || p.Label[0] >= p.Label[1] {
+				t.Errorf("bad parameter offsets %v for %q", p.Label, s.Label)
+			}
+		}
+	}
+	// The active signature must actually have a parameter at the active index.
+	if as := r.Signatures[r.ActiveSignature]; len(as.Parameters) <= r.ActiveParameter {
+		t.Errorf("active signature %q has too few params for active param %d", as.Label, r.ActiveParameter)
+	}
+	// Unknown mnemonic → no help.
+	if buildSignatureHelp("  movxx eax, ", 12) != nil {
+		t.Error("expected nil signature help for unknown mnemonic")
+	}
+}
+
 func TestCompletions(t *testing.T) {
 	got := completions("PUS")
 	found := false

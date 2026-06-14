@@ -9,7 +9,10 @@ editor:
   softer hint, so valid code is never marked red on a coverage gap.
 - **Hover** — the instruction's encoded bytes (`48 89 d8`, 3 bytes) and the
   matching operand forms from NASM's instruction table.
-- **Completion** — instruction mnemonics by prefix.
+- **Completion** — instruction mnemonics by prefix, each carrying its operand
+  forms as documentation.
+- **Signature help** — as you type operands, a popup lists the instruction's
+  forms (`ADD r/m32, r32`…) with the operand under the cursor highlighted.
 
 The assembler underneath matches nasm byte-for-byte on ~85% of the integer ISA;
 coverage grows as the encoder does, and the LSP follows automatically.
@@ -74,6 +77,10 @@ annotation like `rax=0x5  ZF=1`. `<leader>rc` runs only up to the cursor line
 (a balanced `ret`), `reached-line`, `max-steps` (an unbroken loop), `fault`
 (a guest exception — there's no IDT, so faults are reported, not vectored), or
 `ran-outside-program`.
+
+A `BITS 32` directive runs the program in the 32-bit i386 core instead (8
+GPRs, `eax…edi`); without a directive it's x86-64. The inline view adapts
+automatically (`eax=0x5`).
 
 Notes:
 - Registers start at their power-on values — all zero except `rdx=0x600` — so

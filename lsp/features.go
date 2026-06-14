@@ -110,8 +110,64 @@ func lineDiagnostic(line string, labels map[string]int64) (*diagnostic, string) 
 	return &diagnostic{severity: 1, message: "unknown instruction: " + firstWord(insn)}, ""
 }
 
+// cleanTok strips NASM operand-type modifiers ("|mask", trailing ?/*) for
+// display.
+func cleanTok(t string) string {
+	if i := strings.IndexByte(t, '|'); i >= 0 {
+		t = t[:i]
+	}
+	return strings.TrimRight(t, "?*")
+}
+
+// formSignatures returns the distinct operand-signature strings for a
+// mnemonic ("ADD r/m32, r32"…), up to limit, plus the total distinct count.
+// Shared by hover, completion docs, and signature help.
+func formSignatures(mnem string, limit int) (out []string, total int) {
+	seen := map[string]bool{}
+	for _, f := range asm.Table() {
+		if f.Mnemonic != mnem {
+			continue
+		}
+		label := mnem
+		for i, tok := range f.Operands {
+			if i == 0 {
+				label += " "
+			} else {
+				label += ", "
+			}
+			label += cleanTok(tok)
+		}
+		if seen[label] {
+			continue
+		}
+		seen[label] = true
+		total++
+		if len(out) < limit {
+			out = append(out, label)
+		}
+	}
+	return out, total
+}
+
+// formsMarkdown renders a mnemonic's forms as a markdown bullet list.
+func formsMarkdown(mnem string, limit int) string {
+	forms, total := formSignatures(mnem, limit)
+	if len(forms) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("forms:\n")
+	for _, s := range forms {
+		fmt.Fprintf(&b, "- `%s`\n", s)
+	}
+	if total > len(forms) {
+		fmt.Fprintf(&b, "- … (%d total)\n", total)
+	}
+	return b.String()
+}
+
 // hover returns markdown describing the instruction on a line: its assembled
-// bytes (if any) and the matching table forms (operand signatures + flags).
+// bytes (if any) and the matching table forms (operand signatures).
 func hover(line string, labels map[string]int64) string {
 	insn := instructionText(line)
 	if insn == "" {
@@ -126,23 +182,63 @@ func hover(line string, labels map[string]int64) string {
 	if bytes, err := asm.AssembleLine(line, labels); err == nil && len(bytes) > 0 {
 		fmt.Fprintf(&b, "encodes to `%s` (%d bytes)\n\n", bytesHex(bytes), len(bytes))
 	}
-	b.WriteString("forms:\n")
-	n := 0
+	b.WriteString(formsMarkdown(mnem, 12))
+	return b.String()
+}
+
+// buildSignatureHelp produces signature help for the instruction being typed:
+// each table form becomes a signature ("ADD r/m32, r32"), with the operand
+// under the cursor highlighted (active parameter = commas before the cursor).
+func buildSignatureHelp(line string, col int) *signatureHelpResult {
+	insn := instructionText(line)
+	if insn == "" {
+		return nil
+	}
+	mnem := strings.ToUpper(firstWord(insn))
+	if !mnemonicSet[mnem] {
+		return nil
+	}
+	var sigs []signatureInformation
+	seen := map[string]bool{}
 	for _, f := range asm.Table() {
-		if f.Mnemonic != mnem {
+		if f.Mnemonic != mnem || len(f.Operands) == 0 {
 			continue
 		}
-		ops := "(none)"
-		if len(f.Operands) > 0 {
-			ops = strings.Join(f.Operands, ", ")
+		si := signatureInformation{Label: mnem}
+		for i, tok := range f.Operands {
+			if i == 0 {
+				si.Label += " "
+			} else {
+				si.Label += ", "
+			}
+			start := len(si.Label)
+			si.Label += cleanTok(tok)
+			si.Parameters = append(si.Parameters, parameterInformation{Label: [2]int{start, len(si.Label)}})
 		}
-		fmt.Fprintf(&b, "- `%s %s`\n", mnem, ops)
-		if n++; n >= 12 {
-			fmt.Fprintf(&b, "- …\n")
+		if seen[si.Label] {
+			continue
+		}
+		seen[si.Label] = true
+		sigs = append(sigs, si)
+		if len(sigs) >= 16 {
 			break
 		}
 	}
-	return b.String()
+	if len(sigs) == 0 {
+		return nil
+	}
+	if col > len(line) {
+		col = len(line)
+	}
+	activeParam := strings.Count(line[:col], ",") // commas only separate operands
+	activeSig := 0
+	for i, s := range sigs {
+		if len(s.Parameters) > activeParam {
+			activeSig = i
+			break
+		}
+	}
+	return &signatureHelpResult{Signatures: sigs, ActiveSignature: activeSig, ActiveParameter: activeParam}
 }
 
 // completions returns mnemonic and register completions for a prefix.
