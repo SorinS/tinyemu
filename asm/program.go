@@ -40,6 +40,7 @@ func AssembleProgram(src string) ([]byte, error) {
 // AssembleListing assembles a program like AssembleProgram, additionally
 // recording where each instruction line's bytes landed (address + length).
 func AssembleListing(src string) (*Listing, error) {
+	mode := DetectBits(src)
 	type item struct {
 		label   string // non-empty for a label definition
 		insn    string // instruction source otherwise
@@ -50,6 +51,9 @@ func AssembleListing(src string) (*Listing, error) {
 
 	for ln, raw := range strings.Split(src, "\n") {
 		line := strings.TrimSpace(stripComment(raw))
+		if isBitsLine(line) {
+			continue // the BITS directive selects mode (DetectBits); emits no bytes
+		}
 		for line != "" {
 			c := strings.IndexByte(line, ':')
 			if c < 0 || !isLabelName(line[:c]) {
@@ -79,7 +83,7 @@ func AssembleListing(src string) (*Listing, error) {
 			if items[i].label != "" {
 				continue
 			}
-			b, err := assembleInsn(items[i].insn, addr, labels)
+			b, err := assembleInsn(items[i].insn, addr, labels, mode)
 			if err != nil {
 				return nil, err
 			}
@@ -133,12 +137,18 @@ func CollectLabels(src string) map[string]int64 {
 	return labels
 }
 
-// AssembleLine assembles a single source line — stripping any leading label
-// and comment — resolving a relative branch against labels (typically from
-// CollectLabels over the whole buffer). It is the line-level counterpart of
-// AssembleProgram, for editor tooling. A label-only or blank line yields
-// (nil, nil).
+// AssembleLine assembles a single source line in 64-bit mode — see
+// AssembleLineMode for an explicit mode.
 func AssembleLine(line string, labels map[string]int64) ([]byte, error) {
+	return AssembleLineMode(line, labels, Bits64)
+}
+
+// AssembleLineMode assembles a single source line — stripping any leading
+// label and comment — resolving a relative branch against labels (typically
+// from CollectLabels over the whole buffer). It is the line-level counterpart
+// of AssembleProgram, for editor tooling. A label-only or blank line yields
+// (nil, nil).
+func AssembleLineMode(line string, labels map[string]int64, mode Mode) ([]byte, error) {
 	s := strings.TrimSpace(stripComment(line))
 	if c := strings.IndexByte(s, ':'); c >= 0 && isLabelName(s[:c]) {
 		s = strings.TrimSpace(s[c+1:])
@@ -146,12 +156,42 @@ func AssembleLine(line string, labels map[string]int64) ([]byte, error) {
 	if s == "" {
 		return nil, nil
 	}
-	return assembleInsn(s, 0, labels)
+	return assembleInsn(s, 0, labels, mode)
+}
+
+// isBitsLine reports whether a (comment-stripped, trimmed) line is a BITS
+// directive — "BITS 32", "BITS 64", or the bracketed "[BITS 32]" form.
+func isBitsLine(line string) bool {
+	line = strings.TrimPrefix(line, "[")
+	line = strings.TrimSuffix(line, "]")
+	fields := strings.Fields(line)
+	return len(fields) == 2 && strings.EqualFold(fields[0], "BITS")
+}
+
+// DetectBits returns the CPU mode a program targets, read from a NASM "BITS
+// 32" / "BITS 64" directive (also the bracketed "[BITS 32]" form). Defaults to
+// Bits64 when no directive is present.
+func DetectBits(src string) Mode {
+	for _, raw := range strings.Split(src, "\n") {
+		line := strings.TrimSpace(stripComment(raw))
+		line = strings.TrimPrefix(line, "[")
+		line = strings.TrimSuffix(line, "]")
+		fields := strings.Fields(line)
+		if len(fields) == 2 && strings.EqualFold(fields[0], "BITS") {
+			switch fields[1] {
+			case "32":
+				return Bits32
+			case "64":
+				return Bits64
+			}
+		}
+	}
+	return Bits64
 }
 
 // assembleInsn encodes one instruction at address addr, resolving a relative
 // branch to a label/numeric target; everything else falls to Assemble.
-func assembleInsn(src string, addr int64, labels map[string]int64) ([]byte, error) {
+func assembleInsn(src string, addr int64, labels map[string]int64, mode Mode) ([]byte, error) {
 	mnem, ops := parseInsn(src)
 	if len(ops) == 1 && isBranch(mnem) {
 		opnd := strings.TrimSpace(ops[0])
@@ -164,36 +204,36 @@ func assembleInsn(src string, addr int64, labels map[string]int64) ([]byte, erro
 			if !ok {
 				return nil, fmt.Errorf("asm: undefined branch target %q", opnd)
 			}
-			return encodeRelJump(mnem, target, addr)
+			return encodeRelJump(mnem, target, addr, mode)
 		}
 	}
-	return Assemble(src)
+	return AssembleMode(src, mode)
 }
 
 // encodeRelJump encodes a relative branch to target from address addr,
 // preferring the short (rel8) form when the displacement fits, else near
 // (rel32) — matching nasm's branch relaxation.
-func encodeRelJump(mnem string, target, addr int64) ([]byte, error) {
+func encodeRelJump(mnem string, target, addr int64, mode Mode) ([]byte, error) {
 	if short := findBranchForm(mnem, "short"); short != nil {
-		probe, err := encodeForm(short, []operand{{kind: opTarget}})
+		probe, err := encodeForm(short, []operand{{kind: opTarget}}, mode)
 		if err != nil {
 			return nil, err
 		}
 		disp := target - (addr + int64(len(probe)))
 		if fitsSigned(disp, 8) {
-			return encodeForm(short, []operand{{kind: opTarget, imm: disp}})
+			return encodeForm(short, []operand{{kind: opTarget, imm: disp}}, mode)
 		}
 	}
 	near := findBranchForm(mnem, "near")
 	if near == nil {
 		return nil, fmt.Errorf("asm: %s target out of rel8 range and no near form", mnem)
 	}
-	probe, err := encodeForm(near, []operand{{kind: opTarget}})
+	probe, err := encodeForm(near, []operand{{kind: opTarget}}, mode)
 	if err != nil {
 		return nil, err
 	}
 	disp := target - (addr + int64(len(probe)))
-	return encodeForm(near, []operand{{kind: opTarget, imm: disp}})
+	return encodeForm(near, []operand{{kind: opTarget, imm: disp}}, mode)
 }
 
 func findBranchForm(mnem, kind string) *Form {

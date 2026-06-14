@@ -6,12 +6,25 @@ import (
 	"strings"
 )
 
+// Mode is the CPU operating mode an instruction is assembled for. It selects
+// which table forms are valid and how the encoder emits prefixes (REX,
+// address-size, absolute vs RIP-relative memory).
+type Mode int
+
+const (
+	Bits64 Mode = 64 // long mode (default)
+	Bits32 Mode = 32 // 32-bit protected mode
+)
+
 // Assemble encodes a single NASM/Intel-syntax instruction, in 64-bit mode,
 // to machine code. Coverage is data-driven from the NASM table and grows as
 // code-string tokens are implemented; unsupported forms return an error
 // rather than wrong bytes. Byte-exactness is checked against nasm in the
 // differential tests.
-func Assemble(src string) ([]byte, error) {
+func Assemble(src string) ([]byte, error) { return AssembleMode(src, Bits64) }
+
+// AssembleMode is Assemble for an explicit CPU mode (Bits32 or Bits64).
+func AssembleMode(src string, mode Mode) ([]byte, error) {
 	mnem, opStrs := parseInsn(src)
 	if mnem == "" {
 		return nil, nil
@@ -28,8 +41,8 @@ func Assemble(src string) ([]byte, error) {
 	// nasm peephole: "mov r64, imm" with imm in [0, 0xFFFFFFFF] is emitted as
 	// the 32-bit "mov r32, imm" (which zero-extends to 64 bits) — 5-6 bytes
 	// instead of the REX.W imm32 form's 7. Negative or wider immediates keep
-	// the 64-bit form.
-	if mnem == "MOV" && len(ops) == 2 && ops[0].kind == opReg && ops[0].size == 64 &&
+	// the 64-bit form. 64-bit-only (no r64 in 32-bit mode).
+	if mode == Bits64 && mnem == "MOV" && len(ops) == 2 && ops[0].kind == opReg && ops[0].size == 64 &&
 		ops[1].kind == opImm && ops[1].imm >= 0 && ops[1].imm <= 0xFFFFFFFF {
 		ops[0].size = 32
 	}
@@ -40,10 +53,10 @@ func Assemble(src string) ([]byte, error) {
 		if f.Mnemonic != mnem || len(f.Operands) != len(ops) {
 			continue
 		}
-		if !matchForm(f, ops) {
+		if !matchForm(f, ops, mode) {
 			continue
 		}
-		b, err := encodeForm(f, ops)
+		b, err := encodeForm(f, ops, mode)
 		if err == nil {
 			return b, nil
 		}
@@ -79,13 +92,18 @@ func parseInsn(src string) (mnem string, ops []string) {
 	return mnem, ops
 }
 
-func matchForm(f *Form, ops []operand) bool {
+func matchForm(f *Form, ops []operand, mode Mode) bool {
 	if len(f.Operands) != len(ops) {
 		return false
 	}
 	for _, fl := range f.Flags {
-		if fl == "NOLONG" {
-			return false // form is invalid in 64-bit (long) mode
+		// NOLONG: not valid in 64-bit (long) mode. LONG: valid only in long
+		// mode (i.e. not in 32-bit). Filter by the target mode.
+		if fl == "NOLONG" && mode == Bits64 {
+			return false
+		}
+		if fl == "LONG" && mode != Bits64 {
+			return false
 		}
 	}
 	for i, tok := range f.Operands {
@@ -158,7 +176,7 @@ func regTokSize(tok string) int {
 
 // encodeForm interprets a form's code-string into machine code for the given
 // operands. Operand roles come from the form's EncOrder ("mr", "rm", "mi", …).
-func encodeForm(f *Form, ops []operand) ([]byte, error) {
+func encodeForm(f *Form, ops []operand, mode Mode) ([]byte, error) {
 	var regOp, rmOp, immOp *operand
 	for i := range ops {
 		role := byte('-')
@@ -280,19 +298,29 @@ func encodeForm(f *Form, ops []operand) ([]byte, error) {
 				rexForced = true
 			}
 		} else {
-			mb, rX, rB, err := encodeMem(rmOp, regField)
+			mb, rX, rB, err := encodeMem(rmOp, regField, mode)
 			if err != nil {
 				return nil, err
 			}
 			modrm, rexX, rexB = mb, rexX || rX, rexB || rB
-			if rmOp.baseSize == 32 {
-				legacy = append([]byte{0x67}, legacy...) // 32-bit address size
+			// Address-size override (0x67) is needed when the memory operand's
+			// register width differs from the mode's default address size:
+			// 32-bit registers in 64-bit mode, or 16-bit in 32-bit mode (the
+			// latter unsupported here).
+			if mode == Bits64 && rmOp.baseSize == 32 {
+				legacy = append([]byte{0x67}, legacy...)
 			}
 		}
 	}
 
 	if noW {
 		rexW = false
+	}
+	// 32-bit protected mode has no REX prefix: a form that needs one (a 64-bit
+	// operand via o64, or an extended register r8–r15 / SPL-style byte reg) is
+	// simply not encodable here.
+	if mode != Bits64 && (rexW || rexR || rexX || rexB || rexForced) {
+		return nil, fmt.Errorf("form requires REX (64-bit only), not valid in 32-bit mode")
 	}
 	out := legacy
 	if rexW || rexR || rexX || rexB || rexForced {
@@ -320,8 +348,11 @@ func encodeForm(f *Form, ops []operand) ([]byte, error) {
 // encodeMem builds the ModRM (+ SIB + displacement) bytes for a memory
 // operand, given the ModRM.reg field value, and reports whether REX.X / REX.B
 // are needed.
-func encodeMem(m *operand, reg byte) (out []byte, rexX, rexB bool, err error) {
+func encodeMem(m *operand, reg byte, mode Mode) (out []byte, rexX, rexB bool, err error) {
 	if m.memRip {
+		if mode != Bits64 {
+			return nil, false, false, fmt.Errorf("RIP-relative addressing is 64-bit only")
+		}
 		out = []byte{reg<<3 | 0x05} // mod=00, rm=101 → RIP-relative disp32
 		return appendLE(out, m.memDisp, 4), false, false, nil
 	}
@@ -334,6 +365,15 @@ func encodeMem(m *operand, reg byte) (out []byte, rexX, rexB bool, err error) {
 	}
 	if base >= 0 && m.baseRex {
 		rexB = true
+	}
+
+	// A no-base absolute [disp32]: in 64-bit mode mod=00/rm=101 means
+	// RIP-relative, so an absolute address must go through a SIB with no base.
+	// In 32-bit mode mod=00/rm=101 *is* absolute disp32, so use it directly
+	// (unless there's an index, which still needs a SIB).
+	if base < 0 && index < 0 && mode != Bits64 {
+		out = []byte{reg<<3 | 0x05}
+		return appendLE(out, m.memDisp, 4), rexX, rexB, nil
 	}
 
 	useSIB := index >= 0 || base < 0 || (base&7) == 4
