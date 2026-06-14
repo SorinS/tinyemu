@@ -1,5 +1,21 @@
 package riscv
 
+// pseudoNames lists the supported pseudo-instruction mnemonics (for tooling
+// like completion). They expand to base instructions in expandPseudo.
+var pseudoNames = []string{
+	"nop", "ret", "mv", "not", "neg", "seqz", "snez", "li", "j", "jr", "beqz", "bnez",
+}
+
+// Mnemonics returns every assemblable instruction mnemonic — base table plus
+// pseudo-instructions — for editor completion.
+func Mnemonics() []string {
+	out := make([]string, 0, len(table)+len(pseudoNames))
+	for i := range table {
+		out = append(out, table[i].name)
+	}
+	return append(out, pseudoNames...)
+}
+
 // expandPseudo rewrites a common RISC-V pseudo-instruction into its base
 // instruction (mnemonic + operands). It returns the inputs unchanged if mnem
 // is not a recognized pseudo. Only single-instruction expansions are handled

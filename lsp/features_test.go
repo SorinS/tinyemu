@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jtolio/tinyemu-go/asm"
+	"github.com/jtolio/tinyemu-go/asm/emu"
 )
 
 func TestLineDiagnostic(t *testing.T) {
@@ -27,7 +28,7 @@ func TestLineDiagnostic(t *testing.T) {
 		{"  vaddps xmm0, xmm1, xmm2", true, 3}, // real insn, unsupported → hint
 	}
 	for _, c := range cases {
-		d, _ := lineDiagnostic(c.line, labels)
+		d, _ := lineDiagnostic(c.line, labels, emu.ArchX86)
 		if (d != nil) != c.wantDiag {
 			t.Errorf("lineDiagnostic(%q): diag=%v, want %v", c.line, d, c.wantDiag)
 			continue
@@ -39,18 +40,18 @@ func TestLineDiagnostic(t *testing.T) {
 }
 
 func TestHover(t *testing.T) {
-	h := hover("  mov rax, rbx", nil, asm.Bits64)
+	h := hover("  mov rax, rbx", nil, asm.Bits64, emu.ArchX86)
 	if !strings.Contains(h, "MOV") || !strings.Contains(h, "48 89 d8") {
 		t.Errorf("hover(mov rax,rbx) missing mnemonic/bytes:\n%s", h)
 	}
 	if !strings.Contains(h, "decodes to") {
 		t.Errorf("hover should show the canonical decode:\n%s", h)
 	}
-	if hover("  notaninsn x, y", nil, asm.Bits64) != "" {
+	if hover("  notaninsn x, y", nil, asm.Bits64, emu.ArchX86) != "" {
 		t.Errorf("hover on unknown mnemonic should be empty")
 	}
 	// 32-bit hover decodes in 32-bit: 89 d8 is "mov eax, ebx".
-	h32 := hover("  mov eax, ebx", nil, asm.Bits32)
+	h32 := hover("  mov eax, ebx", nil, asm.Bits32, emu.ArchX86)
 	if !strings.Contains(h32, "89 d8") || !strings.Contains(h32, "mov eax, ebx") {
 		t.Errorf("32-bit hover wrong:\n%s", h32)
 	}

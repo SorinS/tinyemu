@@ -156,12 +156,13 @@ func (s *server) notify(w *bufio.Writer, method string, params any) {
 
 func (s *server) publishDiagnostics(w *bufio.Writer, uri string) {
 	text := s.docs[uri]
+	arch := emu.DetectArch(text)
 	labels := asm.CollectLabels(text)
 	// Non-nil so JSON encodes "[]" not "null": some clients (Neovim's
 	// diagnostic handler) do #diagnostics and throw on a null value.
 	diags := []lspDiagnostic{}
 	for i, line := range strings.Split(text, "\n") {
-		d, _ := lineDiagnostic(line, labels)
+		d, _ := lineDiagnostic(line, labels, arch)
 		if d == nil {
 			continue
 		}
@@ -180,7 +181,7 @@ func (s *server) hover(p posParams) any {
 	line := s.lineAt(p)
 	doc := s.docs[p.TextDocument.URI]
 	labels := asm.CollectLabels(doc)
-	md := hover(line, labels, asm.DetectBits(doc))
+	md := hover(line, labels, asm.DetectBits(doc), emu.DetectArch(doc))
 	if md == "" {
 		return nil
 	}
@@ -203,6 +204,15 @@ func (s *server) completion(p posParams) any {
 		start--
 	}
 	items := []completionItem{}
+	if emu.DetectArch(s.docs[p.TextDocument.URI]) == emu.ArchRISCV {
+		for _, m := range completionsRV(line[start:col]) {
+			items = append(items, completionItem{Label: m, Kind: 3, Detail: "riscv instruction"})
+			if len(items) >= 200 {
+				break
+			}
+		}
+		return items
+	}
 	for _, m := range completions(line[start:col]) {
 		it := completionItem{Label: m, Kind: 3, Detail: "instruction"} // 3 = Function
 		if doc := formsMarkdown(m, 8); doc != "" {
@@ -217,6 +227,9 @@ func (s *server) completion(p posParams) any {
 }
 
 func (s *server) signatureHelp(p posParams) any {
+	if emu.DetectArch(s.docs[p.TextDocument.URI]) == emu.ArchRISCV {
+		return nil // RISC-V operands are positional; no multi-form signature help
+	}
 	r := buildSignatureHelp(s.lineAt(p), p.Position.Character)
 	if r == nil {
 		return nil

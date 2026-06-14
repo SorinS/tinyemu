@@ -85,7 +85,10 @@ type diagnostic struct {
 	message  string
 }
 
-func lineDiagnostic(line string, labels map[string]int64) (*diagnostic, string) {
+func lineDiagnostic(line string, labels map[string]int64, arch emu.Arch) (*diagnostic, string) {
+	if arch == emu.ArchRISCV {
+		return lineDiagnosticRV(line), ""
+	}
 	insn := instructionText(line)
 	if insn == "" {
 		return nil, ""
@@ -169,7 +172,10 @@ func formsMarkdown(mnem string, limit int) string {
 // hover returns markdown describing the instruction on a line: its assembled
 // bytes, the canonical disassembly of those bytes (a cross-check, via x/arch),
 // and the matching table forms. mode selects 32- vs 64-bit encoding/decoding.
-func hover(line string, labels map[string]int64, mode asm.Mode) string {
+func hover(line string, labels map[string]int64, mode asm.Mode, arch emu.Arch) string {
+	if arch == emu.ArchRISCV {
+		return hoverRV(line)
+	}
 	insn := instructionText(line)
 	if insn == "" {
 		return ""
