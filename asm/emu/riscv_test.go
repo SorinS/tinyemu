@@ -127,3 +127,32 @@ func TestRunToLine_RISCV(t *testing.T) {
 		t.Errorf("line2 should not have executed")
 	}
 }
+
+// A program mixing compressed (2-byte) and base (4-byte) instructions, with a
+// label branch — exercises variable-length addressing.
+func TestRunAll_Compressed(t *testing.T) {
+	src := "" +
+		"  c.li a0, 0\n" + // line 0
+		"  c.li a1, 3\n" + // line 1
+		"loop:\n" + // line 2
+		"  c.addi a0, 1\n" + // line 3 (2 bytes)
+		"  blt a0, a1, loop\n" + // line 4 (4-byte branch to a 2-byte-aligned label)
+		"  c.mv a2, a0\n" + // line 5
+		"  ret\n" // line 6
+	r, err := emu.RunAll(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Arch != "riscv" || r.Stop != emu.StopCompleted {
+		t.Fatalf("arch=%s stop=%q (%s), want riscv/completed", r.Arch, r.Stop, r.Error)
+	}
+	var a2 uint64
+	for _, rv := range r.Final {
+		if rv.Name == "a2" {
+			a2 = rv.Value
+		}
+	}
+	if a2 != 3 {
+		t.Errorf("a2 = %d, want 3 (loop ran 3×)", a2)
+	}
+}

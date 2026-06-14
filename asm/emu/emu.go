@@ -148,7 +148,7 @@ func DetectArch(src string) Arch {
 	rv, x := 0, 0
 	for _, raw := range strings.Split(src, "\n") {
 		switch f := firstToken(raw); {
-		case rvOnly[f]:
+		case rvOnly[f], strings.HasPrefix(f, "c."): // c.* = RISC-V compressed
 			rv++
 		case x86Only[f]:
 			x++

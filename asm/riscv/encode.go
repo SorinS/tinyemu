@@ -16,6 +16,15 @@ func Assemble(src string) ([]byte, error) {
 	}
 	mnem, ops = expandPseudo(mnem, ops)
 
+	// Compressed (C) instructions are 16-bit, in their own encoder.
+	if isCompressed(mnem) {
+		w, err := encodeC(mnem, ops)
+		if err != nil {
+			return nil, fmt.Errorf("riscv %q: %w", src, err)
+		}
+		return []byte{byte(w), byte(w >> 8)}, nil
+	}
+
 	// Floating-point (F/D) instructions are in a separate table.
 	if fp, ok := fpByName[mnem]; ok {
 		w, err := encodeFP(fp, ops)

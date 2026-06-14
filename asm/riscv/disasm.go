@@ -86,6 +86,14 @@ func signExtend(v uint32, n uint) int64 {
 // disassembling then re-assembling is byte-stable. Returns the text and the
 // instruction length (always 4 here; compressed insns are not handled).
 func Disassemble(code []byte) (text string, length int, err error) {
+	if len(code) < 2 {
+		return "", 0, fmt.Errorf("riscv: need ≥2 bytes, have %d", len(code))
+	}
+	// A 16-bit compressed instruction has low two bits ≠ 0b11.
+	if code[0]&3 != 3 {
+		text, err = disasmC(uint16(code[0]) | uint16(code[1])<<8)
+		return text, 2, err
+	}
 	if len(code) < 4 {
 		return "", 0, fmt.Errorf("riscv: need 4 bytes, have %d", len(code))
 	}

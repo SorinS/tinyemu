@@ -49,7 +49,7 @@ func AssembleListing(src string) (*Listing, error) {
 			continue
 		}
 		items = append(items, item{ln, line, addr})
-		addr += 4
+		addr += int64(insnSize(line))
 	}
 
 	out := &Listing{}
@@ -67,18 +67,29 @@ func AssembleListing(src string) (*Listing, error) {
 	return out, nil
 }
 
-// CollectLabels returns the label→address map of a program (addresses assume
-// 4 bytes per instruction). Useful for assembling individual lines.
+// CollectLabels returns the label→address map of a program. Instruction sizes
+// are fixed by mnemonic (4 bytes, or 2 for a compressed "c.*"), so addresses
+// are exact without assembling. Useful for assembling individual lines.
 func CollectLabels(src string) map[string]int64 {
 	labels := map[string]int64{}
 	addr := int64(0)
 	for _, raw := range strings.Split(src, "\n") {
 		line, ok := stripLabels(raw, func(name string) { labels[name] = addr })
 		if ok && line != "" {
-			addr += 4
+			addr += int64(insnSize(line))
 		}
 	}
 	return labels
+}
+
+// insnSize returns an instruction's byte length from its mnemonic: 2 for a
+// compressed (c.*) instruction, 4 otherwise.
+func insnSize(line string) int {
+	mnem, _ := parseLine(line)
+	if isCompressed(mnem) {
+		return 2
+	}
+	return 4
 }
 
 // AssembleLine assembles a single source line — comment and leading label(s)

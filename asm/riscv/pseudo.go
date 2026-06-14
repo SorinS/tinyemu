@@ -18,6 +18,7 @@ func Mnemonics() []string {
 	for i := range fpTable {
 		out = append(out, fpTable[i].name)
 	}
+	out = append(out, cMnemonics...)
 	return append(out, pseudoNames...)
 }
 
