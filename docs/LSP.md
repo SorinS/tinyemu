@@ -2,17 +2,100 @@
 
 `go-asm` is a Language Server for assembly, built on tinyemu-go's own
 assembler, disassembler, and CPU cores. Beyond the usual editor niceties it can
-**run your code**: assemble the buffer, execute it in the emulator, and show the
-register/flag state each line produced as inline virtual text.
+**run and debug your code**: assemble the buffer, execute it in the emulator,
+show the register/flag state inline, and single-step it like a debugger.
 
 It speaks LSP over stdin/stdout with no dependencies beyond the standard library
 and the in-repo packages, and targets Neovim's built-in client.
 
-- Server: [`lsp/`](../lsp) (package `main`, binary `bin/go-asm`)
+- Server: [`lsp/`](../lsp) (package `main`, binary `go-asm`)
 - x86 assembler/disassembler: [`asm/`](../asm)
 - RISC-V assembler/disassembler: [`asm/riscv/`](../asm/riscv)
 - Execution backend: [`asm/emu/`](../asm/emu)
-- Neovim glue: [`lsp/nvim/asm-live.lua`](../lsp/nvim/asm-live.lua)
+- Neovim module: [`lsp/nvim/go_asm.lua`](../lsp/nvim/go_asm.lua)
+
+## Install
+
+```sh
+make install-go-asm          # → ~/.local/bin/go-asm  (override with PREFIX=…)
+# or
+make go-asm                  # → bin/go-asm
+go build -o ~/.local/bin/go-asm ./lsp
+```
+
+`go-asm` is a self-contained binary (the instruction table is embedded), so it
+runs from anywhere on your `PATH`.
+
+## Neovim setup
+
+Copy the module onto your config and require it:
+
+```sh
+cp lsp/nvim/go_asm.lua ~/.config/nvim/lua/go_asm.lua
+```
+
+```lua
+-- in init.lua
+require("go_asm")
+```
+
+That's all — the module does filetype detection (`.asm`/`.nasm`), starts the
+server (`cmd = { "go-asm" }`, resolved from `PATH`), and binds the keymaps on
+attach. (If you keep the file in the repo instead, add its directory to
+`package.path` and `require("go_asm")`.)
+
+### Keymaps
+
+All under `<leader>` (Space on NvChad), active in an attached asm buffer:
+
+| Key | Action |
+|-----|--------|
+| `<leader>rr` | **Run** the whole buffer (inline state on every line) |
+| `<leader>rc` | **Run to cursor** (stop just before the cursor line) |
+| `<leader>rg` | **Registers** — float with the full final register file |
+| `<leader>rx` | **Clear** the inline overlay |
+| `<leader>rs` | **Step** one instruction (arms the session on first press) |
+| `<leader>rn` | **Continue** to the next breakpoint / end |
+| `<leader>rb` | Toggle a **breakpoint** on the cursor line |
+| `<leader>rq` | **Quit** the debug session |
+| `K` | Hover — encoded bytes + canonical decode (+ x86 forms) |
+
+The register float (`<leader>rg`) closes when you move the cursor (like a hover
+popup), or with `q` / `<Esc>` if you focus into it.
+
+## Two workflows
+
+### Live run (fast inspection)
+`<leader>rr` runs the whole program and annotates each executed line with the
+registers/flags it changed; a `⇒` line under the last instruction shows the
+final non-zero register file. `<leader>rc` does the same but stops just before
+the cursor line — good for "what is the state at this point?". A status line
+reports how it ended: `completed` (a balanced `ret`), `halted` (`hlt`/`wfi`),
+`reached-line`, `max-steps` (an unbroken loop hit the cap), `fault` (a guest
+exception — there is no IDT/trap vectoring, so faults are reported, not
+delivered), or `ran-outside-program`.
+
+```
+  10   xor   eax, eax        ; ZF=1
+  11   mov   rax, rbx        ; rax=0x0
+  12   add   rax, [rbx+8]    ; rax=0x…
+       ⇒  rax=0x1a6d  rbx=0x2ac2
+```
+
+### Stepping debugger (interactive)
+The server holds a **live CPU session** per buffer, so you drive it instruction
+by instruction:
+
+1. `<leader>rb` on a line or two to set breakpoints (a `●` appears in the sign
+   column).
+2. `<leader>rs` to step — the first press arms the session at the entry; each
+   press executes one instruction. The current line is highlighted, an arrow
+   shows the step count, and the register file is shown under it.
+3. `<leader>rn` to continue to the next breakpoint (or a clean end / fault).
+4. `<leader>rq` to end the session.
+
+The cursor follows the current instruction, so you can watch a loop iterate and
+see registers change in place.
 
 ## Supported architectures
 
@@ -22,146 +105,77 @@ The server detects each buffer's ISA and routes every feature accordingly.
 |-----|-------------|---------|-----------|
 | **x86-64** | default | `cpu/x86_64` (long mode, paging off) | `rax…r15` |
 | **x86-32** | a `BITS 32` directive | `cpu/x86` (flat protected mode) | `eax…edi` |
-| **RISC-V RV64I+M+A+Zicsr** | a RISC-V `arch:` directive, else a mnemonic heuristic | `cpu/riscv` (RV64, paging off) | `zero, ra, sp, …` (ABI) |
+| **RISC-V RV64I+M+A+Zicsr** | a RISC-V `arch:` directive, else a mnemonic heuristic | `cpu/riscv` (RV64) | `zero, ra, sp, …` (ABI) |
 
 Architecture detection (`emu.DetectArch`):
 1. An explicit comment directive wins — `; arch: riscv64` or `; arch: x86`.
-2. Otherwise a count of ISA-distinctive mnemonics decides (e.g. `addi`/`jal`
-   vs `mov`/`push`).
+2. Otherwise a count of ISA-distinctive mnemonics decides (`addi`/`jal` vs
+   `mov`/`push`).
 3. Ties and empty buffers default to x86. For x86, a `BITS 32`/`BITS 64`
-   directive then picks the sub-mode (default 64).
-
-## Features
-
-### Diagnostics
-Every line is assembled live, in the buffer's ISA. An **unknown mnemonic** is an
-error; a real instruction the encoder doesn't yet reach is a softer *hint*, so
-valid code is never marked red over a coverage gap. Branch/jump targets resolve
-against the buffer's labels, so `je done` / `blt a0, a1, loop` are not flagged.
-
-### Hover
-Shows the instruction's **encoded bytes**, the **canonical disassembly** of
-those bytes (decoded back via the disassembler — a cross-check: a decode that
-disagrees with what you wrote is a visible red flag), and, for x86, the matching
-operand forms from NASM's table. Hover is mode-aware: in a `BITS 32` buffer it
-encodes and decodes in 32-bit (`mov eax, ebx`, not `rax`).
-
-### Completion
-Instruction mnemonics by prefix. For x86, each item carries its operand forms as
-documentation.
-
-### Signature help
-As you type operands (x86), a popup lists the instruction's forms
-(`ADD r/m32, r32` …) with the operand under the cursor highlighted. RISC-V
-operands are positional, so signature help is x86-only.
-
-### Live emulation — inline register/flag state
-The differentiator. The custom `asm/run` request assembles the buffer, runs it
-in a minimal flat sandbox, and returns the register/flag changes attributable to
-each source line. The editor paints them as inline virtual text:
-
-```
-  10   xor   eax, eax        ; ZF=1
-  11   mov   rax, rbx        ; rax=0x0
-  12   add   rax, [rbx+8]    ; rax=0x…
-```
-
-- **Run buffer** runs the whole program; **run to cursor** stops just before the
-  cursor line. **Breakpoints** are wired through the backend.
-- The run reports how it ended: `completed` (a balanced `ret`), `reached-line`,
-  `max-steps` (an unbroken loop hits the step cap), `fault` (a guest exception —
-  there is no IDT/trap vectoring, so faults are reported, not delivered), or
-  `ran-outside-program`.
-- It runs on an explicit command/keymap only — never on edit — so a runaway loop
-  can't churn.
+   directive picks the sub-mode (default 64).
 
 The sandbox starts from power-on register values (x86: all zero except
-`rdx=0x600`; RISC-V: all zero). Set up inputs explicitly. Loops show the **last**
+`rdx=0x600`; RISC-V: all zero). Set up inputs explicitly; loops show the **last**
 iteration's state per line.
 
-## The `asm/run` request (custom method)
+## Editor features
 
-Not part of standard LSP. Neovim triggers it via a keymap.
+- **Diagnostics** — each line is assembled live in the buffer's ISA. An unknown
+  mnemonic is an error; a real instruction the encoder doesn't yet reach is a
+  softer hint. Branch/jump targets resolve against the buffer's labels, so
+  `je done` / `blt a0, a1, loop` are not flagged.
+- **Hover** — encoded bytes + the canonical disassembly of those bytes (a
+  cross-check: a decode that disagrees with what you wrote is a visible flag) +,
+  for x86, the operand forms from NASM's table. Mode-aware (`mov eax, ebx` in a
+  `BITS 32` buffer).
+- **Completion** — mnemonics by prefix; x86 items carry their operand forms.
+- **Signature help** — x86 operand forms with the active operand highlighted
+  (RISC-V operands are positional, so this is x86-only).
 
-**Request** `asm/run`:
-```json
-{
-  "textDocument": { "uri": "file:///x.asm" },
-  "line": 11,            // run-to-cursor line (0-based); -1 = whole program
-  "breakpoints": [20]    // optional: stop before any of these lines
-}
-```
+## Protocol (custom requests)
 
-**Result**:
+Not part of standard LSP; the editor triggers them via keymaps.
+
+`asm/run` — one-shot run. Params `{ textDocument, line, breakpoints? }`
+(`line: -1` = whole program, `>=0` = run-to-cursor). Returns:
+
 ```json
 {
   "arch": "x86", "bits": 64,
-  "stop": "completed", "stopLine": -1, "steps": 4,
-  "lines": [
-    { "line": 0, "text": "rax=0x5" },
-    { "line": 1, "text": "rax=0x8" }
-  ]
+  "stop": "halted", "stopLine": -1, "steps": 146,
+  "lines": [ { "line": 10, "text": "ZF=1", "regs": [ … ] }, … ],
+  "final": [ { "name": "rax", "value": 6765 }, … ]
 }
 ```
 
-`text` is the pre-formatted inline annotation; the editor just renders it.
+`asm/debug/start`, `asm/debug/step`, `asm/debug/continue`
+(`{ …, breakpoints: [int] }`), `asm/debug/stop` — drive the per-document live
+session. Each returns a **DebugState**:
 
-## Build
-
-```sh
-make go-asm          # → bin/go-asm
-# or
-go build -o bin/go-asm ./lsp
+```json
+{
+  "arch": "x86", "bits": 64,
+  "line": 11,                 // line about to execute, -1 if ended
+  "regs":    [ {"name":"rax","value":1}, … ],
+  "changed": [ {"name":"rax","value":1} ],   // what the last step changed
+  "flags":   [ {"name":"ZF","value":0}, … ], // x86 only
+  "stop": "",                 // "" while paused, else halted/completed/fault/…
+  "steps": 5
+}
 ```
-
-## Neovim
-
-No plugin required — the built-in client launches it. Attach per filetype:
-
-```lua
-vim.api.nvim_create_autocmd("FileType", {
-  pattern = { "asm", "nasm" },
-  callback = function(args)
-    vim.lsp.start({
-      name = "go-asm",
-      cmd = { vim.fn.expand("~/Dev/Go.Code/tinyemu-go.git/bin/go-asm") },
-      root_dir = vim.fs.dirname(args.file),
-    })
-  end,
-})
-```
-
-For the inline-emulation keymaps, drop `lsp/nvim/asm-live.lua` on your
-`runtimepath` and bind it on attach:
-
-```lua
-vim.api.nvim_create_autocmd("LspAttach", {
-  callback = function(args)
-    local c = vim.lsp.get_client_by_id(args.data.client_id)
-    if c and c.name == "go-asm" then
-      local live = require("asm-live")
-      vim.keymap.set("n", "<leader>rr", live.run,           { buffer = args.buf, desc = "asm: run buffer" })
-      vim.keymap.set("n", "<leader>rc", live.run_to_cursor, { buffer = args.buf, desc = "asm: run to cursor" })
-      vim.keymap.set("n", "<leader>rx", live.clear,         { buffer = args.buf, desc = "asm: clear state" })
-    end
-  end,
-})
-```
-
-(If `.asm` files don't get a filetype:
-`vim.filetype.add({ extension = { asm = "asm", nasm = "nasm" } })`.)
 
 ## Architecture
 
 ```
-lsp/            LSP server (stdio, JSON-RPC framing, dispatch, arch routing)
+lsp/            LSP server (stdio JSON-RPC, dispatch, arch routing, debug sessions)
   ├─ x86 features  → asm        (Assemble/Disassemble/Table, mode-aware)
   └─ riscv features→ asm/riscv  (Assemble/Disassemble/Mnemonics/labels)
 asm/            x86/x86-64 assembler — data-driven from NASM's insns.dat
                 (vendored, //go:embed); disasm via golang.org/x/arch
 asm/riscv/      RISC-V assembler/disassembler — compact hand-written table
-asm/emu/        execution backend: DetectArch → run in cpu/x86_64 | cpu/x86 |
-                cpu/riscv, collapse the per-step trace into per-line state
+asm/emu/        execution backend: DetectArch → buildSandbox → run in
+                cpu/x86_64 | cpu/x86 | cpu/riscv. Run() one-shots it;
+                Session (Step/Continue/State) drives it for the debugger.
 cpu/*           the CPU cores the emulator already ships
 ```
 
@@ -173,30 +187,28 @@ the maintainable choice for that ISA. They share only the LSP shell.
 
 ## Validation
 
-Correctness is checked differentially against external assemblers, plus
-round-trips and real-editor smoke tests:
-
-- **x86**: byte-exact against `nasm` (`-f bin`), in both `BITS 64` and
-  `BITS 32`; disassembly via `golang.org/x/arch`; assemble→disassemble→
-  re-assemble round-trips.
-- **RISC-V**: byte-exact against `llvm-mc` (`--triple=riscv64 --mattr=+m,+a
-  --show-encoding`); full label programs matched against `llvm-mc`'s ELF
-  `.text` (real label resolution); assemble→disassemble→re-assemble round-trips.
+- **x86**: byte-exact against `nasm` (`-f bin`) in both `BITS 64` and `BITS 32`;
+  disassembly via `golang.org/x/arch`; assemble→disassemble→re-assemble
+  round-trips.
+- **RISC-V**: byte-exact against `llvm-mc` (`--triple=riscv64 --mattr=+m,+a`);
+  full label programs matched against `llvm-mc`'s ELF `.text`; round-trips. The
+  CPU core (`cpu/riscv`) is itself differentially tested against **Spike**
+  (`make test-riscv-spike`).
 - **End-to-end**: headless Neovim drives the real server — attach, diagnostics,
-  hover, `asm/run` — and asserts the inline virtual text. (This caught a
-  `"diagnostics": null` vs `[]` bug the Go unit tests missed.)
+  hover, `asm/run`, and the full step/breakpoint/continue debug flow — asserting
+  the inline state. (This caught a `"diagnostics": null` vs `[]` bug the Go unit
+  tests missed.)
 
 Build oracles: `nasm` (Homebrew), `llvm-mc` (Homebrew LLVM at
-`/opt/homebrew/opt/llvm/bin`), `nvim`.
+`/opt/homebrew/opt/llvm/bin`), `spike` + `riscv64-unknown-elf-gcc`, `nvim`.
 
 ## Limitations / roadmap
 
 - x86 assembler coverage grows with the encoder; SIMD/AVX/EVEX forms are not all
   reached yet (flagged as hints, not errors).
-- RISC-V covers RV64I + M + A + Zicsr + basic privileged; F/D (floating point)
-  and C (compressed) are not yet implemented.
-- The sandbox has no MMU/trap setup — it runs flat, position-fixed code; guest
+- RISC-V covers RV64I + M + A + Zicsr + basic privileged; F/D and C are not yet
+  implemented in the assembler.
+- The sandbox runs flat, position-fixed code with no MMU/trap setup; guest
   faults are reported, not handled.
-- Planned: breakpoint UI in Neovim, an "evaluate selection" command, a
-  full-register panel/float, and validating `cpu/riscv` against an execution
-  golden model (Spike or the official SAIL model).
+- Possible next steps: a watch/evaluate-selection command, conditional
+  breakpoints, and an "evaluate expression" prompt.
