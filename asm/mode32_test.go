@@ -116,6 +116,27 @@ func TestMode32_Program(t *testing.T) {
 	}
 }
 
+// TestDetectBits pins the directive parsing and the default.
+func TestDetectBits(t *testing.T) {
+	cases := []struct {
+		src  string
+		want Mode
+	}{
+		{"mov rax, rbx", Bits64},             // no directive → default 64
+		{"BITS 64\n mov rax, rbx", Bits64},   // explicit 64
+		{"BITS 32\n mov eax, ebx", Bits32},   // explicit 32
+		{"  bits 32\n", Bits32},              // case-insensitive, indented
+		{"[BITS 32]\n", Bits32},              // bracketed form
+		{"; BITS 32 in a comment\n", Bits64}, // comment, not a directive
+		{"BITS 16\n", Bits64},                // unsupported value → default 64
+	}
+	for _, c := range cases {
+		if got := DetectBits(c.src); got != c.want {
+			t.Errorf("DetectBits(%q) = %d, want %d", c.src, got, c.want)
+		}
+	}
+}
+
 // TestMode32_RejectsLong: 64-bit-only constructs must not encode in 32-bit.
 func TestMode32_RejectsLong(t *testing.T) {
 	for _, src := range []string{

@@ -163,6 +163,55 @@ func TestRun_AssembleError(t *testing.T) {
 	}
 }
 
+// A BITS 32 program runs in the i386 core: 8 GPRs with eax… names, clean RET.
+func TestRunAll_Bits32(t *testing.T) {
+	src := "" +
+		"BITS 32\n" + // line 0: directive
+		"  mov eax, 5\n" + // line 1
+		"  add eax, 3\n" + // line 2: eax = 8
+		"  mov ecx, eax\n" + // line 3
+		"  ret\n" // line 4
+	r, err := emu.RunAll(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Bits != 32 {
+		t.Errorf("Bits = %d, want 32", r.Bits)
+	}
+	if r.Stop != emu.StopCompleted {
+		t.Fatalf("Stop = %q (%s), want completed", r.Stop, r.Error)
+	}
+	if v, ok := changed(lineByNum(r, 2), "eax"); !ok || v != 8 {
+		t.Errorf("line2 eax = %#x ok=%v, want 8", v, ok)
+	}
+	if v, ok := changed(lineByNum(r, 3), "ecx"); !ok || v != 8 {
+		t.Errorf("line3 ecx = %#x ok=%v, want 8", v, ok)
+	}
+	// 32-bit reports 8 registers with e-names.
+	ls := lineByNum(r, 1)
+	if ls == nil || len(ls.Regs) != 8 || ls.Regs[0].Name != "eax" {
+		t.Errorf("want 8 e-regs, got %d (first %v)", len(ls.Regs), ls)
+	}
+}
+
+// 32-bit stack works (push/pop with ESP) and a balanced RET completes.
+func TestRunAll_Bits32_Stack(t *testing.T) {
+	src := "" +
+		"BITS 32\n" +
+		"  push ebp\n" +
+		"  mov ebp, esp\n" +
+		"  mov eax, 0x99\n" +
+		"  pop ebp\n" +
+		"  ret\n"
+	r, err := emu.RunAll(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Stop != emu.StopCompleted {
+		t.Fatalf("Stop = %q (%s), want completed (32-bit stack/ret broken?)", r.Stop, r.Error)
+	}
+}
+
 func TestResult_FullRegsPresent(t *testing.T) {
 	r, err := emu.RunAll("  mov rsp, rsp\n  ret\n")
 	if err != nil {

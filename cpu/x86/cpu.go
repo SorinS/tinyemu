@@ -494,6 +494,22 @@ func (c *CPU) SetSegAccess(sel int, v uint32) {
 	c.segAccess[sel] = v
 }
 
+// SetupFlatProtected32 puts the CPU into flat 32-bit protected mode: paging
+// off (linear == physical), CR0.PE set, every segment based at 0, and the
+// CS/SS D/B bits set so code and stack are 32-bit (ESP, not SP). Like the
+// x86_64 SetupFlatLongMode, this is for tooling/tests that execute flat 32-bit
+// code without a full GDT/MMU, not for booting a real guest.
+func (c *CPU) SetupFlatProtected32() {
+	c.SetCR(0, c.GetCR(0)|CR0_PE)
+	const dbBit = 0x0400 // descriptor-cache access word with D/B = 1
+	for _, s := range []int{ES, CS, SS, DS, FS, GS} {
+		c.SetSeg(s, 0)
+		c.SetSegBase(s, 0)
+		c.SetSegAccess(s, dbBit)
+		c.SetSegLimit(s, 0xFFFFFFFF) // 4 GiB flat (reset leaves 0xFFFF → #SS on a high stack)
+	}
+}
+
 func (c *CPU) SetSegLimit(sel int, v uint32) {
 	c.segLimit[sel] = v
 }

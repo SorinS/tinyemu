@@ -62,6 +62,13 @@ build: ## Build native binary for current OS/arch
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME).$(NATIVE_OS)-$(NATIVE_ARCH).bin $(MAIN_PACKAGE)
 	@echo "  -> $(BUILD_DIR)/$(BINARY_NAME).$(NATIVE_OS)-$(NATIVE_ARCH).bin"
 
+.PHONY: asm-lsp
+asm-lsp: ## Build the asm language server into bin/asm-lsp
+	$(call echo,"Building asm-lsp language server")
+	@mkdir -p $(BUILD_DIR)
+	go build $(GOFLAGS) -o $(BUILD_DIR)/asm-lsp ./lsp
+	@echo "  -> $(BUILD_DIR)/asm-lsp"
+
 .PHONY: build-linux-amd64
 build-linux-amd64: ## Build for linux/amd64
 	$(call echo,"Building linux/amd64")
