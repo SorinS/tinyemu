@@ -206,10 +206,14 @@ func RunToLine(src string, line int) (*Result, error) {
 // Run assembles src (arch auto-detected) and executes it. It errors only when
 // the program fails to assemble; a guest fault is reported via Result.Stop.
 func Run(src string, opts Options) (*Result, error) {
-	if DetectArch(src) == ArchRISCV {
-		return runRISCV(src, opts)
+	sb, err := buildSandbox(src)
+	if err != nil {
+		return nil, err
 	}
-	return runX86(src, opts)
+	defer sb.close()
+	res := traceLoop(sb, opts)
+	res.Arch = sb.arch.String()
+	return res, nil
 }
 
 // span maps a code offset (from the load base) to a source line.
@@ -219,43 +223,78 @@ type span struct {
 	length int
 }
 
-func runX86(src string, opts Options) (*Result, error) {
+// sandbox is a loaded, ready-to-run program: a CPU positioned at the entry, the
+// memory backing it, and the line map. Shared by Run (one-shot) and Session
+// (stepping).
+type sandbox struct {
+	mm       *mem.PhysMemoryMap
+	r        runner
+	codeBase uint64
+	sentinel uint64
+	spans    []span
+	names    []string
+	hasFlags bool
+	bits     int
+	arch     Arch
+}
+
+func (sb *sandbox) close() { sb.mm.Close() }
+
+func (sb *sandbox) lineAt(pc uint64) int {
+	if pc < sb.codeBase {
+		return -1
+	}
+	off := int64(pc - sb.codeBase)
+	for _, s := range sb.spans {
+		if off >= s.addr && off < s.addr+int64(s.length) {
+			return s.line
+		}
+	}
+	return -1
+}
+
+// buildSandbox detects the ISA, assembles src, loads it into a flat sandbox,
+// and positions the CPU at the entry.
+func buildSandbox(src string) (*sandbox, error) {
+	if DetectArch(src) == ArchRISCV {
+		return buildRISCV(src)
+	}
+	return buildX86(src)
+}
+
+func buildX86(src string) (*sandbox, error) {
 	mode := asm.DetectBits(src)
 	listing, err := asm.AssembleListing(src)
 	if err != nil {
 		return nil, err
 	}
 	mm := mem.NewPhysMemoryMap()
-	defer mm.Close()
 	if _, err := mm.RegisterRAM(0, ramSizeX86, 0); err != nil {
+		mm.Close()
 		return nil, err
 	}
 	for i, b := range listing.Bytes {
 		_ = mm.Write8(codeBaseX86+uint64(i), b)
 	}
 	_ = mm.Write64(stackTopX86, sentinelRet)
-
 	m := newX86Machine(mode, mm)
 	m.setReg(regSP, stackTopX86)
 	m.setPC(codeBaseX86)
-
 	spans := make([]span, len(listing.Spans))
 	for i, s := range listing.Spans {
 		spans[i] = span{s.Line, s.Addr, s.Len}
 	}
-	res := traceLoop(m, codeBaseX86, sentinelRet, spans, opts, int(mode))
-	res.Arch = ArchX86.String()
-	return res, nil
+	return &sandbox{mm, m, codeBaseX86, sentinelRet, spans, m.names(), true, int(mode), ArchX86}, nil
 }
 
-func runRISCV(src string, opts Options) (*Result, error) {
+func buildRISCV(src string) (*sandbox, error) {
 	listing, err := rvasm.AssembleListing(src)
 	if err != nil {
 		return nil, err
 	}
 	mm := mem.NewPhysMemoryMap()
-	defer mm.Close()
 	if _, err := mm.RegisterRAM(ramBaseRV, ramSizeRV, 0); err != nil {
+		mm.Close()
 		return nil, err
 	}
 	for i, b := range listing.Bytes {
@@ -265,46 +304,32 @@ func runRISCV(src string, opts Options) (*Result, error) {
 	c.PC = codeBaseRV
 	c.SetReg(rvRegRA, sentinelRet) // a final `ret` (jalr ra) lands on the sentinel
 	c.SetReg(rvRegSP, stackTopRV)
-
 	spans := make([]span, len(listing.Spans))
 	for i, s := range listing.Spans {
 		spans[i] = span{s.Line, s.Addr, s.Len}
 	}
-	res := traceLoop(rvMach{c}, codeBaseRV, sentinelRet, spans, opts, 64)
-	res.Arch = ArchRISCV.String()
-	return res, nil
+	m := rvMach{c}
+	return &sandbox{mm, m, codeBaseRV, sentinelRet, spans, regNamesRV, false, 64, ArchRISCV}, nil
 }
 
 // traceLoop is the shared, arch-independent stepping/attribution loop.
-func traceLoop(r runner, codeBase, sentinel uint64, spans []span, opts Options, bits int) *Result {
-	lineAt := func(pc uint64) int {
-		if pc < codeBase {
-			return -1
-		}
-		off := int64(pc - codeBase)
-		for _, s := range spans {
-			if off >= s.addr && off < s.addr+int64(s.length) {
-				return s.line
-			}
-		}
-		return -1
-	}
+func traceLoop(sb *sandbox, opts Options) *Result {
 	maxN := opts.MaxSteps
 	if maxN <= 0 {
 		maxN = defaultSteps
 	}
-	res := &Result{Bits: bits, StopLine: -1}
-	names := r.names()
+	res := &Result{Bits: sb.bits, StopLine: -1}
+	names := sb.names
 	idx := map[int]int{}
-	prev := snapshot(r, names)
+	prev := snapshot(sb.r, names)
 
 	for res.Steps < maxN {
-		pc := r.pc()
-		if pc == sentinel {
+		pc := sb.r.pc()
+		if pc == sb.sentinel {
 			res.Stop = StopCompleted
 			break
 		}
-		cur := lineAt(pc)
+		cur := sb.lineAt(pc)
 		if cur < 0 {
 			res.Stop = StopOutside
 			break
@@ -314,15 +339,15 @@ func traceLoop(r runner, codeBase, sentinel uint64, spans []span, opts Options, 
 			res.StopLine = cur
 			break
 		}
-		if ferr := safeStep(r); ferr != nil {
+		if ferr := safeStep(sb.r); ferr != nil {
 			res.Stop = StopFault
 			res.Error = ferr.Error()
 			res.StopLine = cur
 			break
 		}
 		res.Steps++
-		now := snapshot(r, names)
-		ls := lineState(cur, prev, now, names, r.hasFlags())
+		now := snapshot(sb.r, names)
+		ls := lineState(cur, prev, now, names, sb.hasFlags)
 		if p, ok := idx[cur]; ok {
 			res.Lines[p] = ls
 		} else {
@@ -330,7 +355,7 @@ func traceLoop(r runner, codeBase, sentinel uint64, spans []span, opts Options, 
 			res.Lines = append(res.Lines, ls)
 		}
 		prev = now
-		if r.halted() { // HLT / WFI — a clean program end
+		if sb.r.halted() { // HLT / WFI — a clean program end
 			res.Stop = StopHalted
 			break
 		}
@@ -397,6 +422,122 @@ func safeStep(r runner) (err error) {
 		}
 	}()
 	return r.step()
+}
+
+// --- stepping debugger ------------------------------------------------------
+
+// DebugState is the machine state at a pause point of a Session.
+type DebugState struct {
+	Arch    string   `json:"arch"`
+	Bits    int      `json:"bits"`
+	Line    int      `json:"line"`            // line about to execute, -1 if the run ended
+	Regs    []RegVal `json:"regs"`            // full register file now
+	Changed []RegVal `json:"changed"`         // registers the last step changed
+	Flags   []RegVal `json:"flags"`           // status flags now (x86; 0/1 each)
+	Stop    string   `json:"stop"`            // "" while paused, else the end reason
+	Steps   int      `json:"steps"`           // instructions executed so far
+	Error   string   `json:"error,omitempty"` // guest fault text, if any
+}
+
+// Session is a live, single-steppable run of a program: the CPU persists
+// between Step/Continue calls, so the caller can drive it like a debugger.
+// Close it when done to release the backing memory.
+type Session struct {
+	sb    *sandbox
+	prev  snap // state before the last executed instruction (for Changed)
+	steps int
+	stop  string // non-empty once the run has ended
+	serr  string
+}
+
+// NewSession assembles src and positions the CPU at the entry, paused.
+func NewSession(src string) (*Session, error) {
+	sb, err := buildSandbox(src)
+	if err != nil {
+		return nil, err
+	}
+	s := &Session{sb: sb}
+	s.prev = snapshot(sb.r, sb.names)
+	return s, nil
+}
+
+// Close releases the session's memory. Safe to call more than once.
+func (s *Session) Close() {
+	if s.sb != nil {
+		s.sb.close()
+		s.sb = nil
+	}
+}
+
+func (s *Session) done() bool { return s.stop != "" }
+
+func (s *Session) finish(reason string) { s.stop = reason }
+
+// Step executes one instruction (a no-op once the run has ended).
+func (s *Session) Step() *DebugState {
+	if !s.done() {
+		pc := s.sb.r.pc()
+		switch {
+		case pc == s.sb.sentinel:
+			s.finish(StopCompleted)
+		case s.sb.lineAt(pc) < 0:
+			s.finish(StopOutside)
+		default:
+			s.prev = snapshot(s.sb.r, s.sb.names)
+			if err := safeStep(s.sb.r); err != nil {
+				s.serr = err.Error()
+				s.finish(StopFault)
+			} else {
+				s.steps++
+				if s.sb.r.halted() {
+					s.finish(StopHalted)
+				}
+			}
+		}
+	}
+	return s.State()
+}
+
+// Continue runs until the next breakpoint line, a clean end, a fault, or the
+// step cap (after which the session is ended with max-steps).
+func (s *Session) Continue(breakpoints map[int]bool) *DebugState {
+	for n := 0; !s.done() && n < defaultSteps; n++ {
+		s.Step()
+		if s.done() {
+			break
+		}
+		if breakpoints[s.sb.lineAt(s.sb.r.pc())] {
+			return s.State()
+		}
+	}
+	if !s.done() {
+		s.finish(StopMaxSteps)
+	}
+	return s.State()
+}
+
+// State reports the current pause point.
+func (s *Session) State() *DebugState {
+	now := snapshot(s.sb.r, s.sb.names)
+	ds := &DebugState{
+		Arch: s.sb.arch.String(), Bits: s.sb.bits, Steps: s.steps,
+		Stop: s.stop, Error: s.serr, Line: -1,
+	}
+	if !s.done() {
+		ds.Line = s.sb.lineAt(now.pc)
+	}
+	for i, name := range s.sb.names {
+		ds.Regs = append(ds.Regs, RegVal{name, now.gpr[i]})
+		if now.gpr[i] != s.prev.gpr[i] {
+			ds.Changed = append(ds.Changed, RegVal{name, now.gpr[i]})
+		}
+	}
+	if s.sb.hasFlags {
+		for _, f := range flagDefs {
+			ds.Flags = append(ds.Flags, RegVal{f.name, (now.flags >> f.bit) & 1})
+		}
+	}
+	return ds
 }
 
 // --- x86 machines -----------------------------------------------------------

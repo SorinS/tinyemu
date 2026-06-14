@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/jtolio/tinyemu-go/asm/emu"
 )
 
 func TestServerFlow(t *testing.T) {
@@ -94,5 +96,33 @@ func TestServerRun(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected line 1 annotation 'rax=0x8', got %+v", resp.Result.Lines)
+	}
+}
+
+func TestServerDebug(t *testing.T) {
+	srv := &server{
+		docs:     map[string]string{"file:///d.asm": "  mov rax, 5\n  add rax, 3\n  hlt\n"},
+		sessions: map[string]*emu.Session{},
+	}
+	p := runParams{TextDocument: textDocumentID{URI: "file:///d.asm"}}
+	// start → armed at entry, nothing run
+	st := srv.debugStart(p)
+	if st.Line != 0 || st.Steps != 0 {
+		t.Fatalf("start: line=%d steps=%d, want 0/0", st.Line, st.Steps)
+	}
+	// step → mov rax,5
+	st = srv.debugStep(p)
+	var rax uint64
+	for _, r := range st.Regs {
+		if r.Name == "rax" {
+			rax = r.Value
+		}
+	}
+	if rax != 5 {
+		t.Errorf("after step rax=%d, want 5", rax)
+	}
+	srv.debugStop(p)
+	if srv.sessions["file:///d.asm"] != nil {
+		t.Errorf("session not cleaned up after stop")
 	}
 }

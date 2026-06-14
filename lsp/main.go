@@ -27,7 +27,7 @@ func labelsFor(text string, arch emu.Arch) map[string]int64 {
 }
 
 func main() {
-	srv := &server{docs: map[string]string{}}
+	srv := &server{docs: map[string]string{}, sessions: map[string]*emu.Session{}}
 	r := bufio.NewReader(os.Stdin)
 	w := bufio.NewWriter(os.Stdout)
 	for {
@@ -94,7 +94,8 @@ func writeMessage(w *bufio.Writer, msg any) {
 // --- server -----------------------------------------------------------------
 
 type server struct {
-	docs map[string]string // uri -> full text
+	docs     map[string]string       // uri -> full text
+	sessions map[string]*emu.Session // uri -> live debug session
 }
 
 func (s *server) handle(msg *rpcMessage, w *bufio.Writer) {
@@ -139,6 +140,23 @@ func (s *server) handle(msg *rpcMessage, w *bufio.Writer) {
 		var p runParams
 		json.Unmarshal(msg.Params, &p)
 		s.reply(w, msg.ID, s.runProgram(p))
+	case "asm/debug/start":
+		var p runParams
+		json.Unmarshal(msg.Params, &p)
+		s.reply(w, msg.ID, s.debugStart(p))
+	case "asm/debug/step":
+		var p runParams
+		json.Unmarshal(msg.Params, &p)
+		s.reply(w, msg.ID, s.debugStep(p))
+	case "asm/debug/continue":
+		var p runParams
+		json.Unmarshal(msg.Params, &p)
+		s.reply(w, msg.ID, s.debugContinue(p))
+	case "asm/debug/stop":
+		var p runParams
+		json.Unmarshal(msg.Params, &p)
+		s.debugStop(p)
+		s.reply(w, msg.ID, nil)
 	default:
 		if len(msg.ID) > 0 { // a request we don't handle — must answer
 			s.reply(w, msg.ID, nil)
@@ -276,6 +294,58 @@ func (s *server) runProgram(p runParams) any {
 	return out
 }
 
+// --- stepping debugger (asm/debug/*) ---------------------------------------
+
+// debugStart builds a fresh session for the buffer (replacing any prior one),
+// positioned at the entry. Returns the DebugState, or an assemble-error state.
+func (s *server) debugStart(p runParams) *emu.DebugState {
+	uri := p.TextDocument.URI
+	if old := s.sessions[uri]; old != nil {
+		old.Close()
+		delete(s.sessions, uri)
+	}
+	sess, err := emu.NewSession(s.docs[uri])
+	if err != nil {
+		return &emu.DebugState{Stop: "assemble-error", Error: cleanErr(err), Line: -1}
+	}
+	s.sessions[uri] = sess
+	return sess.State()
+}
+
+// debugStep executes one instruction; the first call (no session yet) arms the
+// session at the entry without stepping.
+func (s *server) debugStep(p runParams) *emu.DebugState {
+	sess := s.sessions[p.TextDocument.URI]
+	if sess == nil {
+		return s.debugStart(p)
+	}
+	return sess.Step()
+}
+
+// debugContinue runs to the next breakpoint, a clean end, a fault, or the cap.
+func (s *server) debugContinue(p runParams) *emu.DebugState {
+	sess := s.sessions[p.TextDocument.URI]
+	if sess == nil {
+		if st := s.debugStart(p); st.Stop == "assemble-error" {
+			return st
+		}
+		sess = s.sessions[p.TextDocument.URI]
+	}
+	bps := map[int]bool{}
+	for _, l := range p.Breakpoints {
+		bps[l] = true
+	}
+	return sess.Continue(bps)
+}
+
+func (s *server) debugStop(p runParams) {
+	uri := p.TextDocument.URI
+	if sess := s.sessions[uri]; sess != nil {
+		sess.Close()
+		delete(s.sessions, uri)
+	}
+}
+
 func (s *server) lineAt(p posParams) string {
 	lines := strings.Split(s.docs[p.TextDocument.URI], "\n")
 	if p.Position.Line < 0 || p.Position.Line >= len(lines) {
@@ -373,8 +443,8 @@ type runLine struct {
 	Regs []emu.RegVal `json:"regs,omitempty"` // full register file after this line
 }
 type runResult struct {
-	Arch     string       `json:"arch"`     // "x86" or "riscv"
-	Bits     int          `json:"bits"`     // 32 or 64
+	Arch     string       `json:"arch"` // "x86" or "riscv"
+	Bits     int          `json:"bits"` // 32 or 64
 	Lines    []runLine    `json:"lines"`
 	Final    []emu.RegVal `json:"final"`    // full register file when the run ended
 	Stop     string       `json:"stop"`     // why the run ended

@@ -225,3 +225,67 @@ func TestResult_FullRegsPresent(t *testing.T) {
 		t.Errorf("reg names off: %q ... %q", ls.Regs[0].Name, ls.Regs[8].Name)
 	}
 }
+
+func TestSession_Step(t *testing.T) {
+	s, err := emu.NewSession("  mov rax, 5\n  add rax, 3\n  hlt\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	st := s.State() // at entry, line 0, nothing run
+	if st.Line != 0 || st.Steps != 0 {
+		t.Fatalf("entry: line=%d steps=%d, want 0/0", st.Line, st.Steps)
+	}
+	st = s.Step() // mov rax,5
+	if v, ok := regOf(st.Regs, "rax"); !ok || v != 5 {
+		t.Errorf("after step1 rax=%#x, want 5", v)
+	}
+	if st.Line != 1 {
+		t.Errorf("after step1 current line=%d, want 1", st.Line)
+	}
+	st = s.Step() // add rax,3 → rax=8; changed should list rax
+	if v, ok := regOf(st.Changed, "rax"); !ok || v != 8 {
+		t.Errorf("step2 changed rax=%#x, want 8", v)
+	}
+	st = s.Step() // hlt
+	if st.Stop != emu.StopHalted {
+		t.Errorf("after hlt stop=%q, want halted", st.Stop)
+	}
+	if st.Line != -1 {
+		t.Errorf("ended: line=%d, want -1", st.Line)
+	}
+}
+
+func TestSession_Continue_Breakpoint(t *testing.T) {
+	src := "  li a0, 0\n  li a1, 5\nloop:\n  addi a0, a0, 1\n  blt a0, a1, loop\n  ret\n"
+	s, err := emu.NewSession(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	// breakpoint on line 4 (the blt). Continue should stop there first iteration.
+	st := s.Continue(map[int]bool{4: true})
+	if st.Line != 4 {
+		t.Fatalf("continue stopped at line %d, want 4 (breakpoint)", st.Line)
+	}
+	if v, ok := regOf(st.Regs, "a0"); !ok || v != 1 {
+		t.Errorf("at first bp a0=%#x, want 1", v)
+	}
+	// continue to completion (no breakpoint now)
+	st = s.Continue(nil)
+	if st.Stop != emu.StopCompleted {
+		t.Fatalf("final stop=%q, want completed", st.Stop)
+	}
+	if v, _ := regOf(st.Regs, "a0"); v != 5 {
+		t.Errorf("final a0=%#x, want 5", v)
+	}
+}
+
+func regOf(list []emu.RegVal, name string) (uint64, bool) {
+	for _, r := range list {
+		if r.Name == name {
+			return r.Value, true
+		}
+	}
+	return 0, false
+}
