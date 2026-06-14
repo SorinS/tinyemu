@@ -264,7 +264,7 @@ func TestSession_Continue_Breakpoint(t *testing.T) {
 	}
 	defer s.Close()
 	// breakpoint on line 4 (the blt). Continue should stop there first iteration.
-	st := s.Continue(map[int]bool{4: true})
+	st := s.Continue(map[int]bool{4: true}, nil)
 	if st.Line != 4 {
 		t.Fatalf("continue stopped at line %d, want 4 (breakpoint)", st.Line)
 	}
@@ -272,7 +272,7 @@ func TestSession_Continue_Breakpoint(t *testing.T) {
 		t.Errorf("at first bp a0=%#x, want 1", v)
 	}
 	// continue to completion (no breakpoint now)
-	st = s.Continue(nil)
+	st = s.Continue(nil, nil)
 	if st.Stop != emu.StopCompleted {
 		t.Fatalf("final stop=%q, want completed", st.Stop)
 	}
@@ -288,4 +288,61 @@ func regOf(list []emu.RegVal, name string) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+func TestSession_StepBackRestart(t *testing.T) {
+	s, _ := emu.NewSession("  mov rax, 1\n  mov rax, 2\n  mov rax, 3\n  hlt\n")
+	defer s.Close()
+	s.Step() // rax=1
+	s.Step() // rax=2
+	s.Step() // rax=3, steps=3, paused at hlt (line 3)
+	// step back one: replays to step 2 → rax=2
+	st := s.StepBack()
+	if v, _ := regOf(st.Regs, "rax"); v != 2 || st.Steps != 2 {
+		t.Errorf("stepback: rax=%#x steps=%d, want 2/2", v, st.Steps)
+	}
+	st = s.Restart()
+	if st.Steps != 0 || st.Line != 0 {
+		t.Errorf("restart: steps=%d line=%d, want 0/0", st.Steps, st.Line)
+	}
+}
+
+func TestSession_StepOver(t *testing.T) {
+	src := "" +
+		"  call sub\n" + // line 0
+		"  hlt\n" + // line 1
+		"sub:\n" + // line 2
+		"  mov rax, 0x42\n" + // line 3
+		"  ret\n" // line 4
+	s, _ := emu.NewSession(src)
+	defer s.Close()
+	st := s.StepOver() // over the call → runs sub, stops at hlt (line 1)
+	if st.Line != 1 {
+		t.Fatalf("stepover landed on line %d, want 1 (after the call)", st.Line)
+	}
+	if v, _ := regOf(st.Regs, "rax"); v != 0x42 {
+		t.Errorf("after step-over rax=%#x, want 0x42 (subroutine ran)", v)
+	}
+}
+
+func TestSession_ConditionalBreak(t *testing.T) {
+	src := "  li a0, 0\n  li a1, 5\nloop:\n  addi a0, a0, 1\n  blt a0, a1, loop\n  ret\n"
+	s, _ := emu.NewSession(src)
+	defer s.Close()
+	// break at the blt (line 4) only when a0 == 3
+	st := s.Continue(nil, []emu.Cond{{Line: 4, Reg: "a0", Op: "==", Value: 3}})
+	if v, _ := regOf(st.Regs, "a0"); v != 3 || st.Line != 4 {
+		t.Errorf("conditional break: a0=%#x line=%d, want 3 @ line 4", v, st.Line)
+	}
+}
+
+func TestSession_ReadMem(t *testing.T) {
+	s, _ := emu.NewSession("  mov rax, rax\n  hlt\n")
+	defer s.Close()
+	// the sandbox seeds the sentinel return (0xDEADBEEE) at the stack top (0x300000).
+	b := s.ReadMem(0x300000, 4)
+	got := uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+	if got != 0xDEADBEEE {
+		t.Errorf("ReadMem stack top = %#x, want 0xDEADBEEE", got)
+	}
 }

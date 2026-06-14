@@ -152,6 +152,22 @@ func (s *server) handle(msg *rpcMessage, w *bufio.Writer) {
 		var p runParams
 		json.Unmarshal(msg.Params, &p)
 		s.reply(w, msg.ID, s.debugContinue(p))
+	case "asm/debug/stepback":
+		var p runParams
+		json.Unmarshal(msg.Params, &p)
+		s.reply(w, msg.ID, s.debugStepBack(p))
+	case "asm/debug/restart":
+		var p runParams
+		json.Unmarshal(msg.Params, &p)
+		s.reply(w, msg.ID, s.debugRestart(p))
+	case "asm/debug/stepover":
+		var p runParams
+		json.Unmarshal(msg.Params, &p)
+		s.reply(w, msg.ID, s.debugStepOver(p))
+	case "asm/debug/memory":
+		var p runParams
+		json.Unmarshal(msg.Params, &p)
+		s.reply(w, msg.ID, s.debugMemory(p))
 	case "asm/debug/stop":
 		var p runParams
 		json.Unmarshal(msg.Params, &p)
@@ -335,7 +351,49 @@ func (s *server) debugContinue(p runParams) *emu.DebugState {
 	for _, l := range p.Breakpoints {
 		bps[l] = true
 	}
-	return sess.Continue(bps)
+	return sess.Continue(bps, p.Conditions)
+}
+
+// debugStepBack / debugRestart / debugStepOver drive a live session; they no-op
+// (returning a "no session" state) if none is active.
+func (s *server) debugStepBack(p runParams) *emu.DebugState {
+	if sess := s.sessions[p.TextDocument.URI]; sess != nil {
+		return sess.StepBack()
+	}
+	return s.debugStart(p)
+}
+
+func (s *server) debugRestart(p runParams) *emu.DebugState {
+	if sess := s.sessions[p.TextDocument.URI]; sess != nil {
+		return sess.Restart()
+	}
+	return s.debugStart(p)
+}
+
+func (s *server) debugStepOver(p runParams) *emu.DebugState {
+	sess := s.sessions[p.TextDocument.URI]
+	if sess == nil {
+		return s.debugStart(p)
+	}
+	return sess.StepOver()
+}
+
+// debugMemory reads a window of guest memory from the live session.
+func (s *server) debugMemory(p runParams) any {
+	sess := s.sessions[p.TextDocument.URI]
+	if sess == nil {
+		return memoryResult{Error: "no debug session — start one first"}
+	}
+	n := p.Count
+	if n <= 0 || n > 4096 {
+		n = 64
+	}
+	data := sess.ReadMem(p.Addr, n)
+	bytes := make([]int, len(data))
+	for i, b := range data {
+		bytes[i] = int(b)
+	}
+	return memoryResult{Addr: p.Addr, Bytes: bytes}
 }
 
 func (s *server) debugStop(p runParams) {
@@ -431,11 +489,21 @@ type signatureHelpResult struct {
 	ActiveParameter int                    `json:"activeParameter"`
 }
 
-// asm/run request + result (custom, non-standard LSP method).
+// asm/run + asm/debug/* request params (custom, non-standard LSP methods).
 type runParams struct {
 	TextDocument textDocumentID `json:"textDocument"`
 	Line         int            `json:"line"`        // run-to-cursor line; <0 = whole program
-	Breakpoints  []int          `json:"breakpoints"` // optional stop-before lines
+	Breakpoints  []int          `json:"breakpoints"` // plain stop-before lines
+	Conditions   []emu.Cond     `json:"conditions"`  // conditional breakpoints
+	Addr         uint64         `json:"addr"`        // asm/debug/memory: address to read
+	Count        int            `json:"count"`       // asm/debug/memory: byte count
+}
+
+// memoryResult is the asm/debug/memory reply.
+type memoryResult struct {
+	Addr  uint64 `json:"addr"`
+	Bytes []int  `json:"bytes"`
+	Error string `json:"error,omitempty"`
 }
 type runLine struct {
 	Line int          `json:"line"`           // 0-based source line

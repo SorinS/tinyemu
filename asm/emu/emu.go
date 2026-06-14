@@ -253,6 +253,49 @@ func (sb *sandbox) lineAt(pc uint64) int {
 	return -1
 }
 
+// instrLen returns the byte length of the instruction at pc (0 if unknown).
+func (sb *sandbox) instrLen(pc uint64) int {
+	if pc < sb.codeBase {
+		return 0
+	}
+	off := pc - sb.codeBase
+	for _, s := range sb.spans {
+		if uint64(s.addr) == off {
+			return s.length
+		}
+	}
+	return 0
+}
+
+// returnedTo reports whether the last instruction was a call to a subroutine —
+// i.e. a return address pointing at retAddr now lives in the linkage location
+// (RISC-V: ra; x86: top of stack).
+func (sb *sandbox) returnedTo(retAddr uint64) bool {
+	if sb.arch == ArchRISCV {
+		return sb.r.reg(rvRegRA) == retAddr
+	}
+	rsp := sb.r.reg(regSP)
+	width := sb.bits / 8
+	var v uint64
+	for i := 0; i < width; i++ {
+		b, _ := sb.mm.Read8(rsp + uint64(i))
+		v |= uint64(b) << (8 * i)
+	}
+	return v == retAddr
+}
+
+// readBytes reads n bytes of guest memory at addr (0 for unmapped).
+func (sb *sandbox) readBytes(addr uint64, n int) []byte {
+	out := make([]byte, n)
+	for i := 0; i < n; i++ {
+		b, err := sb.mm.Read8(addr + uint64(i))
+		if err == nil {
+			out[i] = b
+		}
+	}
+	return out
+}
+
 // buildSandbox detects the ISA, assembles src, loads it into a flat sandbox,
 // and positions the CPU at the entry.
 func buildSandbox(src string) (*sandbox, error) {
@@ -443,6 +486,7 @@ type DebugState struct {
 // between Step/Continue calls, so the caller can drive it like a debugger.
 // Close it when done to release the backing memory.
 type Session struct {
+	src   string // kept for exact replay (step-back / restart)
 	sb    *sandbox
 	prev  snap // state before the last executed instruction (for Changed)
 	steps int
@@ -456,9 +500,36 @@ func NewSession(src string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{sb: sb}
+	s := &Session{src: src, sb: sb}
 	s.prev = snapshot(sb.r, sb.names)
 	return s, nil
+}
+
+// Cond is a conditional breakpoint: stop at Line only when register Reg
+// compares (Op ∈ ==,!=,<,>,<=,>=) against Value (unsigned).
+type Cond struct {
+	Line  int    `json:"line"`
+	Reg   string `json:"reg"`
+	Op    string `json:"op"`
+	Value uint64 `json:"value"`
+}
+
+func evalCond(v uint64, op string, val uint64) bool {
+	switch op {
+	case "==":
+		return v == val
+	case "!=":
+		return v != val
+	case "<":
+		return v < val
+	case ">":
+		return v > val
+	case "<=":
+		return v <= val
+	case ">=":
+		return v >= val
+	}
+	return false
 }
 
 // Close releases the session's memory. Safe to call more than once.
@@ -498,22 +569,96 @@ func (s *Session) Step() *DebugState {
 	return s.State()
 }
 
-// Continue runs until the next breakpoint line, a clean end, a fault, or the
-// step cap (after which the session is ended with max-steps).
-func (s *Session) Continue(breakpoints map[int]bool) *DebugState {
+// Continue runs until the next breakpoint (a plain line breakpoint, or a
+// conditional one whose register comparison holds), a clean end, a fault, or
+// the step cap (after which the session ends with max-steps).
+func (s *Session) Continue(breakpoints map[int]bool, conds []Cond) *DebugState {
+	byLine := map[int][]Cond{}
+	for _, c := range conds {
+		byLine[c.Line] = append(byLine[c.Line], c)
+	}
+	regIdx := map[string]int{}
+	for i, n := range s.sb.names {
+		regIdx[n] = i
+	}
 	for n := 0; !s.done() && n < defaultSteps; n++ {
 		s.Step()
 		if s.done() {
 			break
 		}
-		if breakpoints[s.sb.lineAt(s.sb.r.pc())] {
+		line := s.sb.lineAt(s.sb.r.pc())
+		if breakpoints[line] {
 			return s.State()
+		}
+		for _, c := range byLine[line] {
+			if i, ok := regIdx[c.Reg]; ok && evalCond(s.sb.r.reg(i), c.Op, c.Value) {
+				return s.State()
+			}
 		}
 	}
 	if !s.done() {
 		s.finish(StopMaxSteps)
 	}
 	return s.State()
+}
+
+// StepOver executes one instruction, but runs a call to subroutine through to
+// its return rather than stepping into it.
+func (s *Session) StepOver() *DebugState {
+	if s.done() {
+		return s.State()
+	}
+	pc := s.sb.r.pc()
+	retAddr := pc + uint64(s.sb.instrLen(pc))
+	s.Step()
+	// If that instruction called a subroutine (a return address now points at
+	// the next instruction), run until we return there.
+	if !s.done() && s.sb.r.pc() != retAddr && s.sb.returnedTo(retAddr) {
+		for n := 0; !s.done() && n < defaultSteps && s.sb.r.pc() != retAddr; n++ {
+			s.Step()
+		}
+	}
+	return s.State()
+}
+
+// StepBack re-runs from the entry to one instruction before the current point
+// — exact time-travel, since execution is deterministic.
+func (s *Session) StepBack() *DebugState {
+	target := s.steps - 1
+	if target < 0 {
+		target = 0
+	}
+	s.replayTo(target)
+	return s.State()
+}
+
+// Restart re-arms the session at the entry.
+func (s *Session) Restart() *DebugState {
+	s.replayTo(0)
+	return s.State()
+}
+
+// replayTo rebuilds a fresh sandbox and steps it n times.
+func (s *Session) replayTo(n int) {
+	sb, err := buildSandbox(s.src)
+	if err != nil { // src already assembled once in NewSession, so this is unexpected
+		s.serr = err.Error()
+		s.finish("assemble-error")
+		return
+	}
+	s.sb.close()
+	s.sb = sb
+	s.steps, s.stop, s.serr = 0, "", ""
+	s.prev = snapshot(s.sb.r, s.sb.names)
+	for i := 0; i < n && !s.done(); i++ {
+		s.Step()
+	}
+}
+
+// ReadMem reads n bytes of guest memory at addr (physical == linear in the flat
+// sandbox).
+func (s *Session) ReadMem(addr uint64, n int) []byte {
+	return s.sb.readBytes(addr, n)
 }
 
 // State reports the current pause point.
