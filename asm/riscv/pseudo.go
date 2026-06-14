@@ -5,14 +5,18 @@ package riscv
 var pseudoNames = []string{
 	"nop", "ret", "mv", "not", "neg", "seqz", "snez", "li", "j", "jr", "beqz", "bnez",
 	"csrr", "csrw", "csrs", "csrc", "csrwi", "csrsi", "csrci",
+	"fmv.s", "fabs.s", "fneg.s", "fmv.d", "fabs.d", "fneg.d",
 }
 
-// Mnemonics returns every assemblable instruction mnemonic — base table plus
-// pseudo-instructions — for editor completion.
+// Mnemonics returns every assemblable instruction mnemonic — base table, FP
+// (F/D) table, and pseudo-instructions — for editor completion.
 func Mnemonics() []string {
-	out := make([]string, 0, len(table)+len(pseudoNames))
+	out := make([]string, 0, len(table)+len(fpTable)+len(pseudoNames))
 	for i := range table {
 		out = append(out, table[i].name)
+	}
+	for i := range fpTable {
+		out = append(out, fpTable[i].name)
 	}
 	return append(out, pseudoNames...)
 }
@@ -106,6 +110,31 @@ func expandPseudo(mnem string, ops []string) (string, []string) {
 	case "csrci":
 		if len(ops) == 2 {
 			return "csrrci", []string{"zero", ops[0], ops[1]}
+		}
+	// FP register moves (fmv/fabs/fneg) are sign-injection idioms.
+	case "fmv.s":
+		if len(ops) == 2 {
+			return "fsgnj.s", []string{ops[0], ops[1], ops[1]}
+		}
+	case "fabs.s":
+		if len(ops) == 2 {
+			return "fsgnjx.s", []string{ops[0], ops[1], ops[1]}
+		}
+	case "fneg.s":
+		if len(ops) == 2 {
+			return "fsgnjn.s", []string{ops[0], ops[1], ops[1]}
+		}
+	case "fmv.d":
+		if len(ops) == 2 {
+			return "fsgnj.d", []string{ops[0], ops[1], ops[1]}
+		}
+	case "fabs.d":
+		if len(ops) == 2 {
+			return "fsgnjx.d", []string{ops[0], ops[1], ops[1]}
+		}
+	case "fneg.d":
+		if len(ops) == 2 {
+			return "fsgnjn.d", []string{ops[0], ops[1], ops[1]}
 		}
 	}
 	return mnem, ops

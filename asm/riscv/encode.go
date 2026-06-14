@@ -16,6 +16,15 @@ func Assemble(src string) ([]byte, error) {
 	}
 	mnem, ops = expandPseudo(mnem, ops)
 
+	// Floating-point (F/D) instructions are in a separate table.
+	if fp, ok := fpByName[mnem]; ok {
+		w, err := encodeFP(fp, ops)
+		if err != nil {
+			return nil, fmt.Errorf("riscv %q: %w", src, err)
+		}
+		return []byte{byte(w), byte(w >> 8), byte(w >> 16), byte(w >> 24)}, nil
+	}
+
 	// An atomic mnemonic may carry an .aq / .rl / .aqrl ordering suffix.
 	aq, rl := false, false
 	if _, ok := byName[mnem]; !ok {

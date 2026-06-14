@@ -25,7 +25,7 @@ var encRe = regexp.MustCompile(`encoding:\s*\[([^\]]*)\]`)
 // (PC-relative operands show up as 'A'/0bAAAA…, not concrete bytes).
 func mcEncode(t *testing.T, src string) ([]byte, bool) {
 	t.Helper()
-	cmd := exec.Command(llvmMC, "--triple=riscv64", "--mattr=+m,+a", "--show-encoding")
+	cmd := exec.Command(llvmMC, "--triple=riscv64", "--mattr=+m,+a,+f,+d", "--show-encoding")
 	cmd.Stdin = strings.NewReader(src + "\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

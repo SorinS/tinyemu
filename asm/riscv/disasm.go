@@ -5,8 +5,56 @@ import (
 	"strings"
 )
 
-// xreg returns the ABI name for register n (0..31).
+// xreg / freg return the ABI name for integer / float register n.
 func xreg(n uint32) string { return abiNames[n&0x1F] }
+func freg(n uint32) string { return fpAbi[n&0x1F] }
+
+var rmNames = [8]string{"rne", "rtz", "rdn", "rup", "rmm", "?5", "?6", "dyn"}
+
+// rmSuffix renders an explicit rounding mode (none for the default "dyn", so a
+// round-trip re-assembles to the same bytes).
+func rmSuffix(funct3 uint32) string {
+	if funct3 == 7 {
+		return ""
+	}
+	return ", " + rmNames[funct3&7]
+}
+
+// disasmFPR decodes an OP-FP (0x53) R-type instruction by reverse table lookup.
+func disasmFPR(funct7, funct3, rs2, rs1, rd uint32) (string, bool) {
+	for i := range fpTable {
+		f := &fpTable[i]
+		if f.opcode != 0x53 || f.form == fpR4 {
+			continue
+		}
+		if f.funct7 != funct7 {
+			continue
+		}
+		if f.rs2fix >= 0 && rs2 != uint32(f.rs2fix) {
+			continue
+		}
+		if !f.hasRM && funct3 != f.funct3 {
+			continue
+		}
+		rm := ""
+		if f.hasRM {
+			rm = rmSuffix(funct3)
+		}
+		switch f.form {
+		case fpFFF:
+			return fmt.Sprintf("%s %s, %s, %s%s", f.name, freg(rd), freg(rs1), freg(rs2), rm), true
+		case fpFF:
+			return fmt.Sprintf("%s %s, %s%s", f.name, freg(rd), freg(rs1), rm), true
+		case fpIFF:
+			return fmt.Sprintf("%s %s, %s, %s%s", f.name, xreg(rd), freg(rs1), freg(rs2), rm), true
+		case fpIF:
+			return fmt.Sprintf("%s %s, %s%s", f.name, xreg(rd), freg(rs1), rm), true
+		case fpFI:
+			return fmt.Sprintf("%s %s, %s%s", f.name, freg(rd), xreg(rs1), rm), true
+		}
+	}
+	return "", false
+}
 
 // fenceStr renders a 4-bit fence ordering set (i=8,o=4,r=2,w=1) as flag letters.
 func fenceStr(v uint32) string {
@@ -147,6 +195,42 @@ func Disassemble(code []byte) (text string, length int, err error) {
 			return fmt.Sprintf("%s%s %s, (%s)", in.name, suffix, xreg(rd), xreg(rs1)), 4, nil
 		}
 		return fmt.Sprintf("%s%s %s, %s, (%s)", in.name, suffix, xreg(rd), xreg(rs2), xreg(rs1)), 4, nil
+
+	case 0x07: // FP load
+		imm := signExtend(w>>20, 12)
+		switch funct3 {
+		case 0x2:
+			return fmt.Sprintf("flw %s, %d(%s)", freg(rd), imm, xreg(rs1)), 4, nil
+		case 0x3:
+			return fmt.Sprintf("fld %s, %d(%s)", freg(rd), imm, xreg(rs1)), 4, nil
+		}
+
+	case 0x27: // FP store
+		imm := signExtend(((w>>25)&0x7F)<<5|((w>>7)&0x1F), 12)
+		switch funct3 {
+		case 0x2:
+			return fmt.Sprintf("fsw %s, %d(%s)", freg(rs2), imm, xreg(rs1)), 4, nil
+		case 0x3:
+			return fmt.Sprintf("fsd %s, %d(%s)", freg(rs2), imm, xreg(rs1)), 4, nil
+		}
+
+	case 0x53: // OP-FP (R-type)
+		if text, ok := disasmFPR(funct7, funct3, rs2, rs1, rd); ok {
+			return text, 4, nil
+		}
+
+	case 0x43, 0x47, 0x4B, 0x4F: // fused multiply-add (R4-type)
+		fmtBit := (w >> 25) & 3
+		rs3 := (w >> 27) & 0x1F
+		if fmtBit < 2 {
+			for i := range fpTable {
+				f := &fpTable[i]
+				if f.form == fpR4 && f.opcode == opcode && (f.funct7&1) == fmtBit {
+					return fmt.Sprintf("%s %s, %s, %s, %s%s", f.name,
+						freg(rd), freg(rs1), freg(rs2), freg(rs3), rmSuffix(funct3)), 4, nil
+				}
+			}
+		}
 
 	case 0x37: // lui
 		return fmt.Sprintf("lui %s, 0x%x", xreg(rd), (w>>12)&0xFFFFF), 4, nil
