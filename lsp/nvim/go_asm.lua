@@ -20,12 +20,14 @@ local function clear(bufnr)
   vim.api.nvim_buf_clear_namespace(bufnr or 0, ns, 0, -1)
 end
 
--- nonzero renders the non-zero registers of a {name,value} list.
+-- nonzero renders the non-zero registers of a list, using the exact hex string
+-- the server sends (JSON numbers lose precision above 2^53) and the float
+-- interpretation for FP registers.
 local function nonzero(regs)
   local parts = {}
   for _, r in ipairs(regs or {}) do
-    if r.value and r.value ~= 0 then
-      parts[#parts + 1] = ("%s=0x%x"):format(r.name, r.value)
+    if r.hex and r.hex ~= "0x0" then
+      parts[#parts + 1] = ("%s=%s"):format(r.name, r.float or r.hex)
     end
   end
   return table.concat(parts, "  ")
@@ -134,7 +136,11 @@ function M.registers()
   end
   local lines = { ("registers — %s%d  (q/Esc/move to close)"):format(res.arch or "?", res.bits or 0) }
   for _, r in ipairs(res.final) do
-    lines[#lines + 1] = ("  %-5s 0x%016x  (%d)"):format(r.name, r.value, r.value)
+    local isFP = r.name:match("^f[tsa]") ~= nil
+    if not isFP or (r.hex and r.hex ~= "0x0") then -- show all GPRs + non-zero FP regs
+      local extra = r.float and ("  = " .. r.float) or ""
+      lines[#lines + 1] = ("  %-5s %-18s%s"):format(r.name, r.hex or "?", extra)
+    end
   end
   float_open("reg", lines)
 end

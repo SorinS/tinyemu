@@ -346,3 +346,32 @@ func TestSession_ReadMem(t *testing.T) {
 		t.Errorf("ReadMem stack top = %#x, want 0xDEADBEEE", got)
 	}
 }
+
+func TestSession_FPRegisters(t *testing.T) {
+	// a0=2 → fa0=2.0 → fa1=4.0; FP registers appear in the view with float values.
+	r, err := emu.RunAll("  li a0, 2\n  fcvt.s.w fa0, a0\n  fadd.s fa1, fa0, fa0\n  ret\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Stop != emu.StopCompleted {
+		t.Fatalf("Stop = %q (%s)", r.Stop, r.Error)
+	}
+	find := func(name string) *emu.RegVal {
+		for i := range r.Final {
+			if r.Final[i].Name == name {
+				return &r.Final[i]
+			}
+		}
+		return nil
+	}
+	if fa0 := find("fa0"); fa0 == nil || fa0.Float != "2" {
+		t.Errorf("fa0 = %+v, want float 2", fa0)
+	}
+	if fa1 := find("fa1"); fa1 == nil || fa1.Float != "4" {
+		t.Errorf("fa1 = %+v, want float 4", fa1)
+	}
+	// the RISC-V view is 32 GPRs + 32 FP registers.
+	if ls := lineByNum(r, 1); ls == nil || len(ls.Regs) != 64 {
+		t.Errorf("want 64 registers, got %d", len(ls.Regs))
+	}
+}

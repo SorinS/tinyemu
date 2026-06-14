@@ -19,6 +19,8 @@ package emu
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/jtolio/tinyemu-go/asm"
@@ -65,6 +67,27 @@ var regNamesRV = []string{
 	"a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7",
 	"s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
 }
+
+// fpNamesRV are the 32 RISC-V floating-point registers (F/D), ABI names.
+var fpNamesRV = []string{
+	"ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7",
+	"fs0", "fs1", "fa0", "fa1", "fa2", "fa3", "fa4", "fa5",
+	"fa6", "fa7", "fs2", "fs3", "fs4", "fs5", "fs6", "fs7",
+	"fs8", "fs9", "fs10", "fs11", "ft8", "ft9", "ft10", "ft11",
+}
+
+// regNamesRVall is the full RISC-V register view: 32 integer GPRs followed by
+// the 32 FP registers (so index i<32 is a GPR, i>=32 an FP reg).
+var regNamesRVall = append(append([]string{}, regNamesRV...), fpNamesRV...)
+
+// fpNameSet marks which register names are floating-point (for display).
+var fpNameSet = func() map[string]bool {
+	m := map[string]bool{}
+	for _, n := range fpNamesRV {
+		m[n] = true
+	}
+	return m
+}()
 
 // flagDefs are the x86 arithmetic-status flags, in display order, with their
 // bit positions in (R/E)FLAGS.
@@ -150,10 +173,31 @@ func firstToken(line string) string {
 	return strings.ToLower(strings.TrimSuffix(line, ":"))
 }
 
-// RegVal is a named register or flag and its value (a flag's value is 0/1).
+// RegVal is a named register or flag with its value. Hex is the exact display
+// form (JSON numbers lose precision above 2^53, so editors should render Hex,
+// not Value). Float is the floating-point interpretation, set for FP registers.
 type RegVal struct {
 	Name  string `json:"name"`
 	Value uint64 `json:"value"`
+	Hex   string `json:"hex"`
+	Float string `json:"float,omitempty"`
+}
+
+// mkReg builds a RegVal, computing the exact hex string and, for FP registers,
+// the float interpretation (NaN-boxed single, else double).
+func mkReg(name string, value uint64) RegVal {
+	rv := RegVal{Name: name, Value: value, Hex: fmt.Sprintf("%#x", value)}
+	if fpNameSet[name] {
+		rv.Float = fpDisplay(value)
+	}
+	return rv
+}
+
+func fpDisplay(bits uint64) string {
+	if bits>>32 == 0xFFFFFFFF { // NaN-boxed single-precision value
+		return strconv.FormatFloat(float64(math.Float32frombits(uint32(bits))), 'g', -1, 32)
+	}
+	return strconv.FormatFloat(math.Float64frombits(bits), 'g', -1, 64)
 }
 
 // LineState is the machine state attributable to one source line.
@@ -347,12 +391,13 @@ func buildRISCV(src string) (*sandbox, error) {
 	c.PC = codeBaseRV
 	c.SetReg(rvRegRA, sentinelRet) // a final `ret` (jalr ra) lands on the sentinel
 	c.SetReg(rvRegSP, stackTopRV)
+	c.FS = rvcpu.FSInitial // enable the F/D floating-point unit (reset leaves it off)
 	spans := make([]span, len(listing.Spans))
 	for i, s := range listing.Spans {
 		spans[i] = span{s.Line, s.Addr, s.Len}
 	}
 	m := rvMach{c}
-	return &sandbox{mm, m, codeBaseRV, sentinelRet, spans, regNamesRV, false, 64, ArchRISCV}, nil
+	return &sandbox{mm, m, codeBaseRV, sentinelRet, spans, regNamesRVall, false, 64, ArchRISCV}, nil
 }
 
 // traceLoop is the shared, arch-independent stepping/attribution loop.
@@ -409,7 +454,7 @@ func traceLoop(sb *sandbox, opts Options) *Result {
 	// Final register file = the last snapshot (entry state if nothing ran).
 	res.Final = make([]RegVal, len(names))
 	for i := range names {
-		res.Final[i] = RegVal{names[i], prev.gpr[i]}
+		res.Final[i] = mkReg(names[i], prev.gpr[i])
 	}
 	return res
 }
@@ -443,15 +488,15 @@ func lineState(line int, prev, now snap, names []string, hasFlags bool) LineStat
 	ls := LineState{Line: line, RIP: now.pc, RFLAGS: now.flags}
 	for i := range names {
 		if now.gpr[i] != prev.gpr[i] {
-			ls.Changed = append(ls.Changed, RegVal{names[i], now.gpr[i]})
+			ls.Changed = append(ls.Changed, mkReg(names[i], now.gpr[i]))
 		}
-		ls.Regs = append(ls.Regs, RegVal{names[i], now.gpr[i]})
+		ls.Regs = append(ls.Regs, mkReg(names[i], now.gpr[i]))
 	}
 	if hasFlags {
 		for _, f := range flagDefs {
 			nb := (now.flags >> f.bit) & 1
 			if pb := (prev.flags >> f.bit) & 1; nb != pb {
-				ls.Flags = append(ls.Flags, RegVal{f.name, nb})
+				ls.Flags = append(ls.Flags, mkReg(f.name, nb))
 			}
 		}
 	}
@@ -672,14 +717,14 @@ func (s *Session) State() *DebugState {
 		ds.Line = s.sb.lineAt(now.pc)
 	}
 	for i, name := range s.sb.names {
-		ds.Regs = append(ds.Regs, RegVal{name, now.gpr[i]})
+		ds.Regs = append(ds.Regs, mkReg(name, now.gpr[i]))
 		if now.gpr[i] != s.prev.gpr[i] {
-			ds.Changed = append(ds.Changed, RegVal{name, now.gpr[i]})
+			ds.Changed = append(ds.Changed, mkReg(name, now.gpr[i]))
 		}
 	}
 	if s.sb.hasFlags {
 		for _, f := range flagDefs {
-			ds.Flags = append(ds.Flags, RegVal{f.name, (now.flags >> f.bit) & 1})
+			ds.Flags = append(ds.Flags, mkReg(f.name, (now.flags>>f.bit)&1))
 		}
 	}
 	return ds
@@ -732,10 +777,15 @@ func (m x86mach) halted() bool           { return m.c.IsPowerDown() }
 
 type rvMach struct{ c *rvcpu.CPU }
 
-func (m rvMach) step() error      { return m.c.Step() }
-func (m rvMach) pc() uint64       { return m.c.PC }
-func (m rvMach) reg(i int) uint64 { return m.c.GetReg(i) }
-func (m rvMach) names() []string  { return regNamesRV }
-func (m rvMach) flags() uint64    { return 0 }
-func (m rvMach) hasFlags() bool   { return false }
-func (m rvMach) halted() bool     { return m.c.IsPowerDown() }
+func (m rvMach) step() error { return m.c.Step() }
+func (m rvMach) pc() uint64  { return m.c.PC }
+func (m rvMach) reg(i int) uint64 {
+	if i >= 32 { // FP registers f0–f31 are appended after the 32 GPRs
+		return m.c.FPReg[i-32]
+	}
+	return m.c.GetReg(i)
+}
+func (m rvMach) names() []string { return regNamesRVall }
+func (m rvMach) flags() uint64   { return 0 }
+func (m rvMach) hasFlags() bool  { return false }
+func (m rvMach) halted() bool    { return m.c.IsPowerDown() }

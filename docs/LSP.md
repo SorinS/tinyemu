@@ -122,7 +122,7 @@ The server detects each buffer's ISA and routes every feature accordingly.
 |-----|-------------|---------|-----------|
 | **x86-64** | default | `cpu/x86_64` (long mode, paging off) | `rax…r15` |
 | **x86-32** | a `BITS 32` directive | `cpu/x86` (flat protected mode) | `eax…edi` |
-| **RISC-V RV64I+M+A+Zicsr** | a RISC-V `arch:` directive, else a mnemonic heuristic | `cpu/riscv` (RV64) | `zero, ra, sp, …` (ABI) |
+| **RISC-V RV64I+M+A+F+D+Zicsr** | a RISC-V `arch:` directive, else a mnemonic heuristic | `cpu/riscv` (RV64, FP on) | `zero…t6` + `ft0…ft11` (FP) |
 
 Architecture detection (`emu.DetectArch`):
 1. An explicit comment directive wins — `; arch: riscv64` or `; arch: x86`.
@@ -161,9 +161,14 @@ Not part of standard LSP; the editor triggers them via keymaps.
   "arch": "x86", "bits": 64,
   "stop": "halted", "stopLine": -1, "steps": 146,
   "lines": [ { "line": 10, "text": "ZF=1", "regs": [ … ] }, … ],
-  "final": [ { "name": "rax", "value": 6765 }, … ]
+  "final": [ { "name": "rax", "value": 6765, "hex": "0x1a6d" }, … ]
 }
 ```
+
+Each register carries an exact `hex` string (render that, not `value` — JSON
+numbers lose precision above 2^53) and, for RISC-V FP registers, a `float`
+interpretation (`{"name":"fa0","hex":"0xffffffff40400000","float":"3"}`). The
+RISC-V register view is the 32 GPRs followed by `f0–f31`.
 
 `asm/debug/start`, `asm/debug/step`, `asm/debug/stepover`, `asm/debug/stepback`,
 `asm/debug/restart`, `asm/debug/continue`

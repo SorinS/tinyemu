@@ -55,10 +55,13 @@ func TestRunAll_RISCV(t *testing.T) {
 			t.Errorf("RISC-V line %d should have no flags, got %v", ls.Line, ls.Flags)
 		}
 	}
-	// 32 registers, x0 named "zero" and always 0.
+	// 32 GPRs + 32 FP registers; x0 named "zero" and always 0; FP names follow.
 	ls := lineByNum(r, 0)
-	if ls == nil || len(ls.Regs) != 32 || ls.Regs[0].Name != "zero" || ls.Regs[0].Value != 0 {
-		t.Errorf("want 32 regs with zero=0, got %d regs", len(ls.Regs))
+	if ls == nil || len(ls.Regs) != 64 || ls.Regs[0].Name != "zero" || ls.Regs[0].Value != 0 {
+		t.Errorf("want 64 regs (32 GPR + 32 FP) with zero=0, got %d regs", len(ls.Regs))
+	}
+	if ls != nil && ls.Regs[32].Name != "ft0" {
+		t.Errorf("reg[32] = %q, want ft0 (first FP reg)", ls.Regs[32].Name)
 	}
 }
 

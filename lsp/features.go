@@ -277,12 +277,23 @@ func bytesHex(b []byte) string {
 func formatLineState(ls emu.LineState) string {
 	parts := make([]string, 0, len(ls.Changed)+len(ls.Flags))
 	for _, rv := range ls.Changed {
-		parts = append(parts, fmt.Sprintf("%s=%#x", rv.Name, rv.Value))
+		parts = append(parts, rv.Name+"="+regDisplay(rv))
 	}
 	for _, rv := range ls.Flags {
 		parts = append(parts, fmt.Sprintf("%s=%d", rv.Name, rv.Value))
 	}
 	return strings.Join(parts, " ")
+}
+
+// regDisplay shows a register's float interpretation (FP regs) or its exact hex.
+func regDisplay(rv emu.RegVal) string {
+	if rv.Float != "" {
+		return rv.Float
+	}
+	if rv.Hex != "" {
+		return rv.Hex
+	}
+	return fmt.Sprintf("%#x", rv.Value)
 }
 
 // cleanErr trims the "asm \"…\": " prefix Assemble adds, for a tidier message.
