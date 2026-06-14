@@ -5,36 +5,49 @@
 // run it instruction by instruction in a flat sandbox, and collapse the
 // per-step trace down to "what each line did".
 //
-// The target ISA follows the program's BITS directive: BITS 64 runs in
-// cpu/x86_64 long mode (16 GPRs, rax…r15), BITS 32 in cpu/x86 protected mode
-// (8 GPRs, eax…edi). Default is 64-bit.
+// Three targets, chosen by DetectArch (an explicit "arch:" directive, else a
+// content heuristic, else x86): x86-64 (cpu/x86_64), 32-bit x86 via a BITS 32
+// directive (cpu/x86), and RISC-V RV64I+M (cpu/riscv). x86 has condition flags;
+// RISC-V does not, and returns via the ra register rather than a stack.
 //
-// The sandbox is deliberately minimal: paging disabled (linear == physical),
-// code loaded at 1 MiB, a stack near 3 MiB seeded with a sentinel return
-// address so a balanced RET is detectable, and the power-on register file.
-// There is no IDT, so a guest fault (a bad opcode, a #DE, a stray #PF) is
-// surfaced as a stop reason rather than vectored — and every step is wrapped
-// so malformed input can never panic the caller (e.g. a language server).
+// The sandbox is deliberately minimal: paging off (linear == physical), code at
+// a fixed base, a return sentinel so a clean return is detectable, and the
+// power-on register file. There is no trap/IDT vectoring, so a guest fault is
+// surfaced as a stop reason; every step is recover()-wrapped so malformed input
+// can never panic the caller (e.g. a language server).
 package emu
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/jtolio/tinyemu-go/asm"
+	rvasm "github.com/jtolio/tinyemu-go/asm/riscv"
+	rvcpu "github.com/jtolio/tinyemu-go/cpu/riscv"
 	"github.com/jtolio/tinyemu-go/cpu/x86"
 	"github.com/jtolio/tinyemu-go/cpu/x86_64"
 	"github.com/jtolio/tinyemu-go/mem"
 )
 
-// Sandbox layout. Code sits well above zero so a guest write through a
-// zero/low pointer (the reset GPRs are zero) corrupts scratch RAM, not code.
 const (
-	codeBase     = 0x100000   // 1 MiB — where the program is loaded
-	stackTop     = 0x300000   // 3 MiB — initial (R/E)SP
-	ramSize      = 0x400000   // 4 MiB total RAM
-	sentinelRet  = 0xDEADBEEF // return address marking "program returned"
-	regSP        = 4          // (R/E)SP index, same in both ISAs
-	defaultSteps = 100000     // step cap (an unbroken loop ends here)
+	// x86 sandbox: RAM at 0, code at 1 MiB, stack at 3 MiB.
+	codeBaseX86 = 0x100000
+	stackTopX86 = 0x300000
+	ramSizeX86  = 0x400000
+	regSP       = 4 // (R/E)SP index
+
+	// RISC-V sandbox: RAM/code at 0x8000_0000 (the conventional RAM base),
+	// stack 3 MiB in.
+	ramBaseRV  = 0x80000000
+	codeBaseRV = 0x80000000
+	stackTopRV = 0x80300000
+	ramSizeRV  = 0x400000
+	rvRegRA    = 1 // x1
+	rvRegSP    = 2 // x2
+
+	// Even so a RISC-V jalr (which clears bit 0) still lands exactly on it.
+	sentinelRet  = 0xDEADBEEE
+	defaultSteps = 100000
 )
 
 var regNames64 = []string{
@@ -46,8 +59,15 @@ var regNames32 = []string{
 	"eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi",
 }
 
-// flagDefs are the arithmetic-status flags, in display order, with their bit
-// positions in (R/E)FLAGS (the positions are identical in both ISAs).
+var regNamesRV = []string{
+	"zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
+	"s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
+	"a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7",
+	"s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
+}
+
+// flagDefs are the x86 arithmetic-status flags, in display order, with their
+// bit positions in (R/E)FLAGS.
 var flagDefs = []struct {
 	name string
 	bit  uint
@@ -55,47 +75,79 @@ var flagDefs = []struct {
 	{"CF", 0}, {"PF", 2}, {"AF", 4}, {"ZF", 6}, {"SF", 7}, {"OF", 11},
 }
 
-// machine abstracts the two CPUs behind the trace loop.
-type machine interface {
-	step() error
-	pc() uint64
-	setPC(uint64)
-	reg(i int) uint64
-	setReg(i int, v uint64)
-	flags() uint64
-	names() []string
+// Arch is the target ISA of a program.
+type Arch int
+
+const (
+	ArchX86 Arch = iota
+	ArchRISCV
+)
+
+func (a Arch) String() string {
+	if a == ArchRISCV {
+		return "riscv"
+	}
+	return "x86"
 }
 
-type x64mach struct{ c *x86_64.CPU }
+// rvOnly / x86Only are mnemonics distinctive to one ISA (shared ones like
+// add/sub/and/or/xor are deliberately excluded). Used by DetectArch.
+var rvOnly = words("addi addiw jal jalr lui auipc ecall ebreak beq bne blt bge bltu bgeu " +
+	"lw lwu lh lhu lbu ld sd sb sh slli srli srai slliw srliw sraiw mv li mulw divw remw " +
+	"fence csrrw csrrs csrrc beqz bnez snez seqz j jr")
+var x86Only = words("mov push pop lea jmp call cmp test leave syscall int3 cdq cqo " +
+	"movzx movsx je jne jz jnz jg jl inc dec stosb lodsb")
 
-func (m x64mach) step() error            { return m.c.Step() }
-func (m x64mach) pc() uint64             { return m.c.GetRIP() }
-func (m x64mach) setPC(v uint64)         { m.c.SetRIP(v) }
-func (m x64mach) reg(i int) uint64       { return m.c.GetReg64(i) }
-func (m x64mach) setReg(i int, v uint64) { m.c.SetReg64(i, v) }
-func (m x64mach) flags() uint64          { return m.c.GetRFLAGS() }
-func (m x64mach) names() []string        { return regNames64 }
-
-type x86mach struct{ c *x86.CPU }
-
-func (m x86mach) step() error            { return m.c.Step() }
-func (m x86mach) pc() uint64             { return uint64(m.c.GetEIP()) }
-func (m x86mach) setPC(v uint64)         { m.c.SetEIP(uint32(v)) }
-func (m x86mach) reg(i int) uint64       { return uint64(m.c.GetReg32(i)) }
-func (m x86mach) setReg(i int, v uint64) { m.c.SetReg32(i, uint32(v)) }
-func (m x86mach) flags() uint64          { return uint64(m.c.GetEFLAGS()) }
-func (m x86mach) names() []string        { return regNames32 }
-
-// newMachine builds a CPU for the given mode, set up in a flat sandbox.
-func newMachine(mode asm.Mode, mm *mem.PhysMemoryMap) machine {
-	if mode == asm.Bits32 {
-		c := x86.NewCPU(mm)
-		c.SetupFlatProtected32()
-		return x86mach{c}
+func words(s string) map[string]bool {
+	m := map[string]bool{}
+	for _, w := range strings.Fields(s) {
+		m[w] = true
 	}
-	c := x86_64.NewCPU(mm)
-	c.SetupFlatLongMode()
-	return x64mach{c}
+	return m
+}
+
+// DetectArch picks the target ISA for a program: an explicit "arch:" directive
+// (in a comment, e.g. "; arch: riscv64") wins; otherwise the count of
+// ISA-distinctive mnemonics decides; ties and empty input default to x86.
+func DetectArch(src string) Arch {
+	for _, raw := range strings.Split(src, "\n") {
+		line := strings.ToLower(raw)
+		if i := strings.Index(line, "arch:"); i >= 0 {
+			rest := line[i+5:]
+			switch {
+			case strings.Contains(rest, "riscv"), strings.Contains(rest, "rv32"), strings.Contains(rest, "rv64"):
+				return ArchRISCV
+			case strings.Contains(rest, "x86"), strings.Contains(rest, "amd64"), strings.Contains(rest, "i386"):
+				return ArchX86
+			}
+		}
+	}
+	rv, x := 0, 0
+	for _, raw := range strings.Split(src, "\n") {
+		switch f := firstToken(raw); {
+		case rvOnly[f]:
+			rv++
+		case x86Only[f]:
+			x++
+		}
+	}
+	if rv > x {
+		return ArchRISCV
+	}
+	return ArchX86
+}
+
+// firstToken returns the lower-cased first word of a line, comment and trailing
+// label ':' stripped.
+func firstToken(line string) string {
+	if i := strings.IndexAny(line, "#;"); i >= 0 {
+		line = line[:i]
+	}
+	line = strings.TrimSpace(line)
+	if i := strings.IndexAny(line, " \t"); i >= 0 {
+		line = line[:i]
+	}
+	return strings.ToLower(strings.TrimSuffix(line, ":"))
 }
 
 // RegVal is a named register or flag and its value (a flag's value is 0/1).
@@ -104,114 +156,149 @@ type RegVal struct {
 	Value uint64 `json:"value"`
 }
 
-// LineState is the machine state attributable to one source line: what it
-// changed the last time it executed, plus the full register file after, for
-// hover/panel views.
+// LineState is the machine state attributable to one source line.
 type LineState struct {
-	Line    int      `json:"line"`    // 0-based source line
-	Changed []RegVal `json:"changed"` // GPRs this line changed (name → new value)
-	Flags   []RegVal `json:"flags"`   // status flags this line changed (value 0/1)
-	Regs    []RegVal `json:"regs"`    // full GPR file after this line
-	RIP     uint64   `json:"rip"`
+	Line    int      `json:"line"`
+	Changed []RegVal `json:"changed"` // registers this line changed
+	Flags   []RegVal `json:"flags"`   // status flags this line changed (x86 only)
+	Regs    []RegVal `json:"regs"`    // full register file after this line
+	RIP     uint64   `json:"rip"`     // program counter after (RIP / EIP / PC)
 	RFLAGS  uint64   `json:"rflags"`
 }
 
 // Result is the outcome of running a program.
 type Result struct {
-	Bits     int         `json:"bits"`            // ISA the program ran as (32 or 64)
-	Lines    []LineState `json:"lines"`           // one per executed line, in first-seen order
-	Stop     string      `json:"stop"`            // why the run ended (see Stop* values)
+	Arch     string      `json:"arch"`            // "x86" or "riscv"
+	Bits     int         `json:"bits"`            // 32 or 64
+	Lines    []LineState `json:"lines"`           // one per executed line, first-seen order
+	Stop     string      `json:"stop"`            // why the run ended
 	StopLine int         `json:"stopLine"`        // line about to execute when stopped, or -1
 	Steps    int         `json:"steps"`           // instructions executed
-	Error    string      `json:"error,omitempty"` // guest fault / exception text, if any
+	Error    string      `json:"error,omitempty"` // guest fault text, if any
 }
 
 // Stop reasons.
 const (
-	StopCompleted = "completed"           // RET'd to the sentinel (clean exit)
-	StopReached   = "reached-line"        // hit StopBeforeLine or a breakpoint
-	StopFault     = "fault"               // guest fault/exception (see Result.Error)
-	StopMaxSteps  = "max-steps"           // step cap reached (likely an infinite loop)
-	StopOutside   = "ran-outside-program" // PC left the assembled code (e.g. RET with no frame)
+	StopCompleted = "completed"
+	StopReached   = "reached-line"
+	StopFault     = "fault"
+	StopMaxSteps  = "max-steps"
+	StopOutside   = "ran-outside-program"
 )
 
 // Options tunes a run.
 type Options struct {
-	// StopBeforeLine halts the run just before executing the instruction on
-	// this 0-based source line (run-to-cursor). A negative value disables it.
-	StopBeforeLine int
-	// Breakpoints halts the run just before executing any instruction whose
-	// source line is in this set.
-	Breakpoints map[int]bool
-	// MaxSteps overrides the default step cap when > 0.
-	MaxSteps int
+	StopBeforeLine int          // run-to-cursor; negative disables
+	Breakpoints    map[int]bool // stop before executing a line in this set
+	MaxSteps       int          // overrides the default step cap when > 0
 }
 
-// RunAll executes the whole program (no run-to-cursor stop).
-func RunAll(src string) (*Result, error) {
-	return Run(src, Options{StopBeforeLine: -1})
-}
+// RunAll executes the whole program.
+func RunAll(src string) (*Result, error) { return Run(src, Options{StopBeforeLine: -1}) }
 
-// RunToLine executes up to (but not including) the instruction on the given
-// 0-based source line — classic run-to-cursor.
+// RunToLine executes up to (but not including) the given 0-based source line.
 func RunToLine(src string, line int) (*Result, error) {
 	return Run(src, Options{StopBeforeLine: line})
 }
 
-// Run assembles src (its BITS directive selects the ISA) and executes it under
-// the given options. It returns an error only when the program fails to
-// assemble; a guest fault is reported via Result.Stop / Result.Error.
-//
-// Note: Options{} (zero value) has StopBeforeLine == 0, which stops before the
-// first line. Prefer RunAll / RunToLine, or set StopBeforeLine explicitly.
+// Run assembles src (arch auto-detected) and executes it. It errors only when
+// the program fails to assemble; a guest fault is reported via Result.Stop.
 func Run(src string, opts Options) (*Result, error) {
+	if DetectArch(src) == ArchRISCV {
+		return runRISCV(src, opts)
+	}
+	return runX86(src, opts)
+}
+
+// span maps a code offset (from the load base) to a source line.
+type span struct {
+	line   int
+	addr   int64
+	length int
+}
+
+func runX86(src string, opts Options) (*Result, error) {
 	mode := asm.DetectBits(src)
 	listing, err := asm.AssembleListing(src)
 	if err != nil {
 		return nil, err
 	}
+	mm := mem.NewPhysMemoryMap()
+	defer mm.Close()
+	if _, err := mm.RegisterRAM(0, ramSizeX86, 0); err != nil {
+		return nil, err
+	}
+	for i, b := range listing.Bytes {
+		_ = mm.Write8(codeBaseX86+uint64(i), b)
+	}
+	_ = mm.Write64(stackTopX86, sentinelRet)
 
-	// pc → source line (linear scan; programs here are small).
+	m := newX86Machine(mode, mm)
+	m.setReg(regSP, stackTopX86)
+	m.setPC(codeBaseX86)
+
+	spans := make([]span, len(listing.Spans))
+	for i, s := range listing.Spans {
+		spans[i] = span{s.Line, s.Addr, s.Len}
+	}
+	res := traceLoop(m, codeBaseX86, sentinelRet, spans, opts, int(mode))
+	res.Arch = ArchX86.String()
+	return res, nil
+}
+
+func runRISCV(src string, opts Options) (*Result, error) {
+	listing, err := rvasm.AssembleListing(src)
+	if err != nil {
+		return nil, err
+	}
+	mm := mem.NewPhysMemoryMap()
+	defer mm.Close()
+	if _, err := mm.RegisterRAM(ramBaseRV, ramSizeRV, 0); err != nil {
+		return nil, err
+	}
+	for i, b := range listing.Bytes {
+		_ = mm.Write8(codeBaseRV+uint64(i), b)
+	}
+	c := rvcpu.NewCPU(mm, rvcpu.XLEN64)
+	c.PC = codeBaseRV
+	c.SetReg(rvRegRA, sentinelRet) // a final `ret` (jalr ra) lands on the sentinel
+	c.SetReg(rvRegSP, stackTopRV)
+
+	spans := make([]span, len(listing.Spans))
+	for i, s := range listing.Spans {
+		spans[i] = span{s.Line, s.Addr, s.Len}
+	}
+	res := traceLoop(rvMach{c}, codeBaseRV, sentinelRet, spans, opts, 64)
+	res.Arch = ArchRISCV.String()
+	return res, nil
+}
+
+// traceLoop is the shared, arch-independent stepping/attribution loop.
+func traceLoop(r runner, codeBase, sentinel uint64, spans []span, opts Options, bits int) *Result {
 	lineAt := func(pc uint64) int {
 		if pc < codeBase {
 			return -1
 		}
 		off := int64(pc - codeBase)
-		for _, s := range listing.Spans {
-			if off >= s.Addr && off < s.Addr+int64(s.Len) {
-				return s.Line
+		for _, s := range spans {
+			if off >= s.addr && off < s.addr+int64(s.length) {
+				return s.line
 			}
 		}
 		return -1
 	}
-
-	mm := mem.NewPhysMemoryMap()
-	defer mm.Close()
-	if _, err := mm.RegisterRAM(0, ramSize, 0); err != nil {
-		return nil, err
-	}
-	for i, b := range listing.Bytes {
-		_ = mm.Write8(codeBase+uint64(i), b)
-	}
-	_ = mm.Write64(stackTop, sentinelRet) // a balanced RET lands here (low 4 bytes serve 32-bit too)
-
-	m := newMachine(mode, mm)
-	m.setReg(regSP, stackTop)
-	m.setPC(codeBase)
-	names := m.names()
-
 	maxN := opts.MaxSteps
 	if maxN <= 0 {
 		maxN = defaultSteps
 	}
-
-	res := &Result{Bits: int(mode), StopLine: -1}
-	idx := map[int]int{} // line → position in res.Lines
-	prev := snapshot(m, names)
+	res := &Result{Bits: bits, StopLine: -1}
+	names := r.names()
+	idx := map[int]int{}
+	prev := snapshot(r, names)
 
 	for res.Steps < maxN {
-		pc := m.pc()
-		if pc == sentinelRet {
+		pc := r.pc()
+		if pc == sentinel {
 			res.Stop = StopCompleted
 			break
 		}
@@ -225,19 +312,17 @@ func Run(src string, opts Options) (*Result, error) {
 			res.StopLine = cur
 			break
 		}
-
-		if ferr := safeStep(m); ferr != nil {
+		if ferr := safeStep(r); ferr != nil {
 			res.Stop = StopFault
 			res.Error = ferr.Error()
 			res.StopLine = cur
 			break
 		}
 		res.Steps++
-
-		now := snapshot(m, names)
-		ls := lineState(cur, prev, now, names)
+		now := snapshot(r, names)
+		ls := lineState(cur, prev, now, names, r.hasFlags())
 		if p, ok := idx[cur]; ok {
-			res.Lines[p] = ls // last execution wins (loops show final iteration)
+			res.Lines[p] = ls
 		} else {
 			idx[cur] = len(res.Lines)
 			res.Lines = append(res.Lines, ls)
@@ -247,27 +332,34 @@ func Run(src string, opts Options) (*Result, error) {
 	if res.Stop == "" {
 		res.Stop = StopMaxSteps
 	}
-	return res, nil
+	return res
 }
 
-// snap is a register-file snapshot used to diff one step.
+// runner is what traceLoop needs from a CPU.
+type runner interface {
+	step() error
+	pc() uint64
+	reg(i int) uint64
+	names() []string
+	flags() uint64
+	hasFlags() bool
+}
+
 type snap struct {
 	gpr   []uint64
 	pc    uint64
 	flags uint64
 }
 
-func snapshot(m machine, names []string) snap {
+func snapshot(r runner, names []string) snap {
 	g := make([]uint64, len(names))
 	for i := range names {
-		g[i] = m.reg(i)
+		g[i] = r.reg(i)
 	}
-	return snap{gpr: g, pc: m.pc(), flags: m.flags()}
+	return snap{gpr: g, pc: r.pc(), flags: r.flags()}
 }
 
-// lineState diffs prev→now to attribute changes to a line, and captures the
-// full register file after.
-func lineState(line int, prev, now snap, names []string) LineState {
+func lineState(line int, prev, now snap, names []string, hasFlags bool) LineState {
 	ls := LineState{Line: line, RIP: now.pc, RFLAGS: now.flags}
 	for i := range names {
 		if now.gpr[i] != prev.gpr[i] {
@@ -275,24 +367,74 @@ func lineState(line int, prev, now snap, names []string) LineState {
 		}
 		ls.Regs = append(ls.Regs, RegVal{names[i], now.gpr[i]})
 	}
-	for _, f := range flagDefs {
-		nb := (now.flags >> f.bit) & 1
-		if pb := (prev.flags >> f.bit) & 1; nb != pb {
-			ls.Flags = append(ls.Flags, RegVal{f.name, nb})
+	if hasFlags {
+		for _, f := range flagDefs {
+			nb := (now.flags >> f.bit) & 1
+			if pb := (prev.flags >> f.bit) & 1; nb != pb {
+				ls.Flags = append(ls.Flags, RegVal{f.name, nb})
+			}
 		}
 	}
 	return ls
 }
 
-// safeStep runs one instruction, converting any panic into an error so a
-// malformed program can never take down the caller. (Step already turns a
-// guest fault through the absent IDT into a returned error; this is a backstop
-// for anything that still escapes.)
-func safeStep(m machine) (err error) {
+func safeStep(r runner) (err error) {
 	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic: %v", r)
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("panic: %v", rec)
 		}
 	}()
-	return m.step()
+	return r.step()
 }
+
+// --- x86 machines -----------------------------------------------------------
+
+type x86machine interface {
+	runner
+	setPC(uint64)
+	setReg(int, uint64)
+}
+
+func newX86Machine(mode asm.Mode, mm *mem.PhysMemoryMap) x86machine {
+	if mode == asm.Bits32 {
+		c := x86.NewCPU(mm)
+		c.SetupFlatProtected32()
+		return x86mach{c}
+	}
+	c := x86_64.NewCPU(mm)
+	c.SetupFlatLongMode()
+	return x64mach{c}
+}
+
+type x64mach struct{ c *x86_64.CPU }
+
+func (m x64mach) step() error            { return m.c.Step() }
+func (m x64mach) pc() uint64             { return m.c.GetRIP() }
+func (m x64mach) setPC(v uint64)         { m.c.SetRIP(v) }
+func (m x64mach) reg(i int) uint64       { return m.c.GetReg64(i) }
+func (m x64mach) setReg(i int, v uint64) { m.c.SetReg64(i, v) }
+func (m x64mach) flags() uint64          { return m.c.GetRFLAGS() }
+func (m x64mach) names() []string        { return regNames64 }
+func (m x64mach) hasFlags() bool         { return true }
+
+type x86mach struct{ c *x86.CPU }
+
+func (m x86mach) step() error            { return m.c.Step() }
+func (m x86mach) pc() uint64             { return uint64(m.c.GetEIP()) }
+func (m x86mach) setPC(v uint64)         { m.c.SetEIP(uint32(v)) }
+func (m x86mach) reg(i int) uint64       { return uint64(m.c.GetReg32(i)) }
+func (m x86mach) setReg(i int, v uint64) { m.c.SetReg32(i, uint32(v)) }
+func (m x86mach) flags() uint64          { return uint64(m.c.GetEFLAGS()) }
+func (m x86mach) names() []string        { return regNames32 }
+func (m x86mach) hasFlags() bool         { return true }
+
+// --- RISC-V machine ---------------------------------------------------------
+
+type rvMach struct{ c *rvcpu.CPU }
+
+func (m rvMach) step() error      { return m.c.Step() }
+func (m rvMach) pc() uint64       { return m.c.PC }
+func (m rvMach) reg(i int) uint64 { return m.c.GetReg(i) }
+func (m rvMach) names() []string  { return regNamesRV }
+func (m rvMach) flags() uint64    { return 0 }
+func (m rvMach) hasFlags() bool   { return false }

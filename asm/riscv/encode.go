@@ -14,6 +14,7 @@ func Assemble(src string) ([]byte, error) {
 	if mnem == "" {
 		return nil, nil
 	}
+	mnem, ops = expandPseudo(mnem, ops)
 	in, ok := byName[mnem]
 	if !ok {
 		return nil, fmt.Errorf("riscv: unknown instruction %q", mnem)
