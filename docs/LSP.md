@@ -122,7 +122,7 @@ The server detects each buffer's ISA and routes every feature accordingly.
 |-----|-------------|---------|-----------|
 | **x86-64** | default | `cpu/x86_64` (long mode, paging off) | `rax…r15` |
 | **x86-32** | a `BITS 32` directive | `cpu/x86` (flat protected mode) | `eax…edi` |
-| **RISC-V RV64I+M+A+F+D+Zicsr** | a RISC-V `arch:` directive, else a mnemonic heuristic | `cpu/riscv` (RV64, FP on) | `zero…t6` + `ft0…ft11` (FP) |
+| **RISC-V RV64GC (IMAFDC+Zicsr)** | a RISC-V `arch:` directive, else a mnemonic heuristic | `cpu/riscv` (RV64, FP on) | `zero…t6` + `ft0…ft11` (FP) |
 
 Architecture detection (`emu.DetectArch`):
 1. An explicit comment directive wins — `; arch: riscv64` or `; arch: x86`.
