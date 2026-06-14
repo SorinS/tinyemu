@@ -45,6 +45,22 @@ func TestServerFlow(t *testing.T) {
 	}
 }
 
+// A clean buffer must publish "diagnostics":[] (an array), never null —
+// Neovim's diagnostic handler does #diagnostics and throws on a null value.
+func TestServerCleanDiagnosticsIsArray(t *testing.T) {
+	srv := &server{docs: map[string]string{}}
+	var buf bytes.Buffer
+	w := bufio.NewWriter(&buf)
+	p, _ := json.Marshal(didOpenParams{TextDocument: textDocumentItem{
+		URI: "file:///clean.asm", Text: "  mov rax, rbx\n  ret\n",
+	}})
+	srv.handle(&rpcMessage{Method: "textDocument/didOpen", Params: p}, w)
+	w.Flush()
+	if !strings.Contains(buf.String(), `"diagnostics":[]`) {
+		t.Errorf("clean buffer should publish an empty array, got:\n%s", buf.String())
+	}
+}
+
 func TestServerRun(t *testing.T) {
 	srv := &server{docs: map[string]string{
 		"file:///r.asm": "  mov rax, 5\n  add rax, 3\n  ret\n",

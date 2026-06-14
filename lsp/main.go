@@ -153,7 +153,9 @@ func (s *server) notify(w *bufio.Writer, method string, params any) {
 func (s *server) publishDiagnostics(w *bufio.Writer, uri string) {
 	text := s.docs[uri]
 	labels := asm.CollectLabels(text)
-	var diags []lspDiagnostic
+	// Non-nil so JSON encodes "[]" not "null": some clients (Neovim's
+	// diagnostic handler) do #diagnostics and throw on a null value.
+	diags := []lspDiagnostic{}
 	for i, line := range strings.Split(text, "\n") {
 		d, _ := lineDiagnostic(line, labels)
 		if d == nil {
