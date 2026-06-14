@@ -69,6 +69,14 @@ asm-lsp: ## Build the asm language server into bin/asm-lsp
 	go build $(GOFLAGS) -o $(BUILD_DIR)/asm-lsp ./lsp
 	@echo "  -> $(BUILD_DIR)/asm-lsp"
 
+PREFIX ?= $(HOME)/.local
+.PHONY: install-asm-lsp
+install-asm-lsp: ## Install asm-lsp into $(PREFIX)/bin (default ~/.local/bin)
+	$(call echo,"Installing asm-lsp to $(PREFIX)/bin")
+	@mkdir -p $(PREFIX)/bin
+	go build $(GOFLAGS) -o $(PREFIX)/bin/asm-lsp ./lsp
+	@echo "  -> $(PREFIX)/bin/asm-lsp"
+
 .PHONY: build-linux-amd64
 build-linux-amd64: ## Build for linux/amd64
 	$(call echo,"Building linux/amd64")
