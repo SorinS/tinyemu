@@ -15,7 +15,16 @@ import (
 
 	"github.com/jtolio/tinyemu-go/asm"
 	"github.com/jtolio/tinyemu-go/asm/emu"
+	riscv "github.com/jtolio/tinyemu-go/asm/riscv"
 )
+
+// labelsFor collects the label→address map for a buffer in its ISA's scheme.
+func labelsFor(text string, arch emu.Arch) map[string]int64 {
+	if arch == emu.ArchRISCV {
+		return riscv.CollectLabels(text)
+	}
+	return asm.CollectLabels(text)
+}
 
 func main() {
 	srv := &server{docs: map[string]string{}}
@@ -157,7 +166,7 @@ func (s *server) notify(w *bufio.Writer, method string, params any) {
 func (s *server) publishDiagnostics(w *bufio.Writer, uri string) {
 	text := s.docs[uri]
 	arch := emu.DetectArch(text)
-	labels := asm.CollectLabels(text)
+	labels := labelsFor(text, arch)
 	// Non-nil so JSON encodes "[]" not "null": some clients (Neovim's
 	// diagnostic handler) do #diagnostics and throw on a null value.
 	diags := []lspDiagnostic{}
@@ -180,8 +189,8 @@ func (s *server) publishDiagnostics(w *bufio.Writer, uri string) {
 func (s *server) hover(p posParams) any {
 	line := s.lineAt(p)
 	doc := s.docs[p.TextDocument.URI]
-	labels := asm.CollectLabels(doc)
-	md := hover(line, labels, asm.DetectBits(doc), emu.DetectArch(doc))
+	arch := emu.DetectArch(doc)
+	md := hover(line, labelsFor(doc, arch), asm.DetectBits(doc), arch)
 	if md == "" {
 		return nil
 	}

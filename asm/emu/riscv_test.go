@@ -17,7 +17,7 @@ func TestDetectArch(t *testing.T) {
 		{"  add a0, a1, a2\n  jal ra, 8\n", emu.ArchRISCV},
 		{"; arch: riscv64\n  add a0, a1, a2\n", emu.ArchRISCV},
 		{"; arch: x86\n  addi a0, zero, 5\n", emu.ArchX86}, // directive overrides heuristic
-		{"", emu.ArchX86},                                  // default
+		{"", emu.ArchX86}, // default
 	}
 	for _, c := range cases {
 		if got := emu.DetectArch(c.src); got != c.want {
@@ -78,6 +78,28 @@ func TestRunAll_RISCV_Pseudo(t *testing.T) {
 	}
 	if v, ok := changed(lineByNum(r, 2), "a2"); !ok || v != 20 {
 		t.Errorf("line2 a2 = %#x, want 20", v)
+	}
+}
+
+// A RISC-V loop with a backward branch to a label runs to completion.
+func TestRunAll_RISCV_Loop(t *testing.T) {
+	src := "" +
+		"  li a0, 0\n" + // line 0
+		"  li a1, 5\n" + // line 1
+		"loop:\n" + // line 2 (label)
+		"  addi a0, a0, 1\n" + // line 3
+		"  blt a0, a1, loop\n" + // line 4: loop while a0 < 5
+		"  ret\n" // line 5
+	r, err := emu.RunAll(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Stop != emu.StopCompleted {
+		t.Fatalf("Stop = %q (%s), want completed", r.Stop, r.Error)
+	}
+	// After the loop, a0 == 5 (line 3's last execution).
+	if v, ok := changed(lineByNum(r, 3), "a0"); !ok || v != 5 {
+		t.Errorf("line3 final a0 = %#x ok=%v, want 5", v, ok)
 	}
 }
 

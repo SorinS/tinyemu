@@ -63,6 +63,10 @@ func expandPseudo(mnem string, ops []string) (string, []string) {
 		if len(ops) == 1 {
 			return "jal", []string{"zero", ops[0]}
 		}
+	case "jal":
+		if len(ops) == 1 { // jal target → jal ra, target
+			return "jal", []string{"ra", ops[0]}
+		}
 	case "jr":
 		if len(ops) == 1 {
 			return "jalr", []string{"zero", "0(" + ops[0] + ")"}

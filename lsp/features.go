@@ -87,7 +87,7 @@ type diagnostic struct {
 
 func lineDiagnostic(line string, labels map[string]int64, arch emu.Arch) (*diagnostic, string) {
 	if arch == emu.ArchRISCV {
-		return lineDiagnosticRV(line), ""
+		return lineDiagnosticRV(line, labels), ""
 	}
 	insn := instructionText(line)
 	if insn == "" {
@@ -174,7 +174,7 @@ func formsMarkdown(mnem string, limit int) string {
 // and the matching table forms. mode selects 32- vs 64-bit encoding/decoding.
 func hover(line string, labels map[string]int64, mode asm.Mode, arch emu.Arch) string {
 	if arch == emu.ArchRISCV {
-		return hoverRV(line)
+		return hoverRV(line, labels)
 	}
 	insn := instructionText(line)
 	if insn == "" {

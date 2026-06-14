@@ -38,29 +38,26 @@ func rvInstr(line string) string {
 }
 
 // lineDiagnosticRV is the RISC-V diagnostic: unknown mnemonic → error, known
-// but unencodable → hint, clean → none.
-func lineDiagnosticRV(line string) *diagnostic {
+// but unencodable → hint, clean → none. labels (from the whole buffer) let a
+// branch/jal to a label resolve.
+func lineDiagnosticRV(line string, labels map[string]int64) *diagnostic {
 	insn := rvInstr(line)
 	if insn == "" {
 		return nil
 	}
 	mnem := strings.ToLower(firstWord(insn))
-	if _, err := riscv.Assemble(insn); err == nil {
+	_, err := riscv.AssembleLine(line, labels)
+	if err == nil {
 		return nil
 	}
 	if rvMnemonicSet[mnem] {
-		return &diagnostic{severity: 3, message: "riscv: cannot encode (" + cleanErr(errAssembleRV(insn)) + ")"}
+		return &diagnostic{severity: 3, message: "riscv: cannot encode (" + cleanErr(err) + ")"}
 	}
 	return &diagnostic{severity: 1, message: "unknown instruction: " + mnem}
 }
 
-func errAssembleRV(insn string) error {
-	_, err := riscv.Assemble(insn)
-	return err
-}
-
 // hoverRV shows a RISC-V instruction's bytes and canonical disassembly.
-func hoverRV(line string) string {
+func hoverRV(line string, labels map[string]int64) string {
 	insn := rvInstr(line)
 	if insn == "" {
 		return ""
@@ -71,7 +68,7 @@ func hoverRV(line string) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%s** (RISC-V)\n\n", mnem)
-	if bytes, err := riscv.Assemble(insn); err == nil && len(bytes) > 0 {
+	if bytes, err := riscv.AssembleLine(line, labels); err == nil && len(bytes) > 0 {
 		fmt.Fprintf(&b, "encodes to `%s` (%d bytes)\n\n", bytesHex(bytes), len(bytes))
 		if text, n, derr := riscv.Disassemble(bytes); derr == nil && n == len(bytes) {
 			fmt.Fprintf(&b, "decodes to `%s`\n", text)
