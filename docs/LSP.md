@@ -1,6 +1,6 @@
-# asm-lsp — the assembly language server
+# go-asm — the assembly language server
 
-`asm-lsp` is a Language Server for assembly, built on tinyemu-go's own
+`go-asm` is a Language Server for assembly, built on tinyemu-go's own
 assembler, disassembler, and CPU cores. Beyond the usual editor niceties it can
 **run your code**: assemble the buffer, execute it in the emulator, and show the
 register/flag state each line produced as inline virtual text.
@@ -8,7 +8,7 @@ register/flag state each line produced as inline virtual text.
 It speaks LSP over stdin/stdout with no dependencies beyond the standard library
 and the in-repo packages, and targets Neovim's built-in client.
 
-- Server: [`lsp/`](../lsp) (package `main`, binary `bin/asm-lsp`)
+- Server: [`lsp/`](../lsp) (package `main`, binary `bin/go-asm`)
 - x86 assembler/disassembler: [`asm/`](../asm)
 - RISC-V assembler/disassembler: [`asm/riscv/`](../asm/riscv)
 - Execution backend: [`asm/emu/`](../asm/emu)
@@ -109,9 +109,9 @@ Not part of standard LSP. Neovim triggers it via a keymap.
 ## Build
 
 ```sh
-make asm-lsp          # → bin/asm-lsp
+make go-asm          # → bin/go-asm
 # or
-go build -o bin/asm-lsp ./lsp
+go build -o bin/go-asm ./lsp
 ```
 
 ## Neovim
@@ -123,8 +123,8 @@ vim.api.nvim_create_autocmd("FileType", {
   pattern = { "asm", "nasm" },
   callback = function(args)
     vim.lsp.start({
-      name = "asm-lsp",
-      cmd = { vim.fn.expand("~/Dev/Go.Code/tinyemu-go.git/bin/asm-lsp") },
+      name = "go-asm",
+      cmd = { vim.fn.expand("~/Dev/Go.Code/tinyemu-go.git/bin/go-asm") },
       root_dir = vim.fs.dirname(args.file),
     })
   end,
@@ -138,7 +138,7 @@ For the inline-emulation keymaps, drop `lsp/nvim/asm-live.lua` on your
 vim.api.nvim_create_autocmd("LspAttach", {
   callback = function(args)
     local c = vim.lsp.get_client_by_id(args.data.client_id)
-    if c and c.name == "asm-lsp" then
+    if c and c.name == "go-asm" then
       local live = require("asm-live")
       vim.keymap.set("n", "<leader>rr", live.run,           { buffer = args.buf, desc = "asm: run buffer" })
       vim.keymap.set("n", "<leader>rc", live.run_to_cursor, { buffer = args.buf, desc = "asm: run to cursor" })

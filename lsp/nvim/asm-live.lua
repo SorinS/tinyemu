@@ -1,11 +1,11 @@
--- asm-live.lua — inline execution state for the asm-lsp language server.
+-- asm-live.lua — inline execution state for the go-asm language server.
 --
 -- Calls the server's custom "asm/run" request, which assembles the buffer,
 -- runs it in the tinyemu-go x86-64 emulator, and returns the register/flag
 -- changes for each source line. Those are rendered as inline virtual text at
 -- the end of each line — a live view of what the code actually does.
 --
--- Usage (after the asm-lsp client is attached to the buffer):
+-- Usage (after the go-asm client is attached to the buffer):
 --   :lua require('asm-live').run()        -- run the whole program
 --   :lua require('asm-live').run_to_cursor()  -- stop before the cursor line
 --   :lua require('asm-live').clear()
@@ -19,9 +19,9 @@ local M = {}
 
 local ns = vim.api.nvim_create_namespace("asm_live")
 
--- find the asm-lsp client attached to a buffer.
+-- find the go-asm client attached to a buffer.
 local function client_for(bufnr)
-  for _, c in ipairs(vim.lsp.get_clients({ bufnr = bufnr, name = "asm-lsp" })) do
+  for _, c in ipairs(vim.lsp.get_clients({ bufnr = bufnr, name = "go-asm" })) do
     return c
   end
 end
@@ -70,7 +70,7 @@ local function run(line)
   local bufnr = vim.api.nvim_get_current_buf()
   local client = client_for(bufnr)
   if not client then
-    vim.notify("asm-live: no asm-lsp client attached", vim.log.levels.ERROR)
+    vim.notify("asm-live: no go-asm client attached", vim.log.levels.ERROR)
     return
   end
   local params = {

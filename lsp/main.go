@@ -1,4 +1,4 @@
-// Command asm-lsp is a Language Server for NASM/Intel x86-64 assembly, backed
+// Command go-asm is a Language Server for NASM/Intel x86-64 assembly, backed
 // by the tinyemu-go assembler. It speaks LSP over stdin/stdout (for Neovim's
 // built-in client) and provides live diagnostics (does this line assemble?),
 // hover (encoding + operand forms), and mnemonic completion.
@@ -266,9 +266,12 @@ func (s *server) runProgram(p runParams) any {
 	if err != nil {
 		return runResult{Stop: "assemble-error", StopLine: -1, Error: cleanErr(err)}
 	}
-	out := runResult{Stop: res.Stop, StopLine: res.StopLine, Steps: res.Steps, Error: res.Error}
+	out := runResult{
+		Arch: res.Arch, Bits: res.Bits, Stop: res.Stop, StopLine: res.StopLine,
+		Steps: res.Steps, Error: res.Error, Final: res.Final,
+	}
 	for _, ls := range res.Lines {
-		out.Lines = append(out.Lines, runLine{Line: ls.Line, Text: formatLineState(ls)})
+		out.Lines = append(out.Lines, runLine{Line: ls.Line, Text: formatLineState(ls), Regs: ls.Regs})
 	}
 	return out
 }
@@ -365,15 +368,19 @@ type runParams struct {
 	Breakpoints  []int          `json:"breakpoints"` // optional stop-before lines
 }
 type runLine struct {
-	Line int    `json:"line"` // 0-based source line
-	Text string `json:"text"` // inline annotation, e.g. "rax=0x5 ZF=1"
+	Line int          `json:"line"`           // 0-based source line
+	Text string       `json:"text"`           // inline annotation, e.g. "rax=0x5 ZF=1"
+	Regs []emu.RegVal `json:"regs,omitempty"` // full register file after this line
 }
 type runResult struct {
-	Lines    []runLine `json:"lines"`
-	Stop     string    `json:"stop"`     // why the run ended
-	StopLine int       `json:"stopLine"` // line about to execute when stopped, or -1
-	Steps    int       `json:"steps"`
-	Error    string    `json:"error,omitempty"`
+	Arch     string       `json:"arch"`     // "x86" or "riscv"
+	Bits     int          `json:"bits"`     // 32 or 64
+	Lines    []runLine    `json:"lines"`
+	Final    []emu.RegVal `json:"final"`    // full register file when the run ended
+	Stop     string       `json:"stop"`     // why the run ended
+	StopLine int          `json:"stopLine"` // line about to execute when stopped, or -1
+	Steps    int          `json:"steps"`
+	Error    string       `json:"error,omitempty"`
 }
 
 func initializeResult() any {
@@ -384,6 +391,6 @@ func initializeResult() any {
 			"completionProvider":    map[string]any{"triggerCharacters": []string{}},
 			"signatureHelpProvider": map[string]any{"triggerCharacters": []string{" ", ","}},
 		},
-		"serverInfo": map[string]any{"name": "asm-lsp", "version": "0.1"},
+		"serverInfo": map[string]any{"name": "go-asm", "version": "0.1"},
 	}
 }

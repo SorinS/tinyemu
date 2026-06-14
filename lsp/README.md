@@ -1,4 +1,4 @@
-# asm-lsp — a Language Server for NASM/Intel x86-64 assembly
+# go-asm — a Language Server for NASM/Intel x86-64 assembly
 
 A Language Server backed by the tinyemu-go [`asm`](../asm) assembler. It speaks
 LSP over stdin/stdout (no dependencies beyond the standard library) and gives an
@@ -20,7 +20,7 @@ coverage grows as the encoder does, and the LSP follows automatically.
 ## Build
 
 ```sh
-go build -o bin/asm-lsp ./lsp
+go build -o bin/go-asm ./lsp
 ```
 
 ## Neovim
@@ -33,8 +33,8 @@ vim.api.nvim_create_autocmd("FileType", {
   pattern = { "asm", "nasm" },
   callback = function(args)
     vim.lsp.start({
-      name = "asm-lsp",
-      cmd = { vim.fn.expand("~/Dev/Go.Code/tinyemu-go.git/bin/asm-lsp") },
+      name = "go-asm",
+      cmd = { vim.fn.expand("~/Dev/Go.Code/tinyemu-go.git/bin/go-asm") },
       root_dir = vim.fs.dirname(args.file),
     })
   end,
@@ -61,7 +61,7 @@ into `~/.config/nvim/lua/`) and add keymaps when the client attaches:
 vim.api.nvim_create_autocmd("LspAttach", {
   callback = function(args)
     local c = vim.lsp.get_client_by_id(args.data.client_id)
-    if c and c.name == "asm-lsp" then
+    if c and c.name == "go-asm" then
       local live = require("asm-live")
       vim.keymap.set("n", "<leader>rr", live.run,            { buffer = args.buf, desc = "asm: run buffer" })
       vim.keymap.set("n", "<leader>rc", live.run_to_cursor,  { buffer = args.buf, desc = "asm: run to cursor" })

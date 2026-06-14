@@ -62,20 +62,20 @@ build: ## Build native binary for current OS/arch
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME).$(NATIVE_OS)-$(NATIVE_ARCH).bin $(MAIN_PACKAGE)
 	@echo "  -> $(BUILD_DIR)/$(BINARY_NAME).$(NATIVE_OS)-$(NATIVE_ARCH).bin"
 
-.PHONY: asm-lsp
-asm-lsp: ## Build the asm language server into bin/asm-lsp
-	$(call echo,"Building asm-lsp language server")
+.PHONY: go-asm
+go-asm: ## Build the asm language server into bin/go-asm
+	$(call echo,"Building go-asm language server")
 	@mkdir -p $(BUILD_DIR)
-	go build $(GOFLAGS) -o $(BUILD_DIR)/asm-lsp ./lsp
-	@echo "  -> $(BUILD_DIR)/asm-lsp"
+	go build $(GOFLAGS) -o $(BUILD_DIR)/go-asm ./lsp
+	@echo "  -> $(BUILD_DIR)/go-asm"
 
 PREFIX ?= $(HOME)/.local
-.PHONY: install-asm-lsp
-install-asm-lsp: ## Install asm-lsp into $(PREFIX)/bin (default ~/.local/bin)
-	$(call echo,"Installing asm-lsp to $(PREFIX)/bin")
+.PHONY: install-go-asm
+install-go-asm: ## Install go-asm into $(PREFIX)/bin (default ~/.local/bin)
+	$(call echo,"Installing go-asm to $(PREFIX)/bin")
 	@mkdir -p $(PREFIX)/bin
-	go build $(GOFLAGS) -o $(PREFIX)/bin/asm-lsp ./lsp
-	@echo "  -> $(PREFIX)/bin/asm-lsp"
+	go build $(GOFLAGS) -o $(PREFIX)/bin/go-asm ./lsp
+	@echo "  -> $(PREFIX)/bin/go-asm"
 
 .PHONY: build-linux-amd64
 build-linux-amd64: ## Build for linux/amd64

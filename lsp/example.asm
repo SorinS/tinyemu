@@ -18,5 +18,5 @@ start:
     inc   rcx
     jmp   start
 done:
-    movxx rax, rbx          ; <-- typo: unknown instruction (red error)
+    mov rax, rbx          ; <-- typo: unknown instruction (red error)
     ret

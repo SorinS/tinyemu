@@ -171,6 +171,7 @@ type Result struct {
 	Arch     string      `json:"arch"`            // "x86" or "riscv"
 	Bits     int         `json:"bits"`            // 32 or 64
 	Lines    []LineState `json:"lines"`           // one per executed line, first-seen order
+	Final    []RegVal    `json:"final"`           // full register file when the run ended
 	Stop     string      `json:"stop"`            // why the run ended
 	StopLine int         `json:"stopLine"`        // line about to execute when stopped, or -1
 	Steps    int         `json:"steps"`           // instructions executed
@@ -184,6 +185,7 @@ const (
 	StopFault     = "fault"
 	StopMaxSteps  = "max-steps"
 	StopOutside   = "ran-outside-program"
+	StopHalted    = "halted" // HLT / WFI — a normal program end
 )
 
 // Options tunes a run.
@@ -328,9 +330,18 @@ func traceLoop(r runner, codeBase, sentinel uint64, spans []span, opts Options, 
 			res.Lines = append(res.Lines, ls)
 		}
 		prev = now
+		if r.halted() { // HLT / WFI — a clean program end
+			res.Stop = StopHalted
+			break
+		}
 	}
 	if res.Stop == "" {
 		res.Stop = StopMaxSteps
+	}
+	// Final register file = the last snapshot (entry state if nothing ran).
+	res.Final = make([]RegVal, len(names))
+	for i := range names {
+		res.Final[i] = RegVal{names[i], prev.gpr[i]}
 	}
 	return res
 }
@@ -343,6 +354,7 @@ type runner interface {
 	names() []string
 	flags() uint64
 	hasFlags() bool
+	halted() bool // HLT (x86) / WFI (riscv) reached
 }
 
 type snap struct {
@@ -416,6 +428,7 @@ func (m x64mach) setReg(i int, v uint64) { m.c.SetReg64(i, v) }
 func (m x64mach) flags() uint64          { return m.c.GetRFLAGS() }
 func (m x64mach) names() []string        { return regNames64 }
 func (m x64mach) hasFlags() bool         { return true }
+func (m x64mach) halted() bool           { return m.c.IsPowerDown() }
 
 type x86mach struct{ c *x86.CPU }
 
@@ -427,6 +440,7 @@ func (m x86mach) setReg(i int, v uint64) { m.c.SetReg32(i, uint32(v)) }
 func (m x86mach) flags() uint64          { return uint64(m.c.GetEFLAGS()) }
 func (m x86mach) names() []string        { return regNames32 }
 func (m x86mach) hasFlags() bool         { return true }
+func (m x86mach) halted() bool           { return m.c.IsPowerDown() }
 
 // --- RISC-V machine ---------------------------------------------------------
 
@@ -438,3 +452,4 @@ func (m rvMach) reg(i int) uint64 { return m.c.GetReg(i) }
 func (m rvMach) names() []string  { return regNamesRV }
 func (m rvMach) flags() uint64    { return 0 }
 func (m rvMach) hasFlags() bool   { return false }
+func (m rvMach) halted() bool     { return m.c.IsPowerDown() }
