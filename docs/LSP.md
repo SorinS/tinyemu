@@ -52,16 +52,21 @@ All under `<leader>` (Space on NvChad), active in an attached asm buffer:
 |-----|--------|
 | `<leader>rr` | **Run** the whole buffer (inline state on every line) |
 | `<leader>rc` | **Run to cursor** (stop just before the cursor line) |
-| `<leader>rg` | **Registers** — float with the full final register file |
+| `<leader>rg` | **Registers** — toggle a float with the full register file |
 | `<leader>rx` | **Clear** the inline overlay |
 | `<leader>rs` | **Step** one instruction (arms the session on first press) |
+| `<leader>ro` | **Step over** — run a call to its return, not into it |
+| `<leader>rS` | **Step back** — time-travel one instruction (exact replay) |
+| `<leader>rR` | **Restart** the session at the entry |
 | `<leader>rn` | **Continue** to the next breakpoint / end |
 | `<leader>rb` | Toggle a **breakpoint** on the cursor line |
+| `<leader>rB` | **Conditional breakpoint** — prompt for `reg op value` |
+| `<leader>rm` | **Memory** — prompt for an address/register, hex-dump it |
 | `<leader>rq` | **Quit** the debug session |
 | `K` | Hover — encoded bytes + canonical decode (+ x86 forms) |
 
-The register float (`<leader>rg`) closes when you move the cursor (like a hover
-popup), or with `q` / `<Esc>` if you focus into it.
+The register/memory floats (`<leader>rg` / `<leader>rm`) toggle on their own key
+and also close when you move the cursor, or with `q` / `<Esc>` if you focus in.
 
 ## Two workflows
 
@@ -96,6 +101,18 @@ by instruction:
 
 The cursor follows the current instruction, so you can watch a loop iterate and
 see registers change in place.
+
+Niceties:
+- **Step over** (`<leader>ro`) runs a call to its return instead of diving in.
+- **Step back / restart** (`<leader>rS` / `<leader>rR`) — execution is
+  deterministic, so the session replays exactly from the entry; you can walk
+  backward through a run or re-arm at the start.
+- **Conditional breakpoints** (`<leader>rB`) prompt for `reg op value` (e.g.
+  `rcx == 0`, `rax > 0x100`); continue stops on that line only when it holds. A
+  `◆` marks the line.
+- **Memory inspector** (`<leader>rm`) prompts for an address — a number or a
+  register name (resolved from the current state, e.g. `rsp`) — and shows a hex
+  dump.
 
 ## Supported architectures
 
@@ -148,9 +165,12 @@ Not part of standard LSP; the editor triggers them via keymaps.
 }
 ```
 
-`asm/debug/start`, `asm/debug/step`, `asm/debug/continue`
-(`{ …, breakpoints: [int] }`), `asm/debug/stop` — drive the per-document live
-session. Each returns a **DebugState**:
+`asm/debug/start`, `asm/debug/step`, `asm/debug/stepover`, `asm/debug/stepback`,
+`asm/debug/restart`, `asm/debug/continue`
+(`{ …, breakpoints: [int], conditions: [{line,reg,op,value}] }`),
+`asm/debug/memory` (`{ addr, count }` → `{ addr, bytes: [int] }`), and
+`asm/debug/stop` — drive the per-document live session. The stepping calls
+return a **DebugState**:
 
 ```json
 {
