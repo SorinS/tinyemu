@@ -532,6 +532,20 @@ func (c *CPU) GetSegLimit(sel int) uint32    { return c.segLimit[sel] }
 func (c *CPU) SetSegLimit(sel int, v uint32) { c.segLimit[sel] = v }
 func (c *CPU) GetSegAccess(sel int) uint32   { return c.segAccess[sel] }
 
+// SetupFlatLongMode puts the CPU into 64-bit long mode with paging disabled,
+// so linear addresses equal physical addresses. Real hardware requires paging
+// in long mode; the emulator permits CR0.PG=0 here for the same reason the
+// decoder tests do — to execute flat, hand-assembled code without standing up
+// an MMU. Intended for tooling (an assembler REPL, a language server's
+// run-to-cursor) and tests, not for booting a real guest.
+func (c *CPU) SetupFlatLongMode() {
+	c.writeCR(0, CR0_PE)
+	c.writeCR(4, CR4_PAE)
+	c.SetEFER(EFER_LME | EFER_LMA)
+	c.SetSegBase(CS, 0)
+	c.SetSegAccess(CS, csLBit) // CS.L=1 ⇒ 64-bit code; triggers recomputeMode
+}
+
 // SetSegAccess stores the descriptor-cache access word for a segment
 // register. Writes to CS may toggle the L (long-mode-active) and D
 // (default-operand-size) bits that gate ModeLong64 vs ModeCompat32 vs

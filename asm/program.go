@@ -5,6 +5,22 @@ import (
 	"strings"
 )
 
+// LineSpan locates one assembled instruction in the output: its source line
+// (0-based), its start address (origin 0), and its byte length. It lets
+// tooling map an address back to the source line that produced it.
+type LineSpan struct {
+	Line int   // 0-based source line index
+	Addr int64 // start address from origin 0
+	Len  int   // number of bytes
+}
+
+// Listing is the result of assembling a program with source positions
+// retained — for debuggers, run-to-cursor, and other address↔line tooling.
+type Listing struct {
+	Bytes []byte     // the flat byte stream (== AssembleProgram output)
+	Spans []LineSpan // one entry per instruction line that emitted bytes
+}
+
 // AssembleProgram assembles a multi-line NASM/Intel program (labels +
 // instructions) in 64-bit mode to a flat byte stream, resolving relative
 // branches (jmp/call/jcc) to labels. Branch displacement size (rel8 vs rel32)
@@ -14,14 +30,25 @@ import (
 // Origin is 0; labels are simple identifiers; numeric branch targets are
 // treated as absolute addresses from that origin.
 func AssembleProgram(src string) ([]byte, error) {
+	l, err := AssembleListing(src)
+	if err != nil {
+		return nil, err
+	}
+	return l.Bytes, nil
+}
+
+// AssembleListing assembles a program like AssembleProgram, additionally
+// recording where each instruction line's bytes landed (address + length).
+func AssembleListing(src string) (*Listing, error) {
 	type item struct {
-		label string // non-empty for a label definition
-		insn  string // instruction source otherwise
-		bytes []byte
+		label   string // non-empty for a label definition
+		insn    string // instruction source otherwise
+		srcLine int    // 0-based source line of an instruction item
+		bytes   []byte
 	}
 	var items []item
 
-	for _, raw := range strings.Split(src, "\n") {
+	for ln, raw := range strings.Split(src, "\n") {
 		line := strings.TrimSpace(stripComment(raw))
 		for line != "" {
 			c := strings.IndexByte(line, ':')
@@ -32,7 +59,7 @@ func AssembleProgram(src string) ([]byte, error) {
 			line = strings.TrimSpace(line[c+1:])
 		}
 		if line != "" {
-			items = append(items, item{insn: line})
+			items = append(items, item{insn: line, srcLine: ln})
 		}
 	}
 
@@ -67,9 +94,21 @@ func AssembleProgram(src string) ([]byte, error) {
 		}
 	}
 
-	var out []byte
+	out := &Listing{}
+	addr := int64(0)
 	for i := range items {
-		out = append(out, items[i].bytes...)
+		if items[i].label != "" {
+			continue
+		}
+		if len(items[i].bytes) > 0 {
+			out.Spans = append(out.Spans, LineSpan{
+				Line: items[i].srcLine,
+				Addr: addr,
+				Len:  len(items[i].bytes),
+			})
+		}
+		out.Bytes = append(out.Bytes, items[i].bytes...)
+		addr += int64(len(items[i].bytes))
 	}
 	return out, nil
 }
