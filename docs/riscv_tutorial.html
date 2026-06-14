@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RISC-V — A Clean-Slate ISA, Built From the Encoding Up</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=JetBrains+Mono:wght@400;500&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:           #0e1117;
+  --bg-raised:    #141820;
+  --bg-panel:     #1a2030;
+  --bg-hover:     #1f2838;
+  --border:       #2a3448;
+  --border-soft:  #1e2a3a;
+  --text:         #d8d0c4;
+  --text-dim:     #7a8499;
+  --text-faint:   #3d4a5c;
+
+  --amber:        #e8a020;
+  --amber-dim:    #a06010;
+  --green:        #4daa6a;
+  --blue:         #5a9fd4;
+  --rose:         #c46060;
+  --violet:       #8b78d0;
+
+  --p1:           #e8a020;
+  --p2:           #4daa6a;
+  --p3:           #5a9fd4;
+  --p4:           #8b78d0;
+  --p5:           #c46060;
+
+  --radius:       6px;
+  --sidebar-w:    300px;
+  --font-serif:   'Libre Baskerville', Georgia, serif;
+  --font-display: 'Crimson Pro', Georgia, serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 1rem;
+  line-height: 1.75;
+  min-height: 100vh;
+  display: flex;
+  overflow: hidden;
+}
+
+#sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--bg-raised);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  transition: transform 0.3s ease;
+  z-index: 100;
+}
+#sidebar-header {
+  padding: 24px 20px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#sidebar-header h1 {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--amber);
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+}
+#sidebar-header p {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  margin-top: 4px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+#progress-bar-wrap {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#progress-label {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+}
+#progress-track {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+#progress-fill {
+  height: 100%;
+  background: var(--amber);
+  transition: width 0.4s ease;
+  border-radius: 2px;
+}
+
+#search-wrap {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#search {
+  width: 100%;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 7px 10px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+#search::placeholder { color: var(--text-faint); }
+#search:focus { border-color: var(--amber-dim); }
+
+#lesson-nav { overflow-y: auto; flex: 1; padding: 8px 0 20px; }
+#lesson-nav::-webkit-scrollbar { width: 4px; }
+#lesson-nav::-webkit-scrollbar-track { background: transparent; }
+#lesson-nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.phase-group { margin-bottom: 4px; }
+.phase-header {
+  padding: 10px 20px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.phase-header .phase-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.phase-header .phase-toggle { margin-left: auto; color: var(--text-faint); font-size: 0.7rem; transition: transform 0.2s; }
+.phase-header.collapsed .phase-toggle { transform: rotate(-90deg); }
+.phase-lessons { overflow: hidden; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 20px 7px 28px; cursor: pointer;
+  transition: background 0.15s;
+  border-left: 2px solid transparent;
+  font-size: 0.78rem; color: var(--text-dim); line-height: 1.3;
+}
+.nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.nav-item.active { color: var(--text); background: var(--bg-panel); }
+.nav-item.done .nav-check { opacity: 1; }
+.nav-check {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 1.5px solid var(--border); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.5rem; opacity: 0.4; transition: all 0.2s;
+}
+.nav-item.done .nav-check {
+  opacity: 1; background: var(--green); border-color: var(--green); color: white;
+}
+.nav-num { font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-faint); min-width: 20px; }
+
+#main { flex: 1; overflow-y: auto; height: 100vh; display: flex; flex-direction: column; }
+#main::-webkit-scrollbar { width: 6px; }
+#main::-webkit-scrollbar-track { background: transparent; }
+#main::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+#topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 48px; border-bottom: 1px solid var(--border);
+  background: var(--bg); flex-shrink: 0; position: sticky; top: 0; z-index: 10;
+}
+#topbar-phase { font-family: var(--font-mono); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); }
+#topbar-nav { display: flex; gap: 8px; }
+.nav-btn {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  color: var(--text-dim); padding: 5px 14px; border-radius: var(--radius);
+  cursor: pointer; font-family: var(--font-mono); font-size: 0.7rem;
+  transition: all 0.15s;
+}
+.nav-btn:hover { background: var(--bg-hover); color: var(--text); border-color: var(--text-dim); }
+.nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+#lesson-content {
+  max-width: 820px; width: 100%; margin: 0 auto;
+  padding: 52px 48px 80px; flex: 1; animation: fadeSlide 0.3s ease;
+}
+@keyframes fadeSlide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.lesson-eyebrow {
+  font-family: var(--font-mono); font-size: 0.65rem;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  margin-bottom: 14px; display: flex; align-items: center; gap: 12px;
+}
+.lesson-eyebrow .phase-badge { padding: 2px 8px; border-radius: 3px; font-size: 0.6rem; }
+.lesson-number { color: var(--text-faint); }
+.lesson-title {
+  font-family: var(--font-display); font-size: 2.6rem; font-weight: 600;
+  line-height: 1.1; color: #eee; margin-bottom: 8px; letter-spacing: -0.01em;
+}
+.lesson-subtitle {
+  font-family: var(--font-display); font-size: 1.2rem; font-style: italic;
+  color: var(--text-dim); margin-bottom: 36px; line-height: 1.4;
+}
+.lesson-divider { height: 1px; background: linear-gradient(to right, var(--border), transparent); margin-bottom: 36px; }
+
+.lesson-body h2 {
+  font-family: var(--font-display); font-size: 1.5rem; font-weight: 600;
+  color: #ddd; margin: 40px 0 14px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border-soft);
+}
+.lesson-body h3 {
+  font-family: var(--font-display); font-size: 1.15rem; font-weight: 600;
+  color: var(--amber); margin: 28px 0 10px; font-style: italic;
+}
+.lesson-body p { margin-bottom: 16px; color: var(--text); }
+.lesson-body p:last-child { margin-bottom: 0; }
+.lesson-body ul, .lesson-body ol { margin: 8px 0 16px 22px; color: var(--text); }
+.lesson-body li { margin-bottom: 6px; }
+
+.lesson-body code {
+  font-family: var(--font-mono); font-size: 0.82em;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 5px; color: #a8d0f0;
+}
+
+pre {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-left: 3px solid var(--amber-dim); border-radius: var(--radius);
+  padding: 20px 22px; overflow-x: auto; margin: 20px 0;
+  position: relative; font-family: var(--font-mono);
+  font-size: 0.82rem; line-height: 1.65;
+}
+pre::-webkit-scrollbar { height: 4px; }
+pre::-webkit-scrollbar-track { background: transparent; }
+pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+pre .lang-tag {
+  position: absolute; top: 8px; right: 10px;
+  font-size: 0.58rem; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-faint);
+}
+
+/* x86 / asm syntax highlighting */
+.kw  { color: #c792ea; }  /* mnemonics */
+.rg  { color: #82aaff; }  /* registers */
+.fn  { color: #82cfda; }  /* labels / function names */
+.cm  { color: #546e7a; font-style: italic; }
+.st  { color: #c3e88d; }  /* strings */
+.nm  { color: #f78c6c; }  /* numbers */
+.op  { color: #89ddff; }  /* operators / punctuation */
+.dc  { color: #ffcb6b; }  /* directives */
+.ct  { color: #ff5572; }  /* constants / labels */
+
+.box {
+  border-radius: var(--radius); padding: 16px 20px; margin: 24px 0;
+  border-left: 3px solid; font-size: 0.92rem;
+}
+.box-note   { background: #0d1e2e; border-color: var(--blue);   color: #a8c8e8; }
+.box-think  { background: #1a1400; border-color: var(--amber);  color: #c8a060; }
+.box-key    { background: #0d1e18; border-color: var(--green);  color: #90c8a0; }
+.box-warn   { background: #1e100d; border-color: var(--rose);   color: #c88080; }
+.box strong { font-weight: 700; display: block; margin-bottom: 4px; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.corr-table {
+  width: 100%; border-collapse: collapse;
+  margin: 20px 0; font-size: 0.88rem;
+}
+.corr-table th {
+  text-align: left; font-family: var(--font-mono);
+  font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-dim); border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+}
+.corr-table td { padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+.corr-table td:first-child { color: var(--blue); font-family: var(--font-mono); font-size: 0.8rem; }
+.corr-table td:last-child  { color: var(--green); font-family: var(--font-mono); font-size: 0.8rem; }
+.corr-table td:nth-child(2){ color: var(--text-dim); }
+.corr-table tr:last-child td { border-bottom: none; }
+
+.exercises { margin-top: 40px; border-top: 1px solid var(--border); padding-top: 28px; }
+.exercises h2 {
+  font-family: var(--font-display); font-size: 1.3rem; color: var(--amber);
+  margin-bottom: 18px; border: none !important; padding: 0 !important;
+}
+.exercise {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 20px; margin-bottom: 14px;
+  position: relative; transition: border-color 0.2s;
+}
+.exercise:hover { border-color: var(--amber-dim); }
+.exercise-num {
+  font-family: var(--font-mono); font-size: 0.65rem; color: var(--amber);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
+}
+.exercise p { font-size: 0.9rem; margin-bottom: 0; }
+
+.complete-wrap { margin-top: 44px; display: flex; align-items: center; gap: 14px; }
+.btn-complete {
+  background: transparent; border: 1.5px solid var(--border); color: var(--text-dim);
+  padding: 10px 24px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem;
+  text-transform: uppercase; letter-spacing: 0.06em; transition: all 0.2s;
+}
+.btn-complete:hover { border-color: var(--green); color: var(--green); }
+.btn-complete.done  { border-color: var(--green); color: var(--green); background: #0d1e18; }
+.btn-next {
+  background: var(--amber); border: none; color: var(--bg);
+  padding: 10px 24px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.06em; transition: all 0.2s;
+}
+.btn-next:hover { background: #f0b848; }
+
+#welcome { max-width: 720px; margin: 60px auto; padding: 0 48px; animation: fadeSlide 0.4s ease; }
+#welcome h1 {
+  font-family: var(--font-display); font-size: 3.2rem; font-weight: 300;
+  line-height: 1.1; color: #eee; margin-bottom: 6px;
+}
+#welcome h1 em { color: var(--amber); font-style: italic; }
+#welcome .tagline {
+  font-family: var(--font-display); font-size: 1.2rem; font-style: italic;
+  color: var(--text-dim); margin-bottom: 36px;
+}
+#welcome .welcome-body { font-size: 0.95rem; }
+#welcome .welcome-body p { margin-bottom: 16px; }
+.phase-overview { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 28px 0; }
+.phase-card {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px;
+  cursor: pointer; transition: all 0.2s;
+}
+.phase-card:hover { border-color: var(--amber-dim); background: var(--bg-hover); }
+.phase-card-num {
+  font-family: var(--font-mono); font-size: 0.6rem;
+  text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 6px;
+}
+.phase-card h3 { font-family: var(--font-display); font-size: 1rem; font-weight: 600; color: #ddd; margin-bottom: 4px; }
+.phase-card p  { font-size: 0.8rem; color: var(--text-dim); margin: 0; }
+.btn-start {
+  background: var(--amber); border: none; color: var(--bg);
+  padding: 12px 32px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.8rem; font-weight: 500;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  transition: background 0.2s; margin-top: 8px;
+}
+.btn-start:hover { background: #f0b848; }
+
+#sidebar-toggle {
+  display: none; position: fixed; bottom: 20px; left: 20px; z-index: 200;
+  background: var(--amber); color: var(--bg); border: none;
+  border-radius: 50%; width: 44px; height: 44px;
+  cursor: pointer; font-size: 1.2rem;
+  align-items: center; justify-content: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+@media (max-width: 900px) {
+  #sidebar { position: fixed; top: 0; left: 0; transform: translateX(-100%); }
+  #sidebar.open { transform: translateX(0); }
+  #sidebar-toggle { display: flex; }
+  #lesson-content { padding: 36px 24px 60px; }
+  #topbar { padding: 12px 24px; }
+  .lesson-title { font-size: 2rem; }
+  .phase-overview { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<nav id="sidebar">
+  <div id="sidebar-header">
+    <h1>RISC-V</h1>
+    <p>A clean-slate ISA, an assembler, an emulator</p>
+  </div>
+  <div id="progress-bar-wrap">
+    <div id="progress-label">
+      <span>Progress</span>
+      <span id="progress-text">0 / 50</span>
+    </div>
+    <div id="progress-track"><div id="progress-fill" style="width:0%"></div></div>
+  </div>
+  <div id="search-wrap">
+    <input type="text" id="search" placeholder="Search lessons…" autocomplete="off">
+  </div>
+  <div id="lesson-nav"></div>
+</nav>
+
+<main id="main">
+  <div id="topbar">
+    <span id="topbar-phase">Overview</span>
+    <div id="topbar-nav">
+      <button class="nav-btn" id="btn-prev" disabled>← Prev</button>
+      <button class="nav-btn" id="btn-next-top">Next →</button>
+    </div>
+  </div>
+  <div id="content-area"></div>
+</main>
+
+<button id="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+
+<script>
+const PHASE_META = {
+  1: { name: "The RISC-V Idea",            short: "Phase I",   color: "var(--p1)", lessons: "1–3"   },
+  2: { name: "The Base Integer Encoding",  short: "Phase II",  color: "var(--p2)", lessons: "4–7"   },
+  3: { name: "Standard Extensions",        short: "Phase III", color: "var(--p3)", lessons: "8–11"  },
+  4: { name: "Building an Assembler",      short: "Phase IV",  color: "var(--p4)", lessons: "12–16" },
+  5: { name: "Execution & Formal Spec",    short: "Phase V",   color: "var(--p5)", lessons: "17–19" },
+};
+
+const LESSONS = [
+
+// ============================================================
+// PHASE 1 — The RISC-V Idea
+// ============================================================
+{
+  id: 1, phase: 1,
+  title: "Why RISC-V?",
+  subtitle: "A clean-slate, open, modular ISA",
+  content: `
+<h2>The setup</h2>
+<p>If you have read the <a href="x64_tutorial.html">x86_64 tutorial</a>, you have seen what forty years of backwards compatibility does to an instruction set: five operating modes, a variable-length encoding from 1 to 15 bytes, an optional REX prefix that rewrites the meaning of the bytes after it, and a cut-list of instructions that are illegal in long mode. Every one of those quirks earns its keep — they are the price of running 1985's binaries on 2025's silicon — but they make the encoding genuinely hard to reason about.</p>
+<p>RISC-V is what you design when you get to start over. It began at UC Berkeley in 2010 as a teaching and research ISA and has since become a ratified open standard maintained by RISC-V International. "Open" is the headline: the specification is free to read and free to implement, with no license fee and no permission required. But for our purposes — building an assembler, a disassembler, and running code in an emulator — the more important word is <strong>regular</strong>.</p>
+
+<h2>Three design choices that matter to us</h2>
+<ul>
+  <li><strong>Fixed-width base encoding.</strong> Every base instruction is exactly 32 bits, with fields in fixed positions. The opcode is always the low 7 bits. The destination register is always bits 11:7. There is no prefix soup and no operand-size byte that changes how later bytes are read.</li>
+  <li><strong>A small, frozen base.</strong> The RV64I base integer set is about 50 instructions and is <em>ratified</em> — it will never change. Everything else is an optional, separately-named extension.</li>
+  <li><strong>Modularity by design.</strong> Multiplication and division are the <strong>M</strong> extension. Atomics are <strong>A</strong>. Floating point is <strong>F</strong>/<strong>D</strong>. Compressed 16-bit instructions are <strong>C</strong>. A given chip implements the base plus whatever subset of extensions it needs. "RV64GC" is shorthand for the base plus IMAFD plus C.</li>
+</ul>
+
+<h2>What this buys an implementer</h2>
+<p>In the x86 tutorial we leaned on NASM's <code>insns.dat</code> — a several-thousand-line table — because hand-curating x86's forms would be a maintenance trap. RISC-V is the opposite case. The encoding is small enough and regular enough that a compact, hand-written Go table is the <em>right</em> choice: it fits on a screen, every entry is obvious, and the base will never change underneath it. We will build exactly that in Phase IV.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+x86 is a tower of compatible accretions; RISC-V is a small orthogonal core with optional extensions bolted on the side. That difference is not just philosophical — it directly determines how you build tooling for each. For x86 you parse a giant table; for RISC-V you write one.
+</div>
+`
+},
+
+{
+  id: 2, phase: 1,
+  title: "Registers and the ABI",
+  subtitle: "32 registers, one of which is always zero",
+  content: `
+<h2>The register file</h2>
+<p>RISC-V has 32 integer registers, named <code>x0</code> through <code>x31</code>. On RV64 each is 64 bits wide. There is no special accumulator, no stack pointer baked into the hardware, no <code>rsp</code>-that-PUSH-secretly-modifies. The registers are uniform — with exactly one exception.</p>
+
+<h2>x0 is hardwired to zero</h2>
+<p><code>x0</code> always reads as 0, and writes to it are discarded. This one decision removes a surprising amount of machinery. You do not need a dedicated "clear register" instruction — <code>add x5, x0, x0</code> zeroes <code>x5</code>. You do not need a "move" instruction — <code>addi x5, x6, 0</code> copies <code>x6</code> into <code>x5</code>. You do not need a "compare against zero" — branches take two registers, and one of them can be <code>x0</code>. Many of RISC-V's pseudo-instructions are just base instructions with <code>x0</code> wired into one slot.</p>
+
+<h2>The ABI names</h2>
+<p>The hardware only knows <code>x0..x31</code>, but humans and the calling convention use ABI names. Our assembler accepts both — <code>add a0, a1, a2</code> and <code>add x10, x11, x12</code> assemble to identical bytes.</p>
+<pre><span class="cm">// asm/riscv/riscv.go — index is the register number</span>
+<span class="kw">var</span> abiNames = [32]string{
+    <span class="str">"zero"</span>, <span class="str">"ra"</span>, <span class="str">"sp"</span>,  <span class="str">"gp"</span>, <span class="str">"tp"</span>, <span class="str">"t0"</span>, <span class="str">"t1"</span>, <span class="str">"t2"</span>,
+    <span class="str">"s0"</span>,   <span class="str">"s1"</span>, <span class="str">"a0"</span>,  <span class="str">"a1"</span>, <span class="str">"a2"</span>, <span class="str">"a3"</span>, <span class="str">"a4"</span>, <span class="str">"a5"</span>,
+    <span class="str">"a6"</span>,   <span class="str">"a7"</span>, <span class="str">"s2"</span>,  <span class="str">"s3"</span>, <span class="str">"s4"</span>, <span class="str">"s5"</span>, <span class="str">"s6"</span>, <span class="str">"s7"</span>,
+    <span class="str">"s8"</span>,   <span class="str">"s9"</span>, <span class="str">"s10"</span>, <span class="str">"s11"</span>,<span class="str">"t3"</span>, <span class="str">"t4"</span>, <span class="str">"t5"</span>, <span class="str">"t6"</span>,
+}<span class="lang-tag">go</span></pre>
+
+<table class="corr-table">
+<thead><tr><th>Name</th><th>Register</th><th>Role</th><th>Saved by</th></tr></thead>
+<tbody>
+<tr><td><code>zero</code></td><td>x0</td><td>constant 0</td><td>—</td></tr>
+<tr><td><code>ra</code></td><td>x1</td><td>return address</td><td>caller</td></tr>
+<tr><td><code>sp</code></td><td>x2</td><td>stack pointer</td><td>callee</td></tr>
+<tr><td><code>gp</code>, <code>tp</code></td><td>x3, x4</td><td>global / thread pointer</td><td>—</td></tr>
+<tr><td><code>t0–t6</code></td><td>x5–7, x28–31</td><td>temporaries</td><td>caller</td></tr>
+<tr><td><code>a0–a7</code></td><td>x10–x17</td><td>arguments / return values</td><td>caller</td></tr>
+<tr><td><code>s0–s11</code></td><td>x8–9, x18–27</td><td>saved registers</td><td>callee</td></tr>
+</tbody></table>
+
+<div class="box box-note">
+<strong>Note</strong>
+There is no hardware stack instruction. A call is <code>jal ra, target</code> (jump and link — it stashes the return address in <code>ra</code>); a return is <code>jalr x0, 0(ra)</code> (jump to <code>ra</code>, discard the link). PUSH/POP are just <code>addi sp, sp, -16</code> plus <code>sd</code>/<code>ld</code>. The convention lives in software, not silicon. Our emulator's sandbox relies on exactly this: it seeds <code>ra</code> with a sentinel address and watches for the PC to land there, which means "the program returned."
+</div>
+`
+},
+
+{
+  id: 3, phase: 1,
+  title: "The six instruction formats",
+  subtitle: "Every base instruction is one of six shapes",
+  content: `
+<h2>One word, six shapes</h2>
+<p>Every base RISC-V instruction is a 32-bit word, and every word is one of six formats. The formats differ only in how the bits <em>above</em> the opcode are used — specifically, where the immediate lives and whether there is a second source register. The common fields never move:</p>
+
+<table class="corr-table">
+<thead><tr><th>Field</th><th>Bits</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>opcode</td><td>6:0</td><td>major operation class (always here)</td></tr>
+<tr><td>rd</td><td>11:7</td><td>destination register</td></tr>
+<tr><td>funct3</td><td>14:12</td><td>minor operation selector</td></tr>
+<tr><td>rs1</td><td>19:15</td><td>first source register</td></tr>
+<tr><td>rs2</td><td>24:20</td><td>second source register</td></tr>
+<tr><td>funct7</td><td>31:25</td><td>further operation selector</td></tr>
+</tbody></table>
+
+<h2>The six</h2>
+<ul>
+  <li><strong>R</strong> — register, register → register. <code>add rd, rs1, rs2</code>. All fields used; no immediate.</li>
+  <li><strong>I</strong> — register + 12-bit immediate. <code>addi rd, rs1, imm</code>, loads, <code>jalr</code>. The immediate occupies bits 31:20 (where rs2 + funct7 would be).</li>
+  <li><strong>S</strong> — store. <code>sw rs2, imm(rs1)</code>. A 12-bit immediate <em>split</em> across two fields.</li>
+  <li><strong>B</strong> — conditional branch. <code>beq rs1, rs2, offset</code>. A 13-bit signed, even offset, scrambled across the word.</li>
+  <li><strong>U</strong> — upper immediate. <code>lui rd, imm20</code>, <code>auipc</code>. A 20-bit immediate that lands in the high bits.</li>
+  <li><strong>J</strong> — jump. <code>jal rd, offset</code>. A 21-bit signed, even offset, scrambled.</li>
+</ul>
+
+<h2>Why the immediates get scrambled</h2>
+<p>The split-and-scramble in the S, B, and J formats looks gratuitous, but it is deliberate. Notice that <code>rs1</code> and <code>rs2</code> sit in the same bit positions in every format that uses them, and the <em>sign bit</em> of every immediate is always bit 31. That means a hardware decoder can route the register fields and the sign bit without first knowing the format — the muxes are simpler. RISC-V trades a little encoder/decoder bit-shuffling (which we pay once, in software) for cheaper silicon (which the chip pays on every instruction). We will do that shuffling explicitly in Phase II.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+Learn these six shapes and you have learned the entire base encoding. Every extension we add later — multiply, atomics, CSRs — reuses these same fields, occasionally with a sub-field carved out (funct7 becomes funct5 + aq + rl for atomics, for instance). There is no seventh surprise.
+</div>
+`
+},
+
+// ============================================================
+// PHASE 2 — The Base Integer Encoding
+// ============================================================
+{
+  id: 4, phase: 2,
+  title: "R-type — register to register",
+  subtitle: "add, sub, and the funct3/funct7 selector",
+  content: `
+<h2>The shape</h2>
+<p>R-type is the simplest: three registers, no immediate. The operation is selected by the triple <code>(opcode, funct3, funct7)</code>.</p>
+<pre><span class="cm">// add rd, rs1, rs2</span>
+funct7=0000000 | rs2 | rs1 | funct3=000 | rd | opcode=0110011<span class="lang-tag">encoding</span></pre>
+<p>All the OP-class arithmetic shares opcode <code>0x33</code>. <code>funct3</code> picks the operation; <code>funct7</code> disambiguates the two cases where one <code>funct3</code> serves two instructions:</p>
+<ul>
+  <li><code>add</code> and <code>sub</code> both use <code>funct3=000</code>; <code>sub</code> sets <code>funct7=0100000</code> (bit 30).</li>
+  <li><code>srl</code> (logical) and <code>sra</code> (arithmetic) both use <code>funct3=101</code>; <code>sra</code> sets bit 30.</li>
+</ul>
+<p>That bit-30 trick recurs throughout RISC-V: it is the "alternate" flag for an operation that otherwise shares an encoding.</p>
+
+<h2>In the table</h2>
+<p>Our entire R-type set is a few lines. Each entry is just the name and its three selector values:</p>
+<pre><span class="cm">// asm/riscv/riscv.go</span>
+{<span class="str">"add"</span>, fmtR, <span class="num">0x33</span>, <span class="num">0x0</span>, <span class="num">0x00</span>}, {<span class="str">"sub"</span>, fmtR, <span class="num">0x33</span>, <span class="num">0x0</span>, <span class="num">0x20</span>},
+{<span class="str">"sll"</span>, fmtR, <span class="num">0x33</span>, <span class="num">0x1</span>, <span class="num">0x00</span>}, {<span class="str">"slt"</span>, fmtR, <span class="num">0x33</span>, <span class="num">0x2</span>, <span class="num">0x00</span>},
+<span class="cm">// … xor, srl, sra, or, and</span><span class="lang-tag">go</span></pre>
+<p>And the encoder is a single expression — shift each field into place and OR:</p>
+<pre><span class="kw">case</span> fmtR:
+    <span class="kw">return</span> base | in.funct7&lt;&lt;<span class="num">25</span> | u(rs2)&lt;&lt;<span class="num">20</span> | u(rs1)&lt;&lt;<span class="num">15</span> | u(rd)&lt;&lt;<span class="num">7</span><span class="lang-tag">go</span></pre>
+<p>where <code>base = opcode | funct3&lt;&lt;12</code> and <code>u()</code> masks a register to 5 bits.</p>
+
+<div class="box box-note">
+<strong>Note</strong>
+RV64 adds "word" variants — <code>addw</code>, <code>subw</code>, <code>sllw</code> — that operate on the low 32 bits and sign-extend the result to 64. They live at opcode <code>0x3B</code> (OP-32) but are otherwise identical R-type. This is how a 64-bit ISA keeps efficient 32-bit arithmetic without a mode bit.
+</div>
+`
+},
+
+{
+  id: 5, phase: 2,
+  title: "I-type — immediates, loads, shifts",
+  subtitle: "One format, three personalities",
+  content: `
+<h2>The 12-bit immediate</h2>
+<p>I-type puts a 12-bit signed immediate in bits 31:20 — exactly the bits R-type used for <code>rs2</code> and <code>funct7</code>. <code>addi a0, a1, -16</code> adds a signed constant. The immediate sign-extends, so the range is −2048..2047.</p>
+<pre><span class="cm">// addi rd, rs1, imm</span>
+imm[11:0] | rs1 | funct3=000 | rd | opcode=0010011<span class="lang-tag">encoding</span></pre>
+
+<h2>Loads are I-type</h2>
+<p>A load reads <code>imm(rs1)</code> — a base register plus a signed offset — which is the same shape: <code>lw a0, 8(sp)</code>. Only the opcode (<code>0x03</code>) and <code>funct3</code> (the access width) differ. Our table distinguishes load syntax from arithmetic syntax with a format tag (<code>fmtILoad</code>) so the operand parser knows to expect <code>offset(base)</code> rather than three comma-separated operands.</p>
+
+<h2>Shifts carve the immediate</h2>
+<p>A shift amount only needs 6 bits on RV64 (you can shift 0..63). So <code>slli</code>/<code>srli</code>/<code>srai</code> are I-type, but the high bits of the immediate field are repurposed as a <code>funct6</code> selector — and <code>srai</code> sets bit 30 (the alternate flag again) to mean "arithmetic." Our encoder special-cases this:</p>
+<pre><span class="kw">case</span> fmtIShift:
+    <span class="kw">if</span> in.opcode == <span class="num">0x13</span> { <span class="cm">// RV64: 6-bit shamt, funct6 in [31:26]</span>
+        <span class="kw">return</span> base | in.funct7&lt;&lt;<span class="num">26</span> | uint32(sh)&lt;&lt;<span class="num">20</span> | u(rs1)&lt;&lt;<span class="num">15</span> | u(rd)&lt;&lt;<span class="num">7</span>
+    }
+    <span class="cm">// word-shift (slliw…) keeps a 5-bit shamt and funct7 in [31:25]</span><span class="lang-tag">go</span></pre>
+
+<div class="box box-warn">
+<strong>Watch out</strong>
+<code>jalr</code> (jump-and-link-register, an indirect jump) is also I-type — <code>jalr rd, imm(rs1)</code>. It shares the load's <code>offset(base)</code> syntax but is a control-flow instruction. When we add label support in Phase IV, branches and <code>jal</code> resolve labels but <code>jalr</code> does not — its target is whatever is in a register at runtime, not a known address.
+</div>
+`
+},
+
+{
+  id: 6, phase: 2,
+  title: "S-type and B-type — the split immediate",
+  subtitle: "Stores and branches scramble their offset",
+  content: `
+<h2>Why split at all</h2>
+<p>A store needs a register to write (<code>rs2</code>), a base register (<code>rs1</code>), and an offset. But I-type already spent bits 31:20 on its immediate, and a store needs <code>rs2</code> in bits 24:20. The fix: keep <code>rs1</code>/<code>rs2</code> where they always are, and split the 12-bit immediate around them — high bits in 31:25, low bits in 11:7.</p>
+<pre><span class="cm">// sw rs2, imm(rs1)</span>
+imm[11:5] | rs2 | rs1 | funct3 | imm[4:0] | opcode=0100011<span class="lang-tag">encoding</span></pre>
+<p>Our encoder splits the immediate explicitly:</p>
+<pre><span class="kw">case</span> fmtS:
+    hi := uint32(imm&gt;&gt;<span class="num">5</span>) &amp; <span class="num">0x7F</span>
+    lo := uint32(imm) &amp; <span class="num">0x1F</span>
+    <span class="kw">return</span> base | hi&lt;&lt;<span class="num">25</span> | u(rs2)&lt;&lt;<span class="num">20</span> | u(rs1)&lt;&lt;<span class="num">15</span> | lo&lt;&lt;<span class="num">7</span><span class="lang-tag">go</span></pre>
+
+<h2>B-type — the same idea, one bit weirder</h2>
+<p>Branches reuse the store layout but the offset is PC-relative and must be even (instructions are 2- or 4-byte aligned), so the low bit is always 0 and is not stored. That frees a bit, which RISC-V uses to extend the range to 13 bits (±4 KiB). The catch: to keep the sign bit at position 31, the bits are permuted — imm[12] at bit 31, imm[11] at bit 7, imm[10:5] at 30:25, imm[4:1] at 11:8.</p>
+<pre><span class="kw">case</span> fmtB:
+    <span class="kw">return</span> base | bit(imm,<span class="num">12</span>)&lt;&lt;<span class="num">31</span> | bits(imm,<span class="num">10</span>,<span class="num">5</span>)&lt;&lt;<span class="num">25</span> | u(rs2)&lt;&lt;<span class="num">20</span> |
+        u(rs1)&lt;&lt;<span class="num">15</span> | bits(imm,<span class="num">4</span>,<span class="num">1</span>)&lt;&lt;<span class="num">8</span> | bit(imm,<span class="num">11</span>)&lt;&lt;<span class="num">7</span><span class="lang-tag">go</span></pre>
+<p>The helpers <code>bit(imm, n)</code> and <code>bits(imm, hi, lo)</code> pull out individual bits and bit-ranges. Reading them next to the spec's bit-permutation diagram, the encoder is a near-transcription.</p>
+
+<div class="box box-think">
+<strong>Think about it</strong>
+This is the moment the "regular ISA" claim earns a caveat: the immediate <em>encoding</em> is fiddly. But notice what stays constant — <code>rs1</code> is bits 19:15 in R, I, S, and B; <code>rs2</code> is 24:20 in R, S, and B; the sign bit is 31 everywhere. The scramble is confined entirely to the immediate, and it exists so the rest of the decoder can be dumb. We pay the fiddliness once, in <code>encode.go</code>, and validate it byte-for-byte against llvm-mc.
+</div>
+`
+},
+
+{
+  id: 7, phase: 2,
+  title: "U-type and J-type — the big immediates",
+  subtitle: "lui, auipc, and how you build a 32-bit constant",
+  content: `
+<h2>U-type — 20 bits up top</h2>
+<p>The 12-bit I-type immediate cannot express a full 32-bit constant. U-type fills the gap: it places a 20-bit immediate in the <em>high</em> bits 31:12 of the destination. <code>lui a0, 0x12345</code> loads <code>0x12345000</code> into <code>a0</code>.</p>
+<pre><span class="kw">case</span> fmtU:
+    <span class="kw">return</span> in.opcode | (uint32(imm)&amp;<span class="num">0xFFFFF</span>)&lt;&lt;<span class="num">12</span> | u(rd)&lt;&lt;<span class="num">7</span><span class="lang-tag">go</span></pre>
+<p>To build an arbitrary 32-bit constant you pair <code>lui</code> (high 20 bits) with <code>addi</code> (low 12) — which is exactly what the <code>li</code> pseudo-instruction expands to for large values. <code>auipc</code> is the same shape but adds the immediate to the PC instead of zero, giving position-independent addressing — the RISC-V answer to x86_64's RIP-relative mode.</p>
+
+<h2>J-type — the jump offset</h2>
+<p><code>jal</code> (jump and link) gets a 21-bit signed, even offset — ±1 MiB of reach — permuted much like B-type, with the sign bit again at position 31:</p>
+<pre><span class="kw">case</span> fmtJ:
+    <span class="kw">return</span> in.opcode | bit(imm,<span class="num">20</span>)&lt;&lt;<span class="num">31</span> | bits(imm,<span class="num">10</span>,<span class="num">1</span>)&lt;&lt;<span class="num">21</span> |
+        bit(imm,<span class="num">11</span>)&lt;&lt;<span class="num">20</span> | bits(imm,<span class="num">19</span>,<span class="num">12</span>)&lt;&lt;<span class="num">12</span> | u(rd)&lt;&lt;<span class="num">7</span><span class="lang-tag">go</span></pre>
+
+<h2>Worked example: lui gp, 0x12345</h2>
+<p>opcode for <code>lui</code> is <code>0x37</code>; <code>gp</code> is x3. So the word is <code>0x12345 &lt;&lt; 12 | 3 &lt;&lt; 7 | 0x37</code> = <code>0x123451B7</code>. Little-endian, that is the bytes <code>B7 51 34 12</code> — which is exactly what llvm-mc emits. Our differential test pins this.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+With these four lessons you can encode the entire RV64I base. Six formats, a handful of selector fields, and a fixed 4-byte width. Compare this to the x86 tutorial's worked example of <code>MOV R15, R8</code> — a REX prefix, a ModRM byte, register-number bits scattered between REX and ModRM. RISC-V's regularity is not a marketing slogan; it is the reason our entire assembler core is a few hundred lines.
+</div>
+`
+},
+
+// ============================================================
+// PHASE 3 — Standard Extensions
+// ============================================================
+{
+  id: 8, phase: 3,
+  title: "The M extension — multiply and divide",
+  subtitle: "Reusing R-type with one more funct7",
+  content: `
+<h2>Multiplication is optional</h2>
+<p>The base integer ISA has no multiply or divide. On a tiny embedded core, a hardware multiplier is real area you might not want; software can synthesize it. So multiply/divide is the separate <strong>M</strong> extension — and a chip that lacks it simply traps on those opcodes.</p>
+<p>Encoding-wise, M is the cheapest possible extension: it is R-type at the same opcode (<code>0x33</code>) with <code>funct7 = 0000001</code>. The eight operations are selected by <code>funct3</code>:</p>
+<table class="corr-table">
+<thead><tr><th>funct3</th><th>Insn</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>000</td><td><code>mul</code></td><td>low 64 bits of product</td></tr>
+<tr><td>001–011</td><td><code>mulh[su|u]</code></td><td>high 64 bits (signed/mixed/unsigned)</td></tr>
+<tr><td>100/101</td><td><code>div</code>/<code>divu</code></td><td>quotient</td></tr>
+<tr><td>110/111</td><td><code>rem</code>/<code>remu</code></td><td>remainder</td></tr>
+</tbody></table>
+<p>Because it is just R-type, our table additions are one-liners and the encoder needs no new code path:</p>
+<pre>{<span class="str">"mul"</span>,  fmtR, <span class="num">0x33</span>, <span class="num">0x0</span>, <span class="num">0x01</span>}, {<span class="str">"mulh"</span>, fmtR, <span class="num">0x33</span>, <span class="num">0x1</span>, <span class="num">0x01</span>},
+{<span class="str">"div"</span>,  fmtR, <span class="num">0x33</span>, <span class="num">0x4</span>, <span class="num">0x01</span>}, {<span class="str">"rem"</span>,  fmtR, <span class="num">0x33</span>, <span class="num">0x6</span>, <span class="num">0x01</span>},
+<span class="cm">// … and the RV64 word forms mulw/divw/remw at opcode 0x3B</span><span class="lang-tag">go</span></pre>
+
+<div class="box box-note">
+<strong>Note</strong>
+Divide-by-zero does <em>not</em> trap in RISC-V. <code>div x, y, 0</code> returns all-ones (−1), and <code>rem</code> returns the dividend. This is a deliberate choice — no exception machinery for a case software can check — and our <code>cpu/riscv</code> core implements it, so a divide-by-zero in the live emulator just produces −1 rather than a fault.
+</div>
+`
+},
+
+{
+  id: 9, phase: 3,
+  title: "The A extension — atomics",
+  subtitle: "lr/sc, amo*, and carving funct7 into funct5 + aq + rl",
+  content: `
+<h2>Two flavors of atomic</h2>
+<p>The <strong>A</strong> extension adds the operations a multiprocessor needs to coordinate without locks:</p>
+<ul>
+  <li><strong>Load-Reserved / Store-Conditional</strong> (<code>lr.w</code>/<code>sc.w</code>): the classic optimistic primitive. <code>lr</code> reads and "reserves" an address; <code>sc</code> writes only if the reservation survived, reporting success in a register. Lock-free algorithms loop on this.</li>
+  <li><strong>Atomic memory operations</strong> (<code>amoadd</code>, <code>amoswap</code>, <code>amoor</code>, <code>amomax</code>, …): read-modify-write a memory word in one indivisible step, returning the old value.</li>
+</ul>
+<p>All live at opcode <code>0x2F</code>, with <code>funct3</code> selecting the width (<code>.w</code> = 010, <code>.d</code> = 011). The operation is selected by a <strong>funct5</strong> in bits 31:27.</p>
+
+<h2>Where the ordering bits go</h2>
+<p>That leaves bits 26 and 25 — the rest of what was <code>funct7</code> in R-type. The A extension uses them as <strong>aq</strong> (acquire) and <strong>rl</strong> (release): memory-ordering hints that the assembler exposes as a mnemonic suffix. <code>amoadd.w.aqrl</code> sets both.</p>
+<pre><span class="cm">// 31      27 26  25 24  20 19  15 14 12 11  7 6    0</span>
+<span class="cm">// [ funct5 ][aq][rl][ rs2 ][ rs1 ][f3 ][ rd ][0101111]</span></pre>
+<p>We handle the suffix by splitting it off the mnemonic before the table lookup, encoding the base instruction, then OR-ing the two bits in:</p>
+<pre><span class="kw">if</span> base, a, r := splitAQRL(mnem); a || r {
+    <span class="cm">// … look up base; remember aq/rl</span>
+}
+<span class="cm">// after encoding the base word:</span>
+<span class="kw">if</span> aq { w |= <span class="num">1</span> &lt;&lt; <span class="num">26</span> }
+<span class="kw">if</span> rl { w |= <span class="num">1</span> &lt;&lt; <span class="num">25</span> }<span class="lang-tag">go</span></pre>
+<p>The memory operand is the offset-less form <code>(rs1)</code> — atomics address a register directly, with no displacement. <code>lr</code> has no <code>rs2</code> (there is nothing to combine), so it gets its own format that leaves that field zero.</p>
+
+<div class="box box-think">
+<strong>Think about it</strong>
+This is the one place an extension re-cuts a base field, and it shows how disciplined the re-cutting is: <code>funct7</code> (7 bits) becomes <code>funct5 + aq + rl</code> (5 + 1 + 1). The register fields and opcode never move. That is why adding atomics to the disassembler was a single new <code>case</code> — pull <code>funct5</code> from 31:27, the two ordering bits from 26/25, and the same <code>rs1</code>/<code>rs2</code>/<code>rd</code> as always.
+</div>
+`
+},
+
+{
+  id: 10, phase: 3,
+  title: "Zicsr and the privileged ISA",
+  subtitle: "Control/status registers, traps, and mret",
+  content: `
+<h2>A second register file</h2>
+<p>Alongside the 32 integer registers sits a separate bank of up to 4096 <strong>control and status registers</strong> (CSRs), addressed by a 12-bit number. They hold the machine's configuration and trap state: <code>mstatus</code> (global state), <code>mtvec</code> (trap vector — where to jump on an exception), <code>mepc</code> (the PC at the time of a trap), <code>mcause</code>, <code>satp</code> (the page-table root), <code>mhartid</code> (which core am I), and many more.</p>
+<p>The <strong>Zicsr</strong> extension adds six instructions to access them atomically, all at opcode <code>0x73</code>:</p>
+<ul>
+  <li><code>csrrw rd, csr, rs1</code> — atomic read-then-write (read old into <code>rd</code>, write <code>rs1</code>).</li>
+  <li><code>csrrs</code>/<code>csrrc</code> — read, then set/clear the bits named by <code>rs1</code>.</li>
+  <li><code>csrrwi</code>/<code>csrrsi</code>/<code>csrrci</code> — the same, with a 5-bit immediate instead of a register.</li>
+</ul>
+<p>Most CSR usage is through pseudo-instructions that wire <code>x0</code> into a slot: <code>csrr a0, mhartid</code> (read only) is <code>csrrs a0, mhartid, zero</code>; <code>csrw mtvec, a0</code> (write only) is <code>csrrw zero, mtvec, a0</code>. Our assembler accepts CSRs by name or number:</p>
+<pre><span class="cm">// asm/riscv/csr.go</span>
+<span class="kw">var</span> csrByName = map[string]uint32{
+    <span class="str">"mstatus"</span>: <span class="num">0x300</span>, <span class="str">"mtvec"</span>: <span class="num">0x305</span>, <span class="str">"mepc"</span>: <span class="num">0x341</span>,
+    <span class="str">"satp"</span>: <span class="num">0x180</span>, <span class="str">"mhartid"</span>: <span class="num">0xF14</span>, <span class="cm">// … etc</span>
+}<span class="lang-tag">go</span></pre>
+
+<h2>Returning from a trap</h2>
+<p>When an exception or interrupt fires, the hardware saves the PC in <code>mepc</code>, records why in <code>mcause</code>, and jumps to <code>mtvec</code>. The handler finishes with <code>mret</code>, which restores the saved PC and privilege. <code>mret</code>, <code>sret</code>, and <code>wfi</code> (wait-for-interrupt) are encoded as fixed 32-bit words — no operands — which our table represents by stashing the whole upper field in the <code>funct7</code> slot.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+This is the layer that turns an instruction set into something an OS can run on. Our <code>cpu/riscv</code> emulator implements the privileged spec — trap delivery, the CSR file, page-table walking via <code>satp</code> — which is why it can boot real supervisor code, not just run arithmetic snippets. The assembler now covers enough of it to write trap handlers by hand.
+</div>
+`
+},
+
+{
+  id: 11, phase: 3,
+  title: "FENCE and the memory model",
+  subtitle: "Ordering in a relaxed world",
+  content: `
+<h2>Why a fence instruction exists</h2>
+<p>RISC-V has a <em>relaxed</em> memory model: by default, the hardware may reorder one core's memory operations as seen by another core, as long as that core's own single-threaded behavior is preserved. That freedom is good for performance and bad for the moment two cores need to agree on ordering — a lock release must be visible before the data it protects.</p>
+<p><code>fence</code> draws a line: memory operations of the named kinds before the fence complete before those after it. The kinds are the four bits <strong>i</strong> (device input), <strong>o</strong> (device output), <strong>r</strong> (reads), <strong>w</strong> (writes), given as a predecessor set and a successor set:</p>
+<pre><span class="cm">// fence rw, rw   — order reads+writes before against reads+writes after</span>
+<span class="cm">// fence          — shorthand for fence iorw, iorw (the strong default)</span></pre>
+<p>Our encoder parses the flag letters into a 4-bit value and packs predecessor and successor into the immediate field:</p>
+<pre><span class="kw">case</span> fmtFence:
+    pred, succ := uint32(<span class="num">0xF</span>), uint32(<span class="num">0xF</span>) <span class="cm">// default = iorw, iorw</span>
+    <span class="cm">// … parse "rw"/"iorw"/… if operands given</span>
+    <span class="kw">return</span> base | (pred&lt;&lt;<span class="num">4</span> | succ)&lt;&lt;<span class="num">20</span><span class="lang-tag">go</span></pre>
+<p><code>fence.i</code> is a different beast — it synchronizes <em>instruction</em> memory, telling the core that code it may have cached has changed (needed after a JIT writes new instructions).</p>
+
+<div class="box box-note">
+<strong>Note</strong>
+The disassembler renders the canonical <code>fence</code> for the all-flags default and spells out <code>fence r, w</code> otherwise. Round-tripping these — assemble, disassemble, re-assemble — and getting identical bytes is part of the test suite, which catches any asymmetry between how we pack and unpack the flag bits.
+</div>
+`
+},
+
+// ============================================================
+// PHASE 4 — Building an Assembler
+// ============================================================
+{
+  id: 12, phase: 4,
+  title: "Hand table vs data-driven",
+  subtitle: "Why RISC-V is the opposite call from x86",
+  content: `
+<h2>Two assemblers, two strategies</h2>
+<p>tinyemu-go has two assemblers, and they are built on opposite principles — on purpose.</p>
+<p>The x86 assembler (<code>asm/</code>) is <strong>data-driven</strong>. It embeds NASM's <code>insns.dat</code> — the same several-thousand-line table NASM itself uses — and reimplements NASM's macro layers in Go. We did that because x86 has thousands of instruction forms with irregular encodings; hand-curating them would mean a partial table we patch forever, always one obscure form behind reality.</p>
+<p>The RISC-V assembler (<code>asm/riscv/</code>) is a <strong>hand-written table</strong>. Here that is the <em>right</em> call, for reasons that are now obvious from Phases I–III:</p>
+<ul>
+  <li>The base plus M, A, and Zicsr is on the order of a hundred instructions — it fits in one readable file.</li>
+  <li>Every instruction is one of a handful of fixed-field formats, so each table entry is just a name and three or four small integers.</li>
+  <li>The base is ratified and frozen. The table will not rot.</li>
+</ul>
+
+<h2>The whole table entry</h2>
+<pre><span class="kw">type</span> insn <span class="kw">struct</span> {
+    name   string
+    format format  <span class="cm">// fmtR, fmtI, fmtS, …</span>
+    opcode uint32  <span class="cm">// bits [6:0]</span>
+    funct3 uint32  <span class="cm">// bits [14:12]</span>
+    funct7 uint32  <span class="cm">// bits [31:25] — or funct6/funct5, per format</span>
+}<span class="lang-tag">go</span></pre>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+"Hand-written vs generated" is not a matter of taste — it is dictated by the ISA. The same engineer should reach for opposite tools for x86 and RISC-V, and the reason is everything we covered in the first three phases. An irregular ISA punishes hand-curation; a regular one punishes over-engineering. Match the tool to the shape of the problem.
+</div>
+`
+},
+
+{
+  id: 13, phase: 4,
+  title: "The encoder",
+  subtitle: "Parse, dispatch on format, pack the fields",
+  content: `
+<h2>Three steps</h2>
+<p><code>Assemble(line)</code> does three things: split the line into a mnemonic and operands, expand any pseudo-instruction, then dispatch on the instruction's format to pack the 32-bit word.</p>
+<pre><span class="kw">func</span> Assemble(src string) ([]byte, error) {
+    mnem, ops := parseLine(src)
+    mnem, ops = expandPseudo(mnem, ops)
+    <span class="cm">// … (atomic .aq/.rl suffix handling) …</span>
+    in := byName[mnem]
+    w, err := encode(in, ops)
+    <span class="kw">return</span> []byte{byte(w), byte(w&gt;&gt;<span class="num">8</span>), byte(w&gt;&gt;<span class="num">16</span>), byte(w&gt;&gt;<span class="num">24</span>)}, err
+}<span class="lang-tag">go</span></pre>
+<p>Note the output: always four little-endian bytes. There is no length to compute, no relaxation, no prefix to maybe-emit — a property we will exploit when we add labels.</p>
+
+<h2>Operand parsing is per-format</h2>
+<p>The formats differ in operand <em>syntax</em>, not just bit layout. R-type takes three comma-separated registers; loads and stores take <code>offset(base)</code>; CSR instructions take a register, a CSR name, and a register-or-immediate. Each format's <code>case</code> in <code>encode</code> knows its own shape, so the parser stays simple — a register resolver, an immediate parser, and a <code>parseMem</code> for the <code>offset(base)</code> forms.</p>
+
+<h2>Field helpers</h2>
+<p>The whole encoder leans on three tiny helpers that make the code read like the spec's bit diagrams:</p>
+<pre><span class="kw">func</span> u(r int) uint32          { <span class="kw">return</span> uint32(r) &amp; <span class="num">0x1F</span> }      <span class="cm">// 5-bit register</span>
+<span class="kw">func</span> bit(imm int64, n uint)    { <span class="kw">return</span> uint32((imm&gt;&gt;n) &amp; <span class="num">1</span>) } <span class="cm">// one bit</span>
+<span class="kw">func</span> bits(imm int64, hi, lo)   { <span class="cm">// the range imm[hi:lo], right-aligned</span> }<span class="lang-tag">go</span></pre>
+<p>With those, an instruction like <code>beq</code> is a direct transcription of its bit-permutation diagram — which is precisely why a reviewer can check it against the spec by eye, and why the differential test against llvm-mc tends to pass on the first try.</p>
+
+<div class="box box-note">
+<strong>Note</strong>
+Because each instruction is exactly 4 bytes and there is no encoding choice to make, <code>encode</code> is a pure function of <code>(instruction, operands)</code>. No "shortest form" search, no peephole like the x86 <code>mov r64, imm32</code> trick. The regularity that helps the hardware helps the encoder too.
+</div>
+`
+},
+
+{
+  id: 14, phase: 4,
+  title: "llvm-mc as the oracle",
+  subtitle: "Differential testing against a trusted assembler",
+  content: `
+<h2>Trust, but verify against someone else's assembler</h2>
+<p>How do you know your encoder is right? You assemble the same instruction with an independent, trusted assembler and compare bytes. For x86 that oracle is <code>nasm</code>. For RISC-V it is <strong>llvm-mc</strong>, LLVM's machine-code playground, which speaks RISC-V fluently:</p>
+<pre>$ echo <span class="str">'addi x1, x0, 5'</span> | llvm-mc --triple=riscv64 --show-encoding
+    li ra, 5    <span class="cm"># encoding: [0x93,0x00,0x50,0x00]</span><span class="lang-tag">shell</span></pre>
+<p>Our test harness runs llvm-mc over a list of instructions, parses the <code>encoding: [...]</code> bytes, and asserts they match <code>Assemble</code> exactly. The current suite checks 85 instructions across the base, M, A, and Zicsr — all byte-exact.</p>
+
+<h2>The fixup wrinkle</h2>
+<p>One subtlety: for PC-relative operands written as labels, llvm-mc emits <em>relocation placeholders</em> (<code>0x63'A'</code>) rather than concrete bytes, because the offset is not known until link time. So our per-instruction differential uses <em>numeric</em> branch offsets, which llvm-mc resolves immediately:</p>
+<pre>$ echo <span class="str">'beq x1, x2, 16'</span> | llvm-mc --triple=riscv64 --show-encoding
+    <span class="cm"># encoding: [0x63,0x88,0x20,0x00]   ← concrete, comparable</span><span class="lang-tag">shell</span></pre>
+
+<div class="box box-think">
+<strong>Think about it</strong>
+A differential oracle is worth more than any number of hand-written expected-value tests, because it is <em>independent</em> of your own understanding. If you misread the B-type bit permutation, your hand-written test would encode the same wrong value you do. llvm-mc was written by different people from a different reading of the same spec — when 85 instructions agree byte-for-byte with it, the encoding is almost certainly correct. This is the same discipline the x86 assembler uses with nasm.
+</div>
+`
+},
+
+{
+  id: 15, phase: 4,
+  title: "The disassembler and round-trips",
+  subtitle: "Decode is encode in reverse — and a second check",
+  content: `
+<h2>Reversing the table</h2>
+<p>The disassembler reads a 32-bit word, pulls out the opcode (and <code>funct3</code>/<code>funct7</code> where needed), finds the matching table entry, and renders the operands for that format. It is the encoder run backwards, sharing the same table.</p>
+<pre><span class="kw">func</span> Disassemble(code []byte) (text string, length int, err error) {
+    w := <span class="cm">// … little-endian 4 bytes …</span>
+    opcode := w &amp; <span class="num">0x7F</span>
+    <span class="kw">switch</span> opcode {
+    <span class="kw">case</span> <span class="num">0x33</span>, <span class="num">0x3B</span>: <span class="cm">// R-type: match on opcode+funct3+funct7</span>
+    <span class="kw">case</span> <span class="num">0x13</span>, <span class="num">0x1B</span>: <span class="cm">// I-type arithmetic or shift</span>
+    <span class="cm">// … one case per opcode class …</span>
+    }
+}<span class="lang-tag">go</span></pre>
+
+<h2>The round-trip property</h2>
+<p>Disassembly gives us a second, free correctness check that needs no external oracle: <strong>assemble → disassemble → re-assemble</strong> must produce identical bytes. If the two directions agree on every instruction, they are almost certainly both right — a bug in one would have to be exactly mirrored in the other to survive.</p>
+<pre><span class="cm">// asm/riscv/disasm_test.go</span>
+mine, _  := Assemble(src)          <span class="cm">// text  → bytes</span>
+text, _, _ := Disassemble(mine)    <span class="cm">// bytes → text</span>
+again, _ := Assemble(text)         <span class="cm">// text  → bytes</span>
+<span class="kw">if</span> !eq(again, mine) { t.Error(<span class="str">"unstable"</span>) }<span class="lang-tag">go</span></pre>
+<p>Chained with the llvm-mc differential, the logic is airtight: the first assemble matches llvm-mc, and the round-trip proves decode re-encodes to those same llvm-validated bytes.</p>
+
+<div class="box box-note">
+<strong>Note</strong>
+The disassembler always emits ABI register names and numeric PC-relative offsets — the forms <code>Assemble</code> accepts — which is what makes the round-trip stable. It is also what the language server shows you on hover: the canonical decode of the bytes your line produced, as a cross-check that the assembler read your operands the way you intended.
+</div>
+`
+},
+
+{
+  id: 16, phase: 4,
+  title: "Labels and pseudo-instructions",
+  subtitle: "The conveniences that make asm writable",
+  content: `
+<h2>Pseudo-instructions</h2>
+<p>Nobody writes <code>jalr x0, 0(ra)</code> to return from a function; they write <code>ret</code>. RISC-V's assembly language is full of these conveniences, and almost all of them expand to a base instruction with <code>x0</code> wired in:</p>
+<table class="corr-table">
+<thead><tr><th>Pseudo</th><th>Expands to</th></tr></thead>
+<tbody>
+<tr><td><code>nop</code></td><td><code>addi zero, zero, 0</code></td></tr>
+<tr><td><code>mv a0, a1</code></td><td><code>addi a0, a1, 0</code></td></tr>
+<tr><td><code>ret</code></td><td><code>jalr zero, 0(ra)</code></td></tr>
+<tr><td><code>li a0, 5</code></td><td><code>addi a0, zero, 5</code></td></tr>
+<tr><td><code>beqz a0, L</code></td><td><code>beq a0, zero, L</code></td></tr>
+<tr><td><code>j L</code></td><td><code>jal zero, L</code></td></tr>
+</tbody></table>
+<p>We expand these in a single pass before the table lookup, so the encoder never has to know they exist. The disassembler does <em>not</em> reconstruct them — it shows the base instruction — which keeps the round-trip honest.</p>
+
+<h2>Labels</h2>
+<p>A branch to a label needs the label's address. Here RISC-V's fixed 4-byte width pays off one more time: addresses are known in a <strong>single pass</strong>, with no branch relaxation. (In x86, choosing a 1- vs 4-byte branch displacement changes later addresses, forcing an iterative fixed-point. RISC-V has no such choice.)</p>
+<pre><span class="cm">// pass 1: every instruction is 4 bytes, so label addresses fall out directly</span>
+<span class="kw">for</span> _, line := <span class="kw">range</span> lines {
+    <span class="cm">// record "label: addr" for each label, addr += 4 per instruction</span>
+}
+<span class="cm">// pass 2: assemble, resolving a branch/jal target to (labelAddr - here)</span><span class="lang-tag">go</span></pre>
+<p>We validate label resolution the strongest way available: assemble a whole program with labels, and compare our bytes against the <code>.text</code> section of an object file llvm-mc produces from the same source — real, linker-grade label resolution, byte-for-byte.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+Everything in this phase — pseudos, labels, single-pass addressing — is downstream of two ISA properties: <code>x0</code>-is-zero (which makes pseudos trivial) and fixed-width instructions (which makes addressing trivial). The assembler is easy because the architecture made it easy.
+</div>
+`
+},
+
+// ============================================================
+// PHASE 5 — Execution & the Formal Frontier
+// ============================================================
+{
+  id: 17, phase: 5,
+  title: "Running it — the live language server",
+  subtitle: "From bytes to inline register state",
+  content: `
+<h2>A second consumer of the assembler</h2>
+<p>An assembler that only produces bytes is half a tool. tinyemu-go already ships a RISC-V CPU core (<code>cpu/riscv</code>, RV64 with the privileged ISA), so we can <em>run</em> what we assemble. The execution backend (<code>asm/emu</code>) assembles a buffer, loads it into a flat sandbox, single-steps the CPU, and records the register changes each source line produced.</p>
+<p>The same backend serves three ISAs behind one interface — it detects whether a buffer is x86, 32-bit x86, or RISC-V, and dispatches to the matching CPU. The RISC-V path sets up like the core's own tests do:</p>
+<pre><span class="cm">// asm/emu — the RISC-V sandbox</span>
+c := riscv.NewCPU(mm, riscv.XLEN64)
+c.PC = codeBase                <span class="cm">// load address (0x8000_0000)</span>
+c.SetReg(<span class="num">1</span>, sentinelRet)        <span class="cm">// ra: a final ret lands on the sentinel</span>
+c.SetReg(<span class="num">2</span>, stackTop)           <span class="cm">// sp</span><span class="lang-tag">go</span></pre>
+<p>Two RISC-V details shape the sandbox. There is no stack-based return, so we seed <code>ra</code> and watch for the PC to reach it. And there are <em>no condition flags</em> — RISC-V folds comparison into the branch (<code>blt</code>, <code>bne</code>), so the per-line state shows register changes only, never a flags line.</p>
+
+<h2>In the editor</h2>
+<p>The language server (<a href="../lsp">asm-lsp</a>) wires this to Neovim. Open a RISC-V buffer and each executed line gets inline ghost text:</p>
+<pre>  li a0, 0           <span class="cm">; a0=0x0</span>
+  li a1, 5           <span class="cm">; a1=0x5</span>
+loop:
+  addi a0, a0, 1     <span class="cm">; a0=0x5   ← after the loop, last iteration</span>
+  blt a0, a1, loop
+  ret<span class="lang-tag">asm</span></pre>
+<p>Diagnostics, hover (with the canonical decode from Phase IV), completion, and run-to-cursor all route to the RISC-V backend automatically. A backward branch to <code>loop</code> is not flagged, because the diagnostic path resolves labels the same way the assembler does.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+The assembler, the disassembler, and the CPU core are not three separate projects — they are one pipeline. Hover shows you the disassembly (decoder) of the bytes (encoder); the inline state shows you the effect (CPU) of running them. Each validates the others, and together they turn a text buffer into something you can watch execute.
+</div>
+`
+},
+
+{
+  id: 18, phase: 5,
+  title: "SAIL and the official formal model",
+  subtitle: "Where a specification becomes executable truth",
+  content: `
+<h2>The frontier beyond differential testing</h2>
+<p>We validated the assembler against llvm-mc — a trusted <em>implementation</em>. But what is the ultimate authority on what an instruction <em>means</em>? For RISC-V, increasingly, the answer is a formal specification written in <strong>Sail</strong>.</p>
+<p>Sail is a domain-specific language for describing instruction-set semantics. You write the decode and the operational behavior of each instruction once, and the Sail toolchain generates an executable emulator (a C or OCaml "golden model"), documentation, and theorem-prover definitions (Isabelle, Coq) for machine-checked proofs. The model at <code>github.com/riscv/sail-riscv</code> has been adopted by RISC-V International as the <strong>official formal specification</strong> of the architecture.</p>
+
+<h2>The elegant idea — bidirectional mappings</h2>
+<p>Sail's most beautiful construct, and the one most relevant to a tool-builder, is the bidirectional <code>mapping</code>. A single declaration relates an instruction's abstract syntax, its bit encoding, and its assembly string — and from that <em>one</em> source Sail derives the parser, the printer, the encoder, and the decoder. Everything we built by hand across Phases II–V — the encode/decode symmetry, the round-trip property — a Sail mapping expresses as one declaration whose two directions cannot drift apart by construction.</p>
+
+<h2>Where it fits — and where it doesn't</h2>
+<p>It is tempting to ask: should the assembler be generated from the Sail model? For RISC-V, no — and the reason is the same one from Phase IV. The base is small and regular; a hand table is clearer and lighter than dragging an OCaml toolchain into a Go build. Sail's payoff for this project is elsewhere: as an <em>execution</em> golden model to validate <code>cpu/riscv</code>. Feed the same instruction stream to our CPU and to the Sail-generated emulator, compare the architectural state after each step, and any divergence is a bug in our core, pinned against the official semantics.</p>
+
+<div class="box box-think">
+<strong>Think about it</strong>
+There is a satisfying ladder of trust here. Our encoder is checked against llvm-mc (an independent implementation). Our decoder is checked against our encoder (round-trip). Our CPU could be checked against Sail (the formal spec). Each rung is independent of the ones below it, and the top rung is not another program someone wrote — it is the specification itself, made executable. That is where ISA tooling is heading, and RISC-V, being open and formally specified, is where you can actually climb the whole ladder.
+</div>
+
+<div class="box box-key">
+<strong>Where to go next</strong>
+You have the encoding (Phases I–III), a working assembler/disassembler built on it (Phase IV), and a way to run and inspect the result (Phase V). The natural extensions: the F/D floating-point and C compressed extensions in the assembler; a Spike or Sail differential harness for the CPU core; and breakpoints in the live editor. The architecture made the first three phases easy — and it will make these easy too.
+</div>
+`
+},
+
+];
+
+// ============================================================
+// APP STATE
+// ============================================================
+let currentLesson = null;
+let completed = JSON.parse(localStorage.getItem('rvtut_done') || '[]');
+
+function isComplete(id) { return completed.includes(id); }
+function markComplete(id) {
+  if (!completed.includes(id)) completed.push(id);
+  localStorage.setItem('rvtut_done', JSON.stringify(completed));
+  updateProgress(); renderNav();
+}
+function unmarkComplete(id) {
+  completed = completed.filter(x => x !== id);
+  localStorage.setItem('rvtut_done', JSON.stringify(completed));
+  updateProgress(); renderNav();
+}
+function updateProgress() {
+  const pct = LESSONS.length ? Math.round(completed.length / LESSONS.length * 100) : 0;
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('progress-text').textContent = `${completed.length} / ${LESSONS.length}`;
+}
+
+let collapsedPhases = new Set(JSON.parse(localStorage.getItem('x64tut_collapsed') || '[]'));
+
+function renderNav(filter = '') {
+  const nav = document.getElementById('lesson-nav');
+  nav.innerHTML = '';
+  const f = filter.toLowerCase();
+  for (let ph = 1; ph <= 5; ph++) {
+    const meta = PHASE_META[ph];
+    const lessons = LESSONS.filter(l => l.phase === ph && (
+      !f || l.title.toLowerCase().includes(f) || l.subtitle.toLowerCase().includes(f)
+    ));
+    if (lessons.length === 0) continue;
+    const collapsed = collapsedPhases.has(ph);
+    const group = document.createElement('div');
+    group.className = 'phase-group';
+    group.innerHTML = `
+      <div class="phase-header ${collapsed ? 'collapsed' : ''}" data-phase="${ph}"
+           style="color:${meta.color}">
+        <span class="phase-dot" style="background:${meta.color}"></span>
+        ${meta.short}: ${meta.name}
+        <span class="phase-toggle">▾</span>
+      </div>
+      <div class="phase-lessons" ${collapsed ? 'style="display:none"' : ''}>
+        ${lessons.map(l => `
+          <div class="nav-item ${currentLesson === l.id ? 'active' : ''} ${isComplete(l.id) ? 'done' : ''}"
+               data-id="${l.id}"
+               style="${currentLesson === l.id ? `border-left-color:${meta.color}` : ''}">
+            <span class="nav-check">${isComplete(l.id) ? '✓' : ''}</span>
+            <span class="nav-num">${l.id}</span>
+            ${l.title}
+          </div>
+        `).join('')}
+      </div>
+    `;
+    nav.appendChild(group);
+  }
+  nav.querySelectorAll('.phase-header').forEach(h => {
+    h.addEventListener('click', () => {
+      const ph = parseInt(h.dataset.phase);
+      const lessons = h.nextElementSibling;
+      if (collapsedPhases.has(ph)) {
+        collapsedPhases.delete(ph);
+        h.classList.remove('collapsed');
+        lessons.style.display = '';
+      } else {
+        collapsedPhases.add(ph);
+        h.classList.add('collapsed');
+        lessons.style.display = 'none';
+      }
+      localStorage.setItem('x64tut_collapsed', JSON.stringify([...collapsedPhases]));
+    });
+  });
+  nav.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', () => showLesson(parseInt(item.dataset.id)));
+  });
+}
+
+function showLesson(id) {
+  const lesson = LESSONS.find(l => l.id === id);
+  if (!lesson) return;
+  currentLesson = id;
+  const phase = PHASE_META[lesson.phase];
+  const prev = LESSONS.find(l => l.id === id - 1);
+  const next = LESSONS.find(l => l.id === id + 1);
+
+  document.getElementById('topbar-phase').textContent = `${phase.short} — ${phase.name}`;
+  const prevBtn = document.getElementById('btn-prev');
+  const nextBtn = document.getElementById('btn-next-top');
+  prevBtn.disabled = !prev;
+  nextBtn.disabled = !next;
+  prevBtn.onclick = () => prev && showLesson(prev.id);
+  nextBtn.onclick = () => next && showLesson(next.id);
+
+  const done = isComplete(id);
+  document.getElementById('content-area').innerHTML = `
+    <div id="lesson-content">
+      <div class="lesson-eyebrow">
+        <span class="phase-badge" style="background:${phase.color}22;color:${phase.color}">${phase.short}</span>
+        <span class="lesson-number">Lesson ${lesson.id} of ${LESSONS.length}</span>
+      </div>
+      <h1 class="lesson-title">${lesson.title}</h1>
+      <p class="lesson-subtitle">${lesson.subtitle}</p>
+      <div class="lesson-divider"></div>
+      <div class="lesson-body">${lesson.content}</div>
+      <div class="exercises">
+        <h2>Exercises</h2>
+        ${lesson.exercises.map((ex, i) => `
+          <div class="exercise">
+            <div class="exercise-num">Exercise ${i + 1}</div>
+            <p>${ex}</p>
+          </div>
+        `).join('')}
+      </div>
+      <div class="complete-wrap">
+        <button class="btn-complete ${done ? 'done' : ''}" id="btn-done">
+          ${done ? '✓ Completed' : 'Mark Complete'}
+        </button>
+        ${next ? `<button class="btn-next" id="btn-next-lesson">Next: ${next.title} →</button>` : ''}
+      </div>
+    </div>
+  `;
+  document.getElementById('btn-done').onclick = () => {
+    if (isComplete(id)) unmarkComplete(id); else markComplete(id);
+    renderNav();
+    document.getElementById('btn-done').className = `btn-complete ${isComplete(id) ? 'done' : ''}`;
+    document.getElementById('btn-done').textContent = isComplete(id) ? '✓ Completed' : 'Mark Complete';
+  };
+  const nl = document.getElementById('btn-next-lesson');
+  if (nl) nl.onclick = () => showLesson(next.id);
+  renderNav();
+  document.getElementById('main').scrollTo(0, 0);
+  if (window.innerWidth < 900) document.getElementById('sidebar').classList.remove('open');
+}
+
+function showWelcome() {
+  currentLesson = null;
+  document.getElementById('topbar-phase').textContent = 'Overview';
+  document.getElementById('btn-prev').disabled = true;
+  document.getElementById('btn-next-top').disabled = false;
+  document.getElementById('btn-next-top').onclick = () => showLesson(1);
+  document.getElementById('content-area').innerHTML = `
+    <div id="welcome">
+      <h1>The <em>x86_64 CPU</em></h1>
+      <p class="tagline">From i386 to long mode — a working emulator's field guide.</p>
+      <div class="welcome-body">
+        <p>This course walks you through the architectural changes x86_64 (also written x64 or amd64) brought to the i386 baseline you may already know: the 64-bit register file, the REX prefix, RIP-relative addressing, 4-level paging, the NX bit, and the new fast system-call path.</p>
+        <p>Every lesson points back at a real, working emulator in this repository — <code>cpu/x86_64/</code> alongside the existing <code>cpu/x86/</code> backend — that is being built up incrementally. The first four phases document what has already landed (the M1 milestone: REX decode + 4-level paging + a minimal opcode set). The fifth phase previews what comes next: long-mode interrupts, SYSCALL/SYSRET, and finally booting a 64-bit Linux kernel.</p>
+        <p>If you have not already read the <a href="x86_tutorial.html">x86 (i386) tutorial</a>, that one is a strict prerequisite. This course builds on top of it — what changes, what stays, and why.</p>
+        <p>Two companion courses complete the picture: <a href="bios_tutorial.html">bios_tutorial.html</a> covers what runs before the kernel (SeaBIOS, mode transitions, the boot device handoff — including the <code>0xEA ljmp</code> from compat mode into 64-bit that broke every Linux boot when we gated it on EFER.LMA instead of CS.L), and <a href="osdev_tutorial.html">osdev_tutorial.html</a> covers what kernels do on top of long mode. For diagnostic technique — sampling, watchpoints, cycle-window traces — see <a href="DEBUG.md">DEBUG.md</a>.</p>
+        <p>20 lessons across five phases. Progress is saved automatically in your browser.</p>
+        <div class="phase-overview">
+          ${[1,2,3,4,5].map(ph => {
+            const m = PHASE_META[ph];
+            const done = LESSONS.filter(l => l.phase === ph && isComplete(l.id)).length;
+            const total = LESSONS.filter(l => l.phase === ph).length;
+            return `
+              <div class="phase-card" onclick="showLesson(${(LESSONS.find(l=>l.phase===ph)||{id:1}).id})">
+                <div class="phase-card-num" style="color:${m.color}">${m.short} — Lessons ${m.lessons}</div>
+                <h3>${m.name}</h3>
+                <p>${done}/${total} complete</p>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <button class="btn-start" onclick="showLesson(${completed.length > 0 ? Math.max(...completed) + 1 : 1})">
+          ${completed.length > 0 ? 'Continue →' : 'Start from Lesson 1 →'}
+        </button>
+      </div>
+    </div>
+  `;
+  renderNav();
+}
+
+document.getElementById('search').addEventListener('input', e => renderNav(e.target.value));
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowRight' || e.key === 'j') {
+    const next = currentLesson && LESSONS.find(l => l.id === currentLesson + 1);
+    if (next) showLesson(next.id);
+  }
+  if (e.key === 'ArrowLeft' || e.key === 'k') {
+    const prev = currentLesson && LESSONS.find(l => l.id === currentLesson - 1);
+    if (prev) showLesson(prev.id);
+  }
+  if (e.key === 'h') showWelcome();
+});
+
+function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
+document.getElementById('sidebar-header').style.cursor = 'pointer';
+document.getElementById('sidebar-header').onclick = showWelcome;
+
+updateProgress();
+showWelcome();
+</script>
+</body>
+</html>
