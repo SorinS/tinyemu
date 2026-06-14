@@ -100,14 +100,29 @@ function M.run() run(-1) end
 function M.run_to_cursor() run(vim.api.nvim_win_get_cursor(0)[1] - 1) end
 function M.clear() clear(0) end
 
--- registers opens a float with the full final register file from the last run.
+-- registers toggles a float with the full final register file from the last
+-- run: press <leader>rg to open, press it again (or move the cursor, or q/<Esc>
+-- when focused) to close.
+local reg_win = nil
+
+local function reg_close()
+  if reg_win and vim.api.nvim_win_is_valid(reg_win) then
+    vim.api.nvim_win_close(reg_win, true)
+  end
+  reg_win = nil
+end
+
 function M.registers()
-  local res = vim.b[vim.api.nvim_get_current_buf()].asm_last
-  if not res or not res.final then
-    vim.notify("asm: run the buffer first (<leader>rr)", vim.log.levels.WARN)
+  if reg_win and vim.api.nvim_win_is_valid(reg_win) then -- toggle off
+    reg_close()
     return
   end
-  local lines = { ("registers — %s%d, %s"):format(res.arch or "?", res.bits or 0, res.stop or "?") }
+  local res = vim.b[vim.api.nvim_get_current_buf()].asm_last
+  if not res or not res.final then
+    vim.notify("go-asm: run the buffer first (<leader>rr)", vim.log.levels.WARN)
+    return
+  end
+  local lines = { ("registers — %s%d, %s  (q/Esc or move to close)"):format(res.arch or "?", res.bits or 0, res.stop or "?") }
   for _, r in ipairs(res.final) do
     lines[#lines + 1] = ("  %-5s 0x%016x  (%d)"):format(r.name, r.value, r.value)
   end
@@ -116,21 +131,18 @@ function M.registers()
   vim.bo[buf].modifiable = false
   local w = 0
   for _, l in ipairs(lines) do w = math.max(w, #l) end
-  local win = vim.api.nvim_open_win(buf, false, {
+  reg_win = vim.api.nvim_open_win(buf, false, {
     relative = "cursor", row = 1, col = 0, width = w + 1, height = #lines,
     style = "minimal", border = "rounded",
   })
-  local function close()
-    if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
-  end
   -- close when the cursor moves / you leave the buffer (like a hover popup)…
   vim.api.nvim_create_autocmd(
     { "CursorMoved", "CursorMovedI", "InsertEnter", "BufLeave", "WinScrolled" },
-    { buffer = vim.api.nvim_get_current_buf(), once = true, callback = close }
+    { buffer = vim.api.nvim_get_current_buf(), once = true, callback = reg_close }
   )
   -- …or press q / <Esc> if you focus into it (e.g. via <C-w>w).
-  vim.keymap.set("n", "q", close, { buffer = buf, nowait = true })
-  vim.keymap.set("n", "<Esc>", close, { buffer = buf, nowait = true })
+  vim.keymap.set("n", "q", reg_close, { buffer = buf, nowait = true })
+  vim.keymap.set("n", "<Esc>", reg_close, { buffer = buf, nowait = true })
 end
 
 -- ---------------------------------------------------------------------------
