@@ -73,9 +73,12 @@ end
 -- ---------------------------------------------------------------------------
 -- Live run (one-shot)
 -- ---------------------------------------------------------------------------
+local render_debug -- forward declaration (defined in the debugger section)
+
 local function render(bufnr, result)
   clear(bufnr)
   vim.b[bufnr].asm_last = result
+  vim.b[bufnr].asm_render = "run"
   local lastLine = -1
   for _, line in ipairs(result.lines or {}) do
     if line.line > lastLine then lastLine = line.line end
@@ -125,7 +128,25 @@ end
 
 function M.run() run(-1) end
 function M.run_to_cursor() run(vim.api.nvim_win_get_cursor(0)[1] - 1) end
-function M.clear() clear(0) end
+
+-- clear toggles the overlay: hide it if shown, restore the last run/step if
+-- hidden. (Stepping or running redraws it regardless.)
+function M.clear()
+  local b = vim.api.nvim_get_current_buf()
+  if #vim.api.nvim_buf_get_extmarks(b, ns, 0, -1, {}) > 0 then
+    clear(b)
+    return
+  end
+  local res = vim.b[b].asm_last
+  if not res then
+    return
+  end
+  if vim.b[b].asm_render == "debug" then
+    render_debug(b, res)
+  else
+    render(b, res)
+  end
+end
 
 -- registers: float with the full register file from the last run (`final`) or
 -- the current debug step (`regs`).
@@ -207,9 +228,10 @@ function M.cond_breakpoint()
   end)
 end
 
-local function render_debug(bufnr, st)
+render_debug = function(bufnr, st)
   clear(bufnr)
   vim.b[bufnr].asm_last = st
+  vim.b[bufnr].asm_render = "debug"
   if st.stop == "assemble-error" then
     vim.notify("go-asm debug: " .. (st.error or "assemble error"), vim.log.levels.ERROR)
     return
