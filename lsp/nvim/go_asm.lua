@@ -127,15 +127,17 @@ function M.run() run(-1) end
 function M.run_to_cursor() run(vim.api.nvim_win_get_cursor(0)[1] - 1) end
 function M.clear() clear(0) end
 
--- registers: float with the full register file from the last run/step.
+-- registers: float with the full register file from the last run (`final`) or
+-- the current debug step (`regs`).
 function M.registers()
   local res = vim.b[vim.api.nvim_get_current_buf()].asm_last
-  if not res or not res.final then
-    vim.notify("go-asm: run the buffer first (<leader>rr)", vim.log.levels.WARN)
+  local regs = res and (res.final or res.regs)
+  if not regs then
+    vim.notify("go-asm: run (<leader>rr) or step (<leader>rs) first", vim.log.levels.WARN)
     return
   end
   local lines = { ("registers — %s%d  (q/Esc/move to close)"):format(res.arch or "?", res.bits or 0) }
-  for _, r in ipairs(res.final) do
+  for _, r in ipairs(regs) do
     local isFP = r.name:match("^f[tsa]") ~= nil
     if not isFP or (r.hex and r.hex ~= "0x0") then -- show all GPRs + non-zero FP regs
       local extra = r.float and ("  = " .. r.float) or ""
