@@ -25,7 +25,7 @@ var encRe = regexp.MustCompile(`encoding:\s*\[([^\]]*)\]`)
 // (PC-relative operands show up as 'A'/0bAAAA…, not concrete bytes).
 func mcEncode(t *testing.T, src string) ([]byte, bool) {
 	t.Helper()
-	cmd := exec.Command(llvmMC, "--triple=riscv64", "--mattr=+m", "--show-encoding")
+	cmd := exec.Command(llvmMC, "--triple=riscv64", "--mattr=+m,+a", "--show-encoding")
 	cmd.Stdin = strings.NewReader(src + "\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -88,6 +88,11 @@ func TestRISCV_DifferentialLLVMMC(t *testing.T) {
 		"csrr a0, mhartid", "csrw mtvec, a0", "csrs sstatus, a1",
 		// fence
 		"fence", "fence rw, rw", "fence.i", "fence r, w",
+		// A extension (atomics)
+		"lr.w a0, (a1)", "sc.w a0, a1, (a2)", "amoadd.w a0, a1, (a2)",
+		"amoswap.w a0, a1, (a2)", "amoor.d a0, a1, (a2)", "amomaxu.w a0, a1, (a2)",
+		"amoadd.w.aq a0, a1, (a2)", "amoadd.w.rl a0, a1, (a2)", "amoadd.w.aqrl a0, a1, (a2)",
+		"lr.d.aq a0, (a1)", "amoand.d a0, a1, (a2)", "amomin.w a0, a1, (a2)",
 	}
 	var pass, fail int
 	for _, src := range cases {

@@ -15,19 +15,21 @@ import (
 type format int
 
 const (
-	fmtR      format = iota // rd, rs1, rs2
-	fmtI                    // rd, rs1, imm12
-	fmtIShift               // rd, rs1, shamt (I-type, shift amount in imm, funct6/7 in top bits)
-	fmtILoad                // rd, imm(rs1)
-	fmtIJalr                // rd, imm(rs1)  — same as load syntax
-	fmtS                    // rs2, imm(rs1)
-	fmtB                    // rs1, rs2, imm (branch, PC-relative)
-	fmtU                    // rd, imm20
-	fmtJ                    // rd, imm (jump, PC-relative)
-	fmtNone                 // no operands; full word from opcode|funct3|funct7 (ecall/mret/…)
-	fmtCSR                  // rd, csr, rs1
-	fmtCSRI                 // rd, csr, uimm5
-	fmtFence                // fence [pred, succ]
+	fmtR        format = iota // rd, rs1, rs2
+	fmtI                      // rd, rs1, imm12
+	fmtIShift                 // rd, rs1, shamt (I-type, shift amount in imm, funct6/7 in top bits)
+	fmtILoad                  // rd, imm(rs1)
+	fmtIJalr                  // rd, imm(rs1)  — same as load syntax
+	fmtS                      // rs2, imm(rs1)
+	fmtB                      // rs1, rs2, imm (branch, PC-relative)
+	fmtU                      // rd, imm20
+	fmtJ                      // rd, imm (jump, PC-relative)
+	fmtNone                   // no operands; full word from opcode|funct3|funct7 (ecall/mret/…)
+	fmtCSR                    // rd, csr, rs1
+	fmtCSRI                   // rd, csr, uimm5
+	fmtFence                  // fence [pred, succ]
+	fmtAtomic                 // rd, rs2, (rs1)   — amo*/sc (funct5 in funct7 field)
+	fmtAtomicLR               // rd, (rs1)        — lr (rs2 = 0)
 )
 
 // insn is one instruction's encoding template.
@@ -99,6 +101,20 @@ var table = []insn{
 	{"csrrci", fmtCSRI, 0x73, 0x7, 0x00},
 	// --- FENCE ---
 	{"fence", fmtFence, 0x0F, 0x0, 0x00}, {"fence.i", fmtNone, 0x0F, 0x1, 0x00},
+	// --- A extension (atomics, opcode 0x2F; funct5 stored in the funct7 field,
+	// funct3 = 0x2 for .w / 0x3 for .d). aq/rl come from a mnemonic suffix.
+	{"lr.w", fmtAtomicLR, 0x2F, 0x2, 0x02}, {"sc.w", fmtAtomic, 0x2F, 0x2, 0x03},
+	{"amoswap.w", fmtAtomic, 0x2F, 0x2, 0x01}, {"amoadd.w", fmtAtomic, 0x2F, 0x2, 0x00},
+	{"amoxor.w", fmtAtomic, 0x2F, 0x2, 0x04}, {"amoand.w", fmtAtomic, 0x2F, 0x2, 0x0C},
+	{"amoor.w", fmtAtomic, 0x2F, 0x2, 0x08}, {"amomin.w", fmtAtomic, 0x2F, 0x2, 0x10},
+	{"amomax.w", fmtAtomic, 0x2F, 0x2, 0x14}, {"amominu.w", fmtAtomic, 0x2F, 0x2, 0x18},
+	{"amomaxu.w", fmtAtomic, 0x2F, 0x2, 0x1C},
+	{"lr.d", fmtAtomicLR, 0x2F, 0x3, 0x02}, {"sc.d", fmtAtomic, 0x2F, 0x3, 0x03},
+	{"amoswap.d", fmtAtomic, 0x2F, 0x3, 0x01}, {"amoadd.d", fmtAtomic, 0x2F, 0x3, 0x00},
+	{"amoxor.d", fmtAtomic, 0x2F, 0x3, 0x04}, {"amoand.d", fmtAtomic, 0x2F, 0x3, 0x0C},
+	{"amoor.d", fmtAtomic, 0x2F, 0x3, 0x08}, {"amomin.d", fmtAtomic, 0x2F, 0x3, 0x10},
+	{"amomax.d", fmtAtomic, 0x2F, 0x3, 0x14}, {"amominu.d", fmtAtomic, 0x2F, 0x3, 0x18},
+	{"amomaxu.d", fmtAtomic, 0x2F, 0x3, 0x1C},
 }
 
 var byName = func() map[string]*insn {

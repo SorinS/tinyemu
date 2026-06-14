@@ -126,6 +126,28 @@ func Disassemble(code []byte) (text string, length int, err error) {
 			((w>>31)&1)<<12|((w>>25)&0x3F)<<5|((w>>8)&0xF)<<1|((w>>7)&1)<<11, 13)
 		return fmt.Sprintf("%s %s, %s, %d", in.name, xreg(rs1), xreg(rs2), imm), 4, nil
 
+	case 0x2F: // A extension (atomics)
+		funct5 := (w >> 27) & 0x1F
+		in := find(func(x *insn) bool {
+			return x.opcode == 0x2F && (x.format == fmtAtomic || x.format == fmtAtomicLR) &&
+				x.funct3 == funct3 && x.funct7 == funct5
+		})
+		if in == nil {
+			break
+		}
+		suffix := ""
+		if aq, rl := (w>>26)&1, (w>>25)&1; aq != 0 && rl != 0 {
+			suffix = ".aqrl"
+		} else if aq != 0 {
+			suffix = ".aq"
+		} else if rl != 0 {
+			suffix = ".rl"
+		}
+		if in.format == fmtAtomicLR {
+			return fmt.Sprintf("%s%s %s, (%s)", in.name, suffix, xreg(rd), xreg(rs1)), 4, nil
+		}
+		return fmt.Sprintf("%s%s %s, %s, (%s)", in.name, suffix, xreg(rd), xreg(rs2), xreg(rs1)), 4, nil
+
 	case 0x37: // lui
 		return fmt.Sprintf("lui %s, 0x%x", xreg(rd), (w>>12)&0xFFFFF), 4, nil
 	case 0x17: // auipc

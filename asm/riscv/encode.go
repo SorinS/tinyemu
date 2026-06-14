@@ -15,6 +15,17 @@ func Assemble(src string) ([]byte, error) {
 		return nil, nil
 	}
 	mnem, ops = expandPseudo(mnem, ops)
+
+	// An atomic mnemonic may carry an .aq / .rl / .aqrl ordering suffix.
+	aq, rl := false, false
+	if _, ok := byName[mnem]; !ok {
+		if base, a, r := splitAQRL(mnem); a || r {
+			if bi, ok := byName[base]; ok && (bi.format == fmtAtomic || bi.format == fmtAtomicLR) {
+				mnem, aq, rl = base, a, r
+			}
+		}
+	}
+
 	in, ok := byName[mnem]
 	if !ok {
 		return nil, fmt.Errorf("riscv: unknown instruction %q", mnem)
@@ -22,6 +33,12 @@ func Assemble(src string) ([]byte, error) {
 	w, err := encode(in, ops)
 	if err != nil {
 		return nil, fmt.Errorf("riscv %q: %w", src, err)
+	}
+	if aq {
+		w |= 1 << 26
+	}
+	if rl {
+		w |= 1 << 25
 	}
 	return []byte{byte(w), byte(w >> 8), byte(w >> 16), byte(w >> 24)}, nil
 }
@@ -193,6 +210,44 @@ func encode(in *insn, ops []string) (uint32, error) {
 			return 0, fmt.Errorf("fence: want no operands or pred, succ")
 		}
 		return base | (pred<<4|succ)<<20, nil
+
+	case fmtAtomic: // rd, rs2, (rs1)
+		if len(ops) != 3 {
+			return 0, fmt.Errorf("%s: want rd, rs2, (rs1)", in.name)
+		}
+		rd, err := reg(ops[0])
+		if err != nil {
+			return 0, err
+		}
+		rs2, err := reg(ops[1])
+		if err != nil {
+			return 0, err
+		}
+		off, rs1, err := parseMem(ops[2])
+		if err != nil {
+			return 0, err
+		}
+		if off != 0 {
+			return 0, fmt.Errorf("%s: atomic address takes no offset", in.name)
+		}
+		return base | in.funct7<<27 | u(rs2)<<20 | u(rs1)<<15 | u(rd)<<7, nil
+
+	case fmtAtomicLR: // rd, (rs1)
+		if len(ops) != 2 {
+			return 0, fmt.Errorf("%s: want rd, (rs1)", in.name)
+		}
+		rd, err := reg(ops[0])
+		if err != nil {
+			return 0, err
+		}
+		off, rs1, err := parseMem(ops[1])
+		if err != nil {
+			return 0, err
+		}
+		if off != 0 {
+			return 0, fmt.Errorf("%s: atomic address takes no offset", in.name)
+		}
+		return base | in.funct7<<27 | u(rs1)<<15 | u(rd)<<7, nil
 	}
 	return 0, fmt.Errorf("unhandled format for %s", in.name)
 }
@@ -309,6 +364,20 @@ func parseMem(s string) (off int64, base int, err error) {
 	}
 	base, err = reg(baseStr)
 	return
+}
+
+// splitAQRL strips a trailing .aq / .rl / .aqrl ordering suffix from an atomic
+// mnemonic, returning the base name and the aq/rl flags.
+func splitAQRL(mnem string) (base string, aq, rl bool) {
+	switch {
+	case strings.HasSuffix(mnem, ".aqrl"):
+		return mnem[:len(mnem)-5], true, true
+	case strings.HasSuffix(mnem, ".aq"):
+		return mnem[:len(mnem)-3], true, false
+	case strings.HasSuffix(mnem, ".rl"):
+		return mnem[:len(mnem)-3], false, true
+	}
+	return mnem, false, false
 }
 
 // parseFenceFlags parses a fence ordering set like "rw" or "iorw" into its
