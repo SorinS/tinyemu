@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jtolio/tinyemu-go/asm/emu"
 	"github.com/jtolio/tinyemu-go/devices"
 	"github.com/jtolio/tinyemu-go/machine"
 	"github.com/jtolio/tinyemu-go/machine/pc"
@@ -54,6 +55,11 @@ var (
 	appendCmd   = flag.String("append", "", "append to kernel command line")
 	showHelp    = flag.Bool("h", false, "show help")
 	showVersion = flag.Bool("version", false, "show version")
+
+	// Assemble-and-run a snippet directly in the emulator (no kernel/boot).
+	// ISA is auto-detected: x86-64, 32-bit x86 (a BITS 32 directive), or RISC-V.
+	runAsmFile = flag.String("run-asm", "", "assemble & run an asm file (- = stdin), print final registers; ISA auto-detected")
+	asmSteps   = flag.Int("asm-steps", 0, "step cap for -run-asm (0 = default)")
 
 	// New CLI-first flags
 	biosPath    = flag.String("bios", "", "path to BIOS/bootloader image")
@@ -97,6 +103,48 @@ func main() {
 	os.Exit(run())
 }
 
+// runAssembly assembles a snippet (file path, or "-" for stdin) and runs it in
+// the in-process emulator via asm/emu, printing the final register state. The
+// ISA is auto-detected from the source. This replaces the old run_asm.sh hack
+// (nasm + a generated go-test runner) with the real assembler + emulator.
+func runAssembly(path string, maxSteps int) int {
+	var data []byte
+	var err error
+	if path == "-" {
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		data, err = os.ReadFile(path)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "run-asm: %v\n", err)
+		return 1
+	}
+	res, err := emu.Run(string(data), emu.Options{StopBeforeLine: -1, MaxSteps: maxSteps})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "run-asm: assemble error: %v\n", err)
+		return 1
+	}
+	fmt.Printf("arch=%s bits=%d  stop=%s  steps=%d\n", res.Arch, res.Bits, res.Stop, res.Steps)
+	if res.Error != "" {
+		fmt.Printf("fault: %s\n", res.Error)
+	}
+	fmt.Println("final registers (non-zero):")
+	for _, r := range res.Final {
+		if r.Value == 0 {
+			continue
+		}
+		line := fmt.Sprintf("  %-5s %s", r.Name, r.Hex)
+		if r.Float != "" {
+			line += "  = " + r.Float
+		}
+		fmt.Println(line)
+	}
+	if res.Stop == "fault" || res.Stop == "assemble-error" {
+		return 1
+	}
+	return 0
+}
+
 // run contains the main program logic. Separated from main() so that
 // deferred cleanup (especially terminal restoration) runs before os.Exit().
 // Reference: tinyemu-2019-12-21/temu.c:647-835
@@ -112,6 +160,10 @@ func run() int {
 	if *showVersion {
 		fmt.Printf("temu version %s\n", version)
 		return 0
+	}
+
+	if *runAsmFile != "" {
+		return runAssembly(*runAsmFile, *asmSteps)
 	}
 
 	// Load configuration from file or CLI args
