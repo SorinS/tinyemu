@@ -23,11 +23,17 @@ const (
 // differential tests.
 func Assemble(src string) ([]byte, error) { return AssembleMode(src, Bits64) }
 
+// dataWidths maps the data-definition directives to their element byte width.
+var dataWidths = map[string]int{"DB": 1, "DW": 2, "DD": 4, "DQ": 8}
+
 // AssembleMode is Assemble for an explicit CPU mode (Bits32 or Bits64).
 func AssembleMode(src string, mode Mode) ([]byte, error) {
 	mnem, opStrs := parseInsn(src)
 	if mnem == "" {
 		return nil, nil
+	}
+	if w, ok := dataWidths[mnem]; ok {
+		return assembleData(w, opStrs)
 	}
 	ops := make([]operand, len(opStrs))
 	for i, s := range opStrs {
@@ -37,7 +43,11 @@ func AssembleMode(src string, mode Mode) ([]byte, error) {
 		}
 		ops[i] = op
 	}
+	return encodeOps(src, mnem, ops, mode)
+}
 
+// encodeOps finds the matching table form for parsed operands and encodes it.
+func encodeOps(src, mnem string, ops []operand, mode Mode) ([]byte, error) {
 	// nasm peephole: "mov r64, imm" with imm in [0, 0xFFFFFFFF] is emitted as
 	// the 32-bit "mov r32, imm" (which zero-extends to 64 bits) — 5-6 bytes
 	// instead of the REX.W imm32 form's 7. Negative or wider immediates keep
@@ -68,6 +78,30 @@ func AssembleMode(src string, mode Mode) ([]byte, error) {
 		return nil, fmt.Errorf("asm %q: %w", src, firstErr)
 	}
 	return nil, fmt.Errorf("asm %q: no matching encoding form", src)
+}
+
+// assembleData emits the bytes for a db/dw/dd/dq directive: comma-separated
+// integers, and (for db) simple "…"/'…' string literals.
+func assembleData(width int, args []string) ([]byte, error) {
+	var out []byte
+	for _, a := range args {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if width == 1 && len(a) >= 2 && (a[0] == '"' || a[0] == '\'') && a[len(a)-1] == a[0] {
+			out = append(out, a[1:len(a)-1]...) // simple string literal (no escapes)
+			continue
+		}
+		v, ok := parseImm(a)
+		if !ok {
+			return nil, fmt.Errorf("asm: bad data value %q", a)
+		}
+		for i := 0; i < width; i++ {
+			out = append(out, byte(uint64(v)>>(8*i)))
+		}
+	}
+	return out, nil
 }
 
 // parseInsn splits a source line into an upper-case mnemonic and operands.

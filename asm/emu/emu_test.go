@@ -375,3 +375,30 @@ func TestSession_FPRegisters(t *testing.T) {
 		t.Errorf("want 64 registers, got %d", len(ls.Regs))
 	}
 }
+
+// A program with a data table and a [rel sym] load must read the right value
+// at runtime (RIP-relative is origin-independent, so it survives the load base).
+func TestRunAll_RelData(t *testing.T) {
+	src := "" +
+		"bits 64\n" +
+		"  lea rsi, [rel arr]\n" +
+		"  mov rax, [rsi+8]\n" + // arr[1] = 43
+		"  hlt\n" +
+		"arr: dq 42, 43, 44\n"
+	r, err := emu.RunAll(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Stop != emu.StopHalted {
+		t.Fatalf("stop=%q (%s)", r.Stop, r.Error)
+	}
+	var rax uint64
+	for _, rv := range r.Final {
+		if rv.Name == "rax" {
+			rax = rv.Value
+		}
+	}
+	if rax != 43 {
+		t.Errorf("rax = %d, want 43 (arr[1] via [rel]+disp)", rax)
+	}
+}

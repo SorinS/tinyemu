@@ -190,11 +190,18 @@ func DetectBits(src string) Mode {
 }
 
 // assembleInsn encodes one instruction at address addr, resolving a relative
-// branch to a label/numeric target; everything else falls to Assemble.
+// branch or a symbol memory operand against the label table; everything else
+// falls to Assemble.
 func assembleInsn(src string, addr int64, labels map[string]int64, mode Mode) ([]byte, error) {
-	mnem, ops := parseInsn(src)
-	if len(ops) == 1 && isBranch(mnem) {
-		opnd := strings.TrimSpace(ops[0])
+	mnem, opStrs := parseInsn(src)
+	if mnem == "" {
+		return nil, nil
+	}
+	if _, ok := dataWidths[mnem]; ok {
+		return assembleData(dataWidths[mnem], opStrs)
+	}
+	if len(opStrs) == 1 && isBranch(mnem) {
+		opnd := strings.TrimSpace(opStrs[0])
 		opnd = strings.TrimPrefix(opnd, "short ")
 		opnd = strings.TrimPrefix(opnd, "near ")
 		opnd = strings.TrimSpace(opnd)
@@ -207,7 +214,64 @@ func assembleInsn(src string, addr int64, labels map[string]int64, mode Mode) ([
 			return encodeRelJump(mnem, target, addr, mode)
 		}
 	}
-	return AssembleMode(src, mode)
+	ops := make([]operand, len(opStrs))
+	hasSym := false
+	for i, s := range opStrs {
+		op, ok := parseOperand(s)
+		if !ok {
+			return nil, fmt.Errorf("asm %q: cannot parse operand %q", src, s)
+		}
+		ops[i] = op
+		if op.memSym != "" {
+			hasSym = true
+		}
+	}
+	if !hasSym {
+		return encodeOps(src, mnem, ops, mode)
+	}
+	if err := resolveMemSyms(src, mnem, ops, addr, labels, mode); err != nil {
+		return nil, err
+	}
+	return encodeOps(src, mnem, ops, mode)
+}
+
+// resolveMemSyms resolves a symbol in a memory operand to a displacement. A
+// [rel sym] is RIP-relative (origin-independent — the form that runs correctly
+// in the loaded image); a bare [sym] is absolute. At most one symbol per
+// instruction (x86 allows a single memory operand).
+func resolveMemSyms(src, mnem string, ops []operand, addr int64, labels map[string]int64, mode Mode) error {
+	var sym *operand
+	for i := range ops {
+		if ops[i].memSym != "" {
+			sym = &ops[i]
+			break
+		}
+	}
+	if sym == nil {
+		return nil
+	}
+	symAddr, ok := labels[sym.memSym]
+	if !ok {
+		return fmt.Errorf("asm %q: undefined symbol %q", src, sym.memSym)
+	}
+	name := sym.memSym
+	sym.memSym = "" // resolved; encode from memDisp/memRip below
+	if !sym.memRip {
+		sym.memDisp += symAddr // absolute
+		sym.memHasDisp = true
+		return nil
+	}
+	// RIP-relative: disp = sym − (next-insn address). The displacement is always
+	// disp32, so the instruction length is fixed; probe it once with disp 0.
+	base := sym.memDisp
+	sym.memDisp = 0
+	probe, err := encodeOps(src, mnem, ops, mode)
+	if err != nil {
+		sym.memSym = name // restore for a useful error
+		return err
+	}
+	sym.memDisp = base + symAddr - (addr + int64(len(probe)))
+	return nil
 }
 
 // encodeRelJump encodes a relative branch to target from address addr,

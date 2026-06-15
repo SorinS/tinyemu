@@ -31,11 +31,12 @@ type operand struct {
 	memScale   int   // 1/2/4/8
 	memDisp    int64 // displacement
 	memHasDisp bool
-	memSize    int  // operand size from a size keyword (byte/word/…); 0 if absent
-	memRip     bool // RIP-relative ([rel …] / [rip+…])
-	baseRex    bool // base is r8..r15
-	indexRex   bool // index is r8..r15
-	baseSize   int  // address-register width (32 → needs 67 prefix; default 64)
+	memSize    int    // operand size from a size keyword (byte/word/…); 0 if absent
+	memRip     bool   // RIP-relative ([rel …] / [rip+…])
+	memSym     string // unresolved symbol in the address ([rel arr], [arr+…]); "" if none
+	baseRex    bool   // base is r8..r15
+	indexRex   bool   // index is r8..r15
+	baseSize   int    // address-register width (32 → needs 67 prefix; default 64)
 }
 
 // gpr is a general-purpose register's encoding facts.
@@ -120,6 +121,13 @@ func parseOperand(s string) (operand, bool) {
 // parseMem parses the inside of a memory reference: base + index*scale + disp.
 func parseMem(inner string, size int) (operand, bool) {
 	op := operand{kind: opMem, memSize: size, memBase: -1, memIndex: -1, memScale: 1, baseSize: 64}
+	inner = strings.TrimSpace(inner)
+	// NASM keywords: [rel sym] is RIP-relative, [abs sym] is the (default) absolute.
+	if rest, ok := cutWord(inner, "rel"); ok {
+		op.memRip, inner = true, rest
+	} else if rest, ok := cutWord(inner, "abs"); ok {
+		inner = rest
+	}
 	inner = strings.ReplaceAll(inner, "-", "+-") // keep signs when splitting on '+'
 	for _, term := range strings.Split(inner, "+") {
 		term = strings.TrimSpace(term)
@@ -156,17 +164,32 @@ func parseMem(inner string, size int) (operand, bool) {
 			}
 			continue
 		}
-		v, ok := parseImm(lower)
-		if !ok {
+		if v, ok := parseImm(lower); ok {
+			if neg {
+				v = -v
+			}
+			op.memDisp += v
+			op.memHasDisp = true
+			continue
+		}
+		// A bare identifier is a symbol reference (resolved at program assembly
+		// against the label table). At most one per address.
+		if op.memSym != "" || neg || !isLabelName(term) {
 			return op, false
 		}
-		if neg {
-			v = -v
-		}
-		op.memDisp += v
-		op.memHasDisp = true
+		op.memSym = term
 	}
 	return op, true
+}
+
+// cutWord removes a leading space-separated keyword (case-insensitive) from s,
+// returning the remainder and whether the keyword was present.
+func cutWord(s, word string) (string, bool) {
+	if len(s) > len(word) && strings.EqualFold(s[:len(word)], word) &&
+		(s[len(word)] == ' ' || s[len(word)] == '\t') {
+		return strings.TrimSpace(s[len(word)+1:]), true
+	}
+	return s, false
 }
 
 // parseImm parses a decimal or 0x-hex integer literal with optional sign.
