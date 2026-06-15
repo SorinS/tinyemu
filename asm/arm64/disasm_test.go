@@ -1,0 +1,113 @@
+package arm64
+
+import (
+	"fmt"
+	"os/exec"
+	"strings"
+	"testing"
+)
+
+// mcDisassemble decodes 4 bytes with llvm-mc and returns the instruction text
+// (first non-directive, non-comment line). ok=false if llvm-mc fails.
+func mcDisassemble(t *testing.T, b []byte) (string, bool) {
+	t.Helper()
+	hex := fmt.Sprintf("0x%02x 0x%02x 0x%02x 0x%02x", b[0], b[1], b[2], b[3])
+	cmd := exec.Command(llvmMC, "--triple=aarch64", "--disassemble")
+	cmd.Stdin = strings.NewReader(hex + "\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ".") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return line, true
+	}
+	return "", false
+}
+
+// TestARM64_RoundTrip is the strong decode check: take llvm-mc's (trusted)
+// bytes for each instruction, disassemble them with our decoder, re-assemble
+// the text with our (separately llvm-validated) encoder, and require the bytes
+// come back identical. Independent of text formatting — only bytes are compared,
+// so it proves the decode names the same instruction the bytes encode.
+func TestARM64_RoundTrip(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"add x0, x1, x2", "sub w3, w4, w5", "adds x0, x1, x2", "subs x7, x8, x9",
+		"add x0, x1, x2, lsl #4", "sub x0, x1, x2, asr #3",
+		"add sp, sp, x0", "add x0, sp, x1",
+		"add x0, x1, #8", "sub x0, x1, #0x10", "add x0, x1, #1, lsl #12",
+		"add sp, sp, #16", "subs xzr, x0, #1",
+		"and x0, x1, x2", "orr x0, x1, x2", "eor x0, x1, x2", "ands x0, x1, x2",
+		"bic x0, x1, x2", "orn x0, x1, x2", "eon x0, x1, x2", "bics x0, x1, x2",
+		"orr x0, x1, x2, lsl #8", "eor x0, x1, x2, ror #16",
+		"movz x0, #0x1234", "movz x0, #0xffff, lsl #16", "movn x0, #0",
+		"movk x0, #0xabcd, lsl #32", "movz w0, #0x10",
+		"ldr x0, [x1]", "ldr x0, [x1, #8]", "str x0, [x1, #16]",
+		"ldr w0, [x1, #8]", "str w2, [x3, #4]", "ldr x30, [x29, #2040]",
+		"b #0", "b #8", "b #-8", "bl #16", "b.eq #8", "b.ne #-4", "b.lt #12",
+		"cbz x0, #8", "cbnz w1, #-8",
+		"ret", "ret x0", "br x1", "blr x2",
+	}
+	for _, src := range cases {
+		want, ok := mcEncode(t, src)
+		if !ok {
+			t.Logf("skip %q (no concrete llvm bytes)", src)
+			continue
+		}
+		text, err := DisassembleBytes(want)
+		if err != nil {
+			t.Errorf("%q -> %02x: disassemble: %v", src, want, err)
+			continue
+		}
+		got, err := Assemble(text)
+		if err != nil {
+			t.Errorf("%q -> disasm %q -> reassemble: %v", src, text, err)
+			continue
+		}
+		if string(got) != string(want) {
+			t.Errorf("%q: disasm=%q reencoded %02x, llvm %02x", src, text, got, want)
+		}
+	}
+}
+
+// TestARM64_DisasmVsLLVM compares our disassembly text directly against
+// llvm-mc's, for instructions llvm does not render with an alias (so the
+// mnemonics line up). This is the decode check that does NOT lean on our own
+// encoder. Alias-preferred forms (movz->mov, subs xzr->cmp, orr xzr->mov) are
+// deliberately excluded.
+func TestARM64_DisasmVsLLVM(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"add x0, x1, x2", "sub w3, w4, w5", "adds x5, x6, x7",
+		"add x0, x1, x2, lsl #4", "add x0, x1, #8", "sub x0, x1, #0x10",
+		"and x0, x1, x2", "eor x0, x1, x2", "ands x9, x10, x11",
+		"bic x0, x1, x2", "orn x0, x1, x2",
+		"ldr x0, [x1, #8]", "str w2, [x3, #4]", "ldr x0, [x1]",
+		"cbz x0, #8", "cbnz w1, #16",
+		"br x1", "blr x2",
+	}
+	for _, src := range cases {
+		b, ok := mcEncode(t, src)
+		if !ok {
+			t.Logf("skip %q", src)
+			continue
+		}
+		ours, err := DisassembleBytes(b)
+		if err != nil {
+			t.Errorf("%q: %v", src, err)
+			continue
+		}
+		theirs, ok := mcDisassemble(t, b)
+		if !ok {
+			t.Logf("skip %q (llvm disasm failed)", src)
+			continue
+		}
+		if normalizeAsm(ours) != normalizeAsm(theirs) {
+			t.Errorf("%q: ours %q  llvm %q", src, normalizeAsm(ours), normalizeAsm(theirs))
+		}
+	}
+}
