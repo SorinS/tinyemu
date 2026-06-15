@@ -14,8 +14,8 @@ func Disassemble(w uint32) (string, error) {
 	switch {
 	case (w>>23)&0x3F == 0x22: // add/sub immediate
 		return disAddSubImm(w), nil
-	case (w>>23)&0x3F == 0x24: // logical immediate (not in the assembler slice yet)
-		return "", fmt.Errorf("arm64 disasm: logical-immediate not yet supported (%08x)", w)
+	case (w>>23)&0x3F == 0x24: // logical immediate
+		return disLogicalImm(w)
 	case (w>>23)&0x3F == 0x25: // move wide
 		return disMoveWide(w)
 	case (w>>24)&0x1F == 0x0B: // add/sub register (shifted or extended)
@@ -132,6 +132,28 @@ func disLogicalReg(w uint32) string {
 		out += fmt.Sprintf(", %s #%d", shiftNames[shift], imm6)
 	}
 	return out
+}
+
+func disLogicalImm(w uint32) (string, error) {
+	sf := (w>>31)&1 == 1
+	opc := (w >> 29) & 3
+	n := (w >> 22) & 1
+	immr := (w >> 16) & 0x3F
+	imms := (w >> 10) & 0x3F
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	regSize := 32
+	if sf {
+		regSize = 64
+	}
+	val, ok := decodeBitmask(n, imms, immr, regSize)
+	if !ok {
+		return "", fmt.Errorf("arm64 disasm: invalid logical immediate %08x", w)
+	}
+	mnem := [...]string{"and", "orr", "eor", "ands"}[opc]
+	// Rd is SP for and/orr/eor, XZR for ands; Rn is always the zero register.
+	return fmt.Sprintf("%s %s, %s, #%#x", mnem,
+		rname(rd, sf, opc != 3), rname(rn, sf, false), val), nil
 }
 
 func disMoveWide(w uint32) (string, error) {

@@ -69,6 +69,12 @@ func TestARM64_DifferentialLLVMMC(t *testing.T) {
 		"and x0, x1, x2", "orr x0, x1, x2", "eor x0, x1, x2", "ands x0, x1, x2",
 		"bic x0, x1, x2", "orn x0, x1, x2", "eon x0, x1, x2", "bics x0, x1, x2",
 		"and w0, w1, w2", "orr x0, x1, x2, lsl #8", "eor x0, x1, x2, ror #16",
+		// logical immediate (bitmask encoding) — varied element sizes/rotations
+		"and x0, x1, #0xff", "and x0, x1, #0xfff", "orr x0, x1, #1",
+		"eor x0, x1, #0xf0f0f0f0f0f0f0f0", "ands x0, x1, #0x5555555555555555",
+		"and w0, w1, #0xff", "orr w0, w1, #0xf", "and x0, x1, #0xffff0000ffff0000",
+		"and x2, x3, #0x8000000000000001", "orr x0, x1, #0x7fffffffffffffff",
+		"ands x5, x6, #0x3c", "and w7, w8, #0x80000001",
 		// move wide
 		"movz x0, #0x1234", "movz x0, #0xffff, lsl #16", "movn x0, #0",
 		"movk x0, #0xabcd, lsl #32", "movz w0, #0x10", "movz x5, #0x1, lsl #48",

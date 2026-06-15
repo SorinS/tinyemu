@@ -44,6 +44,8 @@ func TestARM64_RoundTrip(t *testing.T) {
 		"and x0, x1, x2", "orr x0, x1, x2", "eor x0, x1, x2", "ands x0, x1, x2",
 		"bic x0, x1, x2", "orn x0, x1, x2", "eon x0, x1, x2", "bics x0, x1, x2",
 		"orr x0, x1, x2, lsl #8", "eor x0, x1, x2, ror #16",
+		"and x0, x1, #0xff", "eor x0, x1, #0xf0f0f0f0f0f0f0f0",
+		"ands x5, x6, #0x3c", "and w7, w8, #0x80000001", "orr x0, x1, #1",
 		"movz x0, #0x1234", "movz x0, #0xffff, lsl #16", "movn x0, #0",
 		"movk x0, #0xabcd, lsl #32", "movz w0, #0x10",
 		"ldr x0, [x1]", "ldr x0, [x1, #8]", "str x0, [x1, #16]",

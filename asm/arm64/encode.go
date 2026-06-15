@@ -284,8 +284,31 @@ func encodeLogicalReg(in *insn, ops []string) (uint32, error) {
 	}
 	rd, ok1 := parseReg(ops[0])
 	rn, ok2 := parseReg(ops[1])
+	if !ok1 || !ok2 {
+		return 0, fmt.Errorf("bad register operand")
+	}
+	// Immediate (bitmask) form — and/orr/eor/ands only; bic/orn/eon/bics have
+	// no immediate encoding (use the inverted immediate with the base op).
+	if len(ops) == 3 && (strings.HasPrefix(strings.TrimSpace(ops[2]), "#") || isImmOperand(ops[2])) {
+		if in.n == 1 {
+			return 0, fmt.Errorf("%s has no immediate form", in.name)
+		}
+		imm, ok := parseImm(ops[2])
+		if !ok {
+			return 0, fmt.Errorf("bad immediate")
+		}
+		regSize := 32
+		if rd.is64 {
+			regSize = 64
+		}
+		n, immr, imms, ok := encodeBitmask(uint64(imm), regSize)
+		if !ok {
+			return 0, fmt.Errorf("%#x is not a valid logical immediate", uint64(imm))
+		}
+		return 0x12000000 | sfBit(rd) | in.opc<<29 | n<<22 | immr<<16 | imms<<10 | rn.num<<5 | rd.num, nil
+	}
 	rm, ok3 := parseReg(ops[2])
-	if !ok1 || !ok2 || !ok3 {
+	if !ok3 {
 		return 0, fmt.Errorf("bad register operand")
 	}
 	var shift, amount uint32
