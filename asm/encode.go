@@ -26,8 +26,40 @@ func Assemble(src string) ([]byte, error) { return AssembleMode(src, Bits64) }
 // dataWidths maps the data-definition directives to their element byte width.
 var dataWidths = map[string]int{"DB": 1, "DW": 2, "DD": 4, "DQ": 8}
 
+// prefixBytes maps a leading repeat/lock prefix mnemonic (upper-case) to its
+// group-1 legacy prefix byte. These prefix an instruction on the same line —
+// "rep stosb", "lock add [rax], 1" — and are emitted before the rest of the
+// encoding (REX/66/67 follow), matching nasm's byte order.
+var prefixBytes = map[string]byte{
+	"REP": 0xF3, "REPE": 0xF3, "REPZ": 0xF3,
+	"REPNE": 0xF2, "REPNZ": 0xF2,
+	"LOCK": 0xF0,
+}
+
+// splitPrefix reports a leading rep/repe/repne/lock prefix on a source line and
+// returns the prefix byte plus the remaining instruction text (comment
+// stripped). ok is false when the line has no such prefix (or is bare).
+func splitPrefix(src string) (pfx byte, rest string, ok bool) {
+	s := strings.TrimSpace(stripComment(src))
+	sp := strings.IndexAny(s, " \t")
+	if sp < 0 {
+		return 0, "", false
+	}
+	if b, isPfx := prefixBytes[strings.ToUpper(s[:sp])]; isPfx {
+		return b, strings.TrimSpace(s[sp+1:]), true
+	}
+	return 0, "", false
+}
+
 // AssembleMode is Assemble for an explicit CPU mode (Bits32 or Bits64).
 func AssembleMode(src string, mode Mode) ([]byte, error) {
+	if pfx, rest, ok := splitPrefix(src); ok {
+		b, err := AssembleMode(rest, mode)
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte{pfx}, b...), nil
+	}
 	mnem, opStrs := parseInsn(src)
 	if mnem == "" {
 		return nil, nil

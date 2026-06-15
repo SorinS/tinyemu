@@ -193,6 +193,17 @@ func DetectBits(src string) Mode {
 // branch or a symbol memory operand against the label table; everything else
 // falls to Assemble.
 func assembleInsn(src string, addr int64, labels map[string]int64, mode Mode) ([]byte, error) {
+	// A rep/lock prefix sits on the same line as the instruction it modifies;
+	// emit the prefix byte, then assemble the rest one byte further along (so a
+	// RIP-relative operand or branch in the prefixed instruction still resolves
+	// against its true address).
+	if pfx, rest, ok := splitPrefix(src); ok {
+		b, err := assembleInsn(rest, addr+1, labels, mode)
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte{pfx}, b...), nil
+	}
 	mnem, opStrs := parseInsn(src)
 	if mnem == "" {
 		return nil, nil
