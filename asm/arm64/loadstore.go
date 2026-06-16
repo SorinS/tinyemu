@@ -208,6 +208,105 @@ func lsRegOffset(size, opc uint32, base, rt reg, extra []string) (uint32, error)
 	return 0x38200000 | size<<30 | opc<<22 | idx.num<<16 | option<<13 | s<<12 | 0b10<<10 | base.num<<5 | rt.num, nil
 }
 
+// encodePair encodes the load/store pair instructions (ldp/stp/ldpsw). imm is
+// a signed 7-bit field scaled by the access size; the three addressing modes
+// (offset/pre-index/post-index) are picked by syntax exactly as for the
+// single-register forms.
+func encodePair(mnem string, ops []string) (uint32, error) {
+	if len(ops) < 3 || len(ops) > 4 {
+		return 0, fmt.Errorf("expected 3-4 operands")
+	}
+	rt, ok1 := parseReg(ops[0])
+	rt2, ok2 := parseReg(ops[1])
+	if !ok1 || !ok2 {
+		return 0, fmt.Errorf("bad register operand")
+	}
+	var opc, l uint32
+	scale := int64(8)
+	switch mnem {
+	case "stp":
+		if !rt.is64 {
+			opc, scale = 0, 4
+		} else {
+			opc = 2
+		}
+	case "ldp":
+		l = 1
+		if !rt.is64 {
+			opc, scale = 0, 4
+		} else {
+			opc = 2
+		}
+	case "ldpsw": // sign-extending word pair: 32-bit access, 64-bit destinations
+		opc, l, scale = 1, 1, 4
+	default:
+		return 0, fmt.Errorf("unknown pair op %q", mnem)
+	}
+
+	var mode uint32
+	var base reg
+	var imm int64
+	if len(ops) == 4 { // post-index: Rt, Rt2, [Xn], #imm
+		b, ok := bareBase(ops[2])
+		if !ok {
+			return 0, fmt.Errorf("post-index needs [Xn], #imm; got %q", ops[2])
+		}
+		v, ok := parseImm(ops[3])
+		if !ok {
+			return 0, fmt.Errorf("bad post-index immediate %q", ops[3])
+		}
+		mode, base, imm = 0b001, b, v
+	} else {
+		mem := strings.TrimSpace(ops[2])
+		if strings.HasSuffix(mem, "!") { // pre-index
+			b, v, ok := baseDisp(strings.TrimSuffix(mem, "!"))
+			if !ok {
+				return 0, fmt.Errorf("bad pre-index operand %q", mem)
+			}
+			mode, base, imm = 0b011, b, v
+		} else { // signed offset ([Xn] or [Xn, #imm])
+			b, v, ok := baseMaybeDisp(mem)
+			if !ok {
+				return 0, fmt.Errorf("bad memory operand %q", mem)
+			}
+			mode, base, imm = 0b010, b, v
+		}
+	}
+	if imm%scale != 0 {
+		return 0, fmt.Errorf("pair offset %d not a multiple of %d", imm, scale)
+	}
+	off := imm / scale
+	if off < -64 || off > 63 {
+		return 0, fmt.Errorf("pair offset %d out of range", imm)
+	}
+	imm7 := uint32(off & 0x7F)
+	return opc<<30 | 0b101<<27 | mode<<23 | l<<22 | imm7<<15 | rt2.num<<10 | base.num<<5 | rt.num, nil
+}
+
+// baseMaybeDisp parses "[Xn]" or "[Xn, #imm]" (offset defaults to 0).
+func baseMaybeDisp(s string) (reg, int64, bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]") {
+		return reg{}, 0, false
+	}
+	parts := splitOperands(strings.TrimSpace(s[1 : len(s)-1]))
+	b, ok := parseReg(strings.TrimSpace(parts[0]))
+	if !ok || !b.is64 {
+		return reg{}, 0, false
+	}
+	if len(parts) == 1 {
+		return b, 0, true
+	}
+	if len(parts) != 2 {
+		return reg{}, 0, false
+	}
+	imm, ok := parseImm(parts[1])
+	if !ok {
+		return reg{}, 0, false
+	}
+	return b, imm, true
+}
+
 // bareBase parses a "[Xn]" operand (no offset) for post-index addressing.
 func bareBase(s string) (reg, bool) {
 	s = strings.TrimSpace(s)

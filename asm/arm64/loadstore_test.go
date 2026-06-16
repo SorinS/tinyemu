@@ -1,6 +1,42 @@
 package arm64
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
+
+// TestARM64_Pair checks ldp/stp/ldpsw across the three addressing modes,
+// byte-exact against llvm-mc, plus a hard-coded check of the canonical
+// prologue (stp x29, x30, [sp, #-16]! = 0xA9BF7BFD).
+func TestARM64_Pair(t *testing.T) {
+	requireLLVMMC(t)
+	if got, err := Assemble("stp x29, x30, [sp, #-16]!"); err != nil ||
+		binary.LittleEndian.Uint32(got) != 0xA9BF7BFD {
+		t.Fatalf("prologue stp: got %x err %v, want a9bf7bfd", got, err)
+	}
+	cases := []string{
+		"stp x29, x30, [sp, #-16]!", "ldp x29, x30, [sp], #16",
+		"stp x0, x1, [x2]", "stp x0, x1, [x2, #16]", "ldp x0, x1, [x2, #-64]",
+		"stp w0, w1, [x2, #8]", "ldp w0, w1, [sp, #4]", "stp w3, w4, [x5], #-8",
+		"ldpsw x0, x1, [x2, #4]", "ldp x21, x22, [sp, #504]",
+		"stp x0, x1, [sp, #-512]!", "ldp x0, x1, [x2, #248]",
+	}
+	for _, src := range cases {
+		want, ok := mcEncode(t, src)
+		if !ok {
+			t.Logf("skip %q", src)
+			continue
+		}
+		got, err := Assemble(src)
+		if err != nil {
+			t.Errorf("%q: %v", src, err)
+			continue
+		}
+		if string(got) != string(want) {
+			t.Errorf("%-32q got % x, llvm % x", src, got, want)
+		}
+	}
+}
 
 // TestARM64_LoadStore holds the single-register load/store encoder byte-exact
 // against llvm-mc across every size/sign variant and addressing mode.

@@ -24,6 +24,8 @@ func Disassemble(w uint32) (string, error) {
 		return disLogicalReg(w), nil
 	case (w>>24)&0x3F == 0x39 || (w>>24)&0x3F == 0x38: // load/store register
 		return disLoadStore(w)
+	case (w>>25)&0x1F == 0x14: // load/store pair
+		return disPair(w)
 	case (w>>26)&0x1F == 0x05: // unconditional branch immediate (b/bl)
 		return disBranchImm(w), nil
 	case (w>>24)&0xFF == 0x54: // conditional branch
@@ -298,6 +300,48 @@ func disLoadStoreReg(w uint32, store bool, suffix, rtName, base string, size uin
 		ext += fmt.Sprintf(" #%d", size)
 	}
 	return fmt.Sprintf("%s %s, [%s, %s%s]", lsName(store, "ldr", "str", suffix), rtName, base, idx, ext), nil
+}
+
+func disPair(w uint32) (string, error) {
+	opc := (w >> 30) & 3
+	l := (w >> 22) & 1
+	imm7 := signExtend((w>>15)&0x7F, 7)
+	rt2 := (w >> 10) & 0x1F
+	rn := (w >> 5) & 0x1F
+	rt := w & 0x1F
+	var mnem string
+	var is64 bool
+	var scale int64
+	switch opc {
+	case 0:
+		mnem, is64, scale = lsName(l == 0, "ldp", "stp", ""), false, 4
+	case 1:
+		if l == 0 {
+			return "", fmt.Errorf("arm64 disasm: STGP/unsupported pair %08x", w)
+		}
+		mnem, is64, scale = "ldpsw", true, 4
+	case 2:
+		mnem, is64, scale = lsName(l == 0, "ldp", "stp", ""), true, 8
+	default:
+		return "", fmt.Errorf("arm64 disasm: bad pair opc %08x", w)
+	}
+	off := imm7 * scale
+	rtN := rname(rt, is64, false)
+	rt2N := rname(rt2, is64, false)
+	base := rname(rn, true, true)
+	switch (w >> 23) & 3 {
+	case 0b010: // signed offset
+		mem := fmt.Sprintf("[%s]", base)
+		if off != 0 {
+			mem = fmt.Sprintf("[%s, #%d]", base, off)
+		}
+		return fmt.Sprintf("%s %s, %s, %s", mnem, rtN, rt2N, mem), nil
+	case 0b011: // pre-index
+		return fmt.Sprintf("%s %s, %s, [%s, #%d]!", mnem, rtN, rt2N, base, off), nil
+	case 0b001: // post-index
+		return fmt.Sprintf("%s %s, %s, [%s], #%d", mnem, rtN, rt2N, base, off), nil
+	}
+	return "", fmt.Errorf("arm64 disasm: no-allocate pair unsupported %08x", w)
 }
 
 func disBranchImm(w uint32) string {

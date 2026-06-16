@@ -55,6 +55,8 @@ func TestARM64_RoundTrip(t *testing.T) {
 		"str x0, [x1, #8]!", "ldr x0, [x1], #-16", "ldrb w0, [x1], #1",
 		"ldr x0, [x1, x2]", "str x0, [x1, x2, lsl #3]", "ldr x0, [x1, w2, sxtw]",
 		"ldr x0, [x1, w2, uxtw #3]", "ldrb w0, [x1, x2]",
+		"stp x29, x30, [sp, #-16]!", "ldp x29, x30, [sp], #16",
+		"stp x0, x1, [x2, #16]", "ldp w0, w1, [sp, #4]", "ldpsw x0, x1, [x2, #4]",
 		"b #0", "b #8", "b #-8", "bl #16", "b.eq #8", "b.ne #-4", "b.lt #12",
 		"cbz x0, #8", "cbnz w1, #-8",
 		"ret", "ret x0", "br x1", "blr x2",

@@ -18,6 +18,7 @@ const (
 	clsBranchCond              // b.<cond> (imm19)
 	clsCompareBranch           // cbz/cbnz (imm19)
 	clsBranchReg               // ret/br/blr
+	clsPair                    // ldp/stp/ldpsw
 )
 
 // insn is one mnemonic's encoding facts. Which fields apply depends on class.
@@ -61,6 +62,9 @@ var table = []insn{
 	{name: "sturh", class: clsLoadStore}, {name: "ldurh", class: clsLoadStore},
 	{name: "ldursb", class: clsLoadStore}, {name: "ldursh", class: clsLoadStore},
 	{name: "ldursw", class: clsLoadStore},
+	// --- Load/store pair ---
+	{name: "stp", class: clsPair}, {name: "ldp", class: clsPair},
+	{name: "ldpsw", class: clsPair},
 	// --- Unconditional immediate branch ---
 	{name: "b", class: clsBranch, op: 0},
 	{name: "bl", class: clsBranch, op: 1},
@@ -184,6 +188,8 @@ func encode(in *insn, ops []string) (uint32, error) {
 		return encodeMoveWide(in, ops)
 	case clsLoadStore:
 		return encodeLoadStore(in.name, ops)
+	case clsPair:
+		return encodePair(in.name, ops)
 	case clsBranch:
 		return encodeBranch(in, ops)
 	case clsCompareBranch:
