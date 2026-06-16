@@ -22,6 +22,8 @@ const (
 	clsMul                     // madd/msub/smaddl/.../smulh/umulh (3-source)
 	clsDataProc2               // udiv/sdiv/lslv/lsrv/asrv/rorv (2-source)
 	clsDataProc1               // rbit/rev/rev16/rev32/clz/cls (1-source)
+	clsBitfield                // ubfm/sbfm/bfm
+	clsExtr                    // extr
 )
 
 // insn is one mnemonic's encoding facts. Which fields apply depends on class.
@@ -81,6 +83,9 @@ var table = []insn{
 	{name: "rbit", class: clsDataProc1}, {name: "rev16", class: clsDataProc1},
 	{name: "rev32", class: clsDataProc1}, {name: "rev", class: clsDataProc1},
 	{name: "clz", class: clsDataProc1}, {name: "cls", class: clsDataProc1},
+	// --- Bitfield + extract ---
+	{name: "sbfm", class: clsBitfield}, {name: "bfm", class: clsBitfield},
+	{name: "ubfm", class: clsBitfield}, {name: "extr", class: clsExtr},
 	// --- Unconditional immediate branch ---
 	{name: "b", class: clsBranch, op: 0},
 	{name: "bl", class: clsBranch, op: 1},
@@ -212,6 +217,10 @@ func encode(in *insn, ops []string) (uint32, error) {
 		return encodeDataProc2(in.name, ops)
 	case clsDataProc1:
 		return encodeDataProc1(in.name, ops)
+	case clsBitfield:
+		return encodeBitfield(in.name, ops)
+	case clsExtr:
+		return encodeExtr(ops)
 	case clsBranch:
 		return encodeBranch(in, ops)
 	case clsCompareBranch:

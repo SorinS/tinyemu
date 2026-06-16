@@ -20,6 +20,36 @@ func TestARM64_DataProc(t *testing.T) {
 		"rbit x0, x1", "rbit w0, w1", "rev x0, x1", "rev w0, w1",
 		"rev16 x0, x1", "rev16 w0, w1", "rev32 x0, x1", "clz x0, x1", "cls w0, w1",
 	}
+	runDiff(t, cases)
+}
+
+// TestARM64_Bitfield holds the bitfield ops and their alias arithmetic
+// (lsl/lsr/asr-imm, ubfx/sbfx/bfi/…, uxtb/sxtw/…, ror) byte-exact vs llvm-mc.
+func TestARM64_Bitfield(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		// base bitfield + extract
+		"ubfm x0, x1, #8, #31", "sbfm w0, w1, #4, #15", "bfm x0, x1, #0, #7",
+		"extr x0, x1, x2, #8", "extr w0, w1, w2, #4",
+		// shift-immediate aliases (ubfm/sbfm)
+		"lsl x0, x1, #4", "lsl w0, w1, #3", "lsl x0, x1, #0", "lsl x0, x1, #63",
+		"lsr x0, x1, #8", "lsr w0, w1, #1", "asr x0, x1, #2", "asr w0, w1, #31",
+		// register-shift aliases (lslv/…) and ror
+		"lsl x0, x1, x2", "lsr w0, w1, w2", "asr x0, x1, x2",
+		"ror x0, x1, #8", "ror w0, w1, #4", "ror x0, x1, x2",
+		// bitfield extract/insert aliases
+		"ubfx x0, x1, #4, #8", "sbfx x0, x1, #4, #8", "bfxil x0, x1, #4, #8",
+		"ubfiz x0, x1, #4, #8", "sbfiz w0, w1, #3, #5", "bfi x0, x1, #4, #8",
+		// sign/zero extend aliases
+		"uxtb w0, w1", "uxth w0, w1", "sxtb x0, w1", "sxth x0, w1",
+		"sxtw x0, w1", "sxtb w0, w1", "sxth w0, w1",
+	}
+	runDiff(t, cases)
+}
+
+// runDiff asserts each instruction encodes byte-exact to llvm-mc.
+func runDiff(t *testing.T, cases []string) {
+	t.Helper()
 	for _, src := range cases {
 		want, ok := mcEncode(t, src)
 		if !ok {

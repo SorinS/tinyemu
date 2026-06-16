@@ -80,6 +80,23 @@ func expandAlias(mnem string, ops []string) (string, []string, bool) {
 		if len(ops) == 3 {
 			return "umsubl", []string{ops[0], ops[1], ops[2], "xzr"}, true
 		}
+	case "lsl", "lsr", "asr": // register form → 2-source; immediate form → bitfield
+		if len(ops) == 3 {
+			if _, isReg := parseReg(ops[2]); isReg {
+				return map[string]string{"lsl": "lslv", "lsr": "lsrv", "asr": "asrv"}[mnem], ops, true
+			}
+			return expandBitfieldAlias(mnem, ops)
+		}
+	case "ror": // register form → rorv; immediate form → extr Xd,Xn,Xn,#imm
+		if len(ops) == 3 {
+			if _, isReg := parseReg(ops[2]); isReg {
+				return "rorv", ops, true
+			}
+			return "extr", []string{ops[0], ops[1], ops[1], ops[2]}, true
+		}
+	case "ubfx", "sbfx", "bfxil", "ubfiz", "sbfiz", "bfi",
+		"uxtb", "uxth", "sxtb", "sxth", "sxtw":
+		return expandBitfieldAlias(mnem, ops)
 	}
 	return mnem, ops, false
 }

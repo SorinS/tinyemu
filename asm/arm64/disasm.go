@@ -18,6 +18,10 @@ func Disassemble(w uint32) (string, error) {
 		return disLogicalImm(w)
 	case (w>>23)&0x3F == 0x25: // move wide
 		return disMoveWide(w)
+	case (w>>23)&0x3F == 0x26: // bitfield (sbfm/bfm/ubfm)
+		return disBitfield(w)
+	case (w>>23)&0x3F == 0x27: // extract (extr)
+		return disExtr(w), nil
 	case (w>>24)&0x7F == 0x1B: // data processing, 3-source (multiply)
 		return disMul(w)
 	case (w>>21)&0x3FF == 0x0D6: // data processing, 2-source
@@ -162,6 +166,38 @@ func disLogicalImm(w uint32) (string, error) {
 	// Rd is SP for and/orr/eor, XZR for ands; Rn is always the zero register.
 	return fmt.Sprintf("%s %s, %s, #%#x", mnem,
 		rname(rd, sf, opc != 3), rname(rn, sf, false), val), nil
+}
+
+func disBitfield(w uint32) (string, error) {
+	sf := (w>>31)&1 == 1
+	opc := (w >> 29) & 3
+	immr := (w >> 16) & 0x3F
+	imms := (w >> 10) & 0x3F
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	var mnem string
+	switch opc {
+	case 0:
+		mnem = "sbfm"
+	case 1:
+		mnem = "bfm"
+	case 2:
+		mnem = "ubfm"
+	default:
+		return "", fmt.Errorf("arm64 disasm: bad bitfield opc %08x", w)
+	}
+	return fmt.Sprintf("%s %s, %s, #%d, #%d", mnem,
+		rname(rd, sf, false), rname(rn, sf, false), immr, imms), nil
+}
+
+func disExtr(w uint32) string {
+	sf := (w>>31)&1 == 1
+	rm := (w >> 16) & 0x1F
+	imms := (w >> 10) & 0x3F
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	return fmt.Sprintf("extr %s, %s, %s, #%d",
+		rname(rd, sf, false), rname(rn, sf, false), rname(rm, sf, false), imms)
 }
 
 func disMul(w uint32) (string, error) {
