@@ -19,6 +19,9 @@ const (
 	clsCompareBranch           // cbz/cbnz (imm19)
 	clsBranchReg               // ret/br/blr
 	clsPair                    // ldp/stp/ldpsw
+	clsMul                     // madd/msub/smaddl/.../smulh/umulh (3-source)
+	clsDataProc2               // udiv/sdiv/lslv/lsrv/asrv/rorv (2-source)
+	clsDataProc1               // rbit/rev/rev16/rev32/clz/cls (1-source)
 )
 
 // insn is one mnemonic's encoding facts. Which fields apply depends on class.
@@ -65,6 +68,19 @@ var table = []insn{
 	// --- Load/store pair ---
 	{name: "stp", class: clsPair}, {name: "ldp", class: clsPair},
 	{name: "ldpsw", class: clsPair},
+	// --- Data processing: 3-source (multiply family) ---
+	{name: "madd", class: clsMul}, {name: "msub", class: clsMul},
+	{name: "smaddl", class: clsMul}, {name: "smsubl", class: clsMul},
+	{name: "umaddl", class: clsMul}, {name: "umsubl", class: clsMul},
+	{name: "smulh", class: clsMul}, {name: "umulh", class: clsMul},
+	// --- Data processing: 2-source (divide, variable shift) ---
+	{name: "udiv", class: clsDataProc2}, {name: "sdiv", class: clsDataProc2},
+	{name: "lslv", class: clsDataProc2}, {name: "lsrv", class: clsDataProc2},
+	{name: "asrv", class: clsDataProc2}, {name: "rorv", class: clsDataProc2},
+	// --- Data processing: 1-source ---
+	{name: "rbit", class: clsDataProc1}, {name: "rev16", class: clsDataProc1},
+	{name: "rev32", class: clsDataProc1}, {name: "rev", class: clsDataProc1},
+	{name: "clz", class: clsDataProc1}, {name: "cls", class: clsDataProc1},
 	// --- Unconditional immediate branch ---
 	{name: "b", class: clsBranch, op: 0},
 	{name: "bl", class: clsBranch, op: 1},
@@ -190,6 +206,12 @@ func encode(in *insn, ops []string) (uint32, error) {
 		return encodeLoadStore(in.name, ops)
 	case clsPair:
 		return encodePair(in.name, ops)
+	case clsMul:
+		return encodeMul(in.name, ops)
+	case clsDataProc2:
+		return encodeDataProc2(in.name, ops)
+	case clsDataProc1:
+		return encodeDataProc1(in.name, ops)
 	case clsBranch:
 		return encodeBranch(in, ops)
 	case clsCompareBranch:

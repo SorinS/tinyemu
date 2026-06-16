@@ -18,6 +18,12 @@ func Disassemble(w uint32) (string, error) {
 		return disLogicalImm(w)
 	case (w>>23)&0x3F == 0x25: // move wide
 		return disMoveWide(w)
+	case (w>>24)&0x7F == 0x1B: // data processing, 3-source (multiply)
+		return disMul(w)
+	case (w>>21)&0x3FF == 0x0D6: // data processing, 2-source
+		return disDataProc2(w)
+	case (w>>21)&0x3FF == 0x2D6: // data processing, 1-source
+		return disDataProc1(w)
 	case (w>>24)&0x1F == 0x0B: // add/sub register (shifted or extended)
 		return disAddSubReg(w), nil
 	case (w>>24)&0x1F == 0x0A: // logical shifted register
@@ -156,6 +162,88 @@ func disLogicalImm(w uint32) (string, error) {
 	// Rd is SP for and/orr/eor, XZR for ands; Rn is always the zero register.
 	return fmt.Sprintf("%s %s, %s, #%#x", mnem,
 		rname(rd, sf, opc != 3), rname(rn, sf, false), val), nil
+}
+
+func disMul(w uint32) (string, error) {
+	sf := (w>>31)&1 == 1
+	op31 := (w >> 21) & 7
+	o0 := (w >> 15) & 1
+	rm := (w >> 16) & 0x1F
+	ra := (w >> 10) & 0x1F
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	switch op31<<1 | o0 {
+	case 0b0000: // madd
+		return fmt.Sprintf("madd %s, %s, %s, %s", rname(rd, sf, false), rname(rn, sf, false), rname(rm, sf, false), rname(ra, sf, false)), nil
+	case 0b0001: // msub
+		return fmt.Sprintf("msub %s, %s, %s, %s", rname(rd, sf, false), rname(rn, sf, false), rname(rm, sf, false), rname(ra, sf, false)), nil
+	case 0b0010: // smaddl
+		return fmt.Sprintf("smaddl %s, %s, %s, %s", rname(rd, true, false), rname(rn, false, false), rname(rm, false, false), rname(ra, true, false)), nil
+	case 0b0011: // smsubl
+		return fmt.Sprintf("smsubl %s, %s, %s, %s", rname(rd, true, false), rname(rn, false, false), rname(rm, false, false), rname(ra, true, false)), nil
+	case 0b1010: // umaddl
+		return fmt.Sprintf("umaddl %s, %s, %s, %s", rname(rd, true, false), rname(rn, false, false), rname(rm, false, false), rname(ra, true, false)), nil
+	case 0b1011: // umsubl
+		return fmt.Sprintf("umsubl %s, %s, %s, %s", rname(rd, true, false), rname(rn, false, false), rname(rm, false, false), rname(ra, true, false)), nil
+	case 0b0100: // smulh
+		return fmt.Sprintf("smulh %s, %s, %s", rname(rd, true, false), rname(rn, true, false), rname(rm, true, false)), nil
+	case 0b1100: // umulh
+		return fmt.Sprintf("umulh %s, %s, %s", rname(rd, true, false), rname(rn, true, false), rname(rm, true, false)), nil
+	}
+	return "", fmt.Errorf("arm64 disasm: bad 3-source op %08x", w)
+}
+
+func disDataProc2(w uint32) (string, error) {
+	sf := (w>>31)&1 == 1
+	rm := (w >> 16) & 0x1F
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	var mnem string
+	switch (w >> 10) & 0x3F {
+	case 0x02:
+		mnem = "udiv"
+	case 0x03:
+		mnem = "sdiv"
+	case 0x08:
+		mnem = "lslv"
+	case 0x09:
+		mnem = "lsrv"
+	case 0x0A:
+		mnem = "asrv"
+	case 0x0B:
+		mnem = "rorv"
+	default:
+		return "", fmt.Errorf("arm64 disasm: bad 2-source op %08x", w)
+	}
+	return fmt.Sprintf("%s %s, %s, %s", mnem, rname(rd, sf, false), rname(rn, sf, false), rname(rm, sf, false)), nil
+}
+
+func disDataProc1(w uint32) (string, error) {
+	sf := (w>>31)&1 == 1
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	var mnem string
+	switch (w >> 10) & 0x3F {
+	case 0x00:
+		mnem = "rbit"
+	case 0x01:
+		mnem = "rev16"
+	case 0x02:
+		if sf {
+			mnem = "rev32"
+		} else {
+			mnem = "rev"
+		}
+	case 0x03:
+		mnem = "rev"
+	case 0x04:
+		mnem = "clz"
+	case 0x05:
+		mnem = "cls"
+	default:
+		return "", fmt.Errorf("arm64 disasm: bad 1-source op %08x", w)
+	}
+	return fmt.Sprintf("%s %s, %s", mnem, rname(rd, sf, false), rname(rn, sf, false)), nil
 }
 
 func disMoveWide(w uint32) (string, error) {

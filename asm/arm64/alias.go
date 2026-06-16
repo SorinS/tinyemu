@@ -56,8 +56,45 @@ func expandAlias(mnem string, ops []string) (string, []string, bool) {
 		if d, ok := zeroSource(ops); ok {
 			return "orn", d, true
 		}
+	case "mul": // mul Xd,Xn,Xm = madd Xd,Xn,Xm,ZR
+		if d, ok := zeroAccum(ops); ok {
+			return "madd", d, true
+		}
+	case "mneg": // mneg Xd,Xn,Xm = msub Xd,Xn,Xm,ZR
+		if d, ok := zeroAccum(ops); ok {
+			return "msub", d, true
+		}
+	case "smull": // smull Xd,Wn,Wm = smaddl Xd,Wn,Wm,XZR
+		if len(ops) == 3 {
+			return "smaddl", []string{ops[0], ops[1], ops[2], "xzr"}, true
+		}
+	case "umull":
+		if len(ops) == 3 {
+			return "umaddl", []string{ops[0], ops[1], ops[2], "xzr"}, true
+		}
+	case "smnegl":
+		if len(ops) == 3 {
+			return "smsubl", []string{ops[0], ops[1], ops[2], "xzr"}, true
+		}
+	case "umnegl":
+		if len(ops) == 3 {
+			return "umsubl", []string{ops[0], ops[1], ops[2], "xzr"}, true
+		}
 	}
 	return mnem, ops, false
+}
+
+// zeroAccum appends the zero register (of the destination's width) as the
+// accumulator: "Xd,Xn,Xm" → "Xd,Xn,Xm,ZR". For mul/mneg.
+func zeroAccum(ops []string) ([]string, bool) {
+	if len(ops) != 3 {
+		return nil, false
+	}
+	rd, ok := parseReg(ops[0])
+	if !ok {
+		return nil, false
+	}
+	return []string{ops[0], ops[1], ops[2], zeroReg(rd.is64)}, true
 }
 
 // discardDest prepends the zero register (of the first operand's width) as the
