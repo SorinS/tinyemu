@@ -50,6 +50,10 @@ func Disassemble(w uint32) (string, error) {
 		return disBranchCond(w), nil
 	case (w>>25)&0x3F == 0x1A: // compare and branch (cbz/cbnz)
 		return disCompareBranch(w), nil
+	case (w>>24)&0xFF == 0xD4: // exception generation
+		return disException(w)
+	case (w>>24)&0xFF == 0xD5: // system (hint/barrier/mrs/msr)
+		return disSystem(w)
 	case (w>>25)&0x7F == 0x6B: // unconditional branch register (br/blr/ret)
 		return disBranchReg(w)
 	}
@@ -534,6 +538,66 @@ func disPair(w uint32) (string, error) {
 		return fmt.Sprintf("%s %s, %s, [%s], #%d", mnem, rtN, rt2N, base, off), nil
 	}
 	return "", fmt.Errorf("arm64 disasm: no-allocate pair unsupported %08x", w)
+}
+
+// sysregName reverses parseSysreg's field bits to a register name.
+func sysregName(field uint32) string {
+	key := [5]uint32{(field >> 19) & 1, (field >> 16) & 7, (field >> 12) & 0xF, (field >> 8) & 0xF, (field >> 5) & 7}
+	for name, f := range namedSysregs {
+		if f == key {
+			return name
+		}
+	}
+	return fmt.Sprintf("s%d_%d_c%d_c%d_%d", key[0]+2, key[1], key[2], key[3], key[4])
+}
+
+func disSystem(w uint32) (string, error) {
+	switch {
+	case w>>20 == 0xD53: // mrs Xt, sysreg
+		return fmt.Sprintf("mrs %s, %s", rname(w&0x1F, true, false), sysregName(w&0x000FFFE0)), nil
+	case w>>20 == 0xD51: // msr sysreg, Xt
+		return fmt.Sprintf("msr %s, %s", sysregName(w&0x000FFFE0), rname(w&0x1F, true, false)), nil
+	case w>>12 == 0xD5032: // hint
+		n := (w>>8&0xF)<<3 | (w >> 5 & 7)
+		for name, num := range hintNums {
+			if num == n {
+				return name, nil
+			}
+		}
+		return fmt.Sprintf("hint #%d", n), nil
+	case w>>12 == 0xD5033: // barrier
+		op2 := (w >> 5) & 7
+		crm := (w >> 8) & 0xF
+		mnem := map[uint32]string{4: "dsb", 5: "dmb", 6: "isb"}[op2]
+		if mnem == "" {
+			return "", fmt.Errorf("arm64 disasm: bad barrier %08x", w)
+		}
+		opt := "#" + fmt.Sprint(crm)
+		for name, v := range barrierOptions {
+			if v == crm {
+				opt = name
+			}
+		}
+		return mnem + " " + opt, nil
+	}
+	return "", fmt.Errorf("arm64 disasm: unknown system %08x", w)
+}
+
+func disException(w uint32) (string, error) {
+	imm := (w >> 5) & 0xFFFF
+	switch opcLL := ((w>>21)&7)<<2 | (w & 3); opcLL {
+	case 0b000_01:
+		return fmt.Sprintf("svc #%d", imm), nil
+	case 0b000_10:
+		return fmt.Sprintf("hvc #%d", imm), nil
+	case 0b000_11:
+		return fmt.Sprintf("smc #%d", imm), nil
+	case 0b001_00:
+		return fmt.Sprintf("brk #%d", imm), nil
+	case 0b010_00:
+		return fmt.Sprintf("hlt #%d", imm), nil
+	}
+	return "", fmt.Errorf("arm64 disasm: bad exception %08x", w)
 }
 
 func disBranchImm(w uint32) string {

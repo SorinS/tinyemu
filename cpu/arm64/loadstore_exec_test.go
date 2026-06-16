@@ -126,6 +126,50 @@ func TestARM64_LoadStoreExec(t *testing.T) {
 	}
 }
 
+// TestARM64_SystemExec checks the system instructions that can't run under the
+// native oracle: hints/barriers are no-ops, svc/brk halt the core, and a
+// read-only-in-the-model sysreg round-trips through the Sys map.
+func TestARM64_SystemExec(t *testing.T) {
+	// nop / barriers advance PC without touching registers.
+	c, n := newCPU(t, []string{"nop", "dmb sy", "isb", "add x0, x1, x2"})
+	c.X[1], c.X[2] = 3, 4
+	run(t, c, n)
+	if c.X[0] != 7 {
+		t.Errorf("after nops, x0 = %d, want 7", c.X[0])
+	}
+
+	// svc halts the core and records the exception.
+	c, _ = newCPU(t, []string{"movz x0, #1", "svc #42", "movz x0, #2"})
+	for i := 0; i < 10 && !c.Halted; i++ {
+		if err := c.Step(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !c.Halted || c.ExcType != "svc" || c.ExcImm != 42 {
+		t.Errorf("svc: halted=%v type=%q imm=%d", c.Halted, c.ExcType, c.ExcImm)
+	}
+	if c.X[0] != 1 { // execution stopped at svc, before the second movz
+		t.Errorf("svc should stop before the second movz; x0 = %d", c.X[0])
+	}
+
+	// brk also halts, with its own type.
+	c, _ = newCPU(t, []string{"brk #1"})
+	if err := c.Step(); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Halted || c.ExcType != "brk" {
+		t.Errorf("brk: halted=%v type=%q", c.Halted, c.ExcType)
+	}
+
+	// msr/mrs round-trip a non-NZCV system register through the Sys map.
+	c, n = newCPU(t, []string{"msr tpidr_el0, x1", "mrs x0, tpidr_el0"})
+	c.X[1] = 0xCAFEF00D
+	run(t, c, n)
+	if c.X[0] != 0xCAFEF00D {
+		t.Errorf("sysreg round-trip x0 = %#x", c.X[0])
+	}
+}
+
 // TestARM64_BranchExec checks control flow: a countdown loop and bl/ret linkage.
 func TestARM64_BranchExec(t *testing.T) {
 	// Sum 1..5 with a backward conditional branch.

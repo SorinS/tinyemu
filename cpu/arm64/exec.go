@@ -61,6 +61,10 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 		return c.execBranchCond(w, next)
 	case (w>>25)&0x3F == 0x1A:
 		return c.execCompareBranch(w, next)
+	case (w>>24)&0xFF == 0xD4:
+		return c.execException(w)
+	case (w>>24)&0xFF == 0xD5:
+		return c.execSystem(w)
 	case (w>>25)&0x7F == 0x6B:
 		return c.execBranchReg(w, next)
 	}
@@ -406,6 +410,43 @@ func (c *CPU) execDataProc1(w uint32) error {
 		return fmt.Errorf("arm64: bad 1-source op %08x", w)
 	}
 	c.writeX(rd, sf, false, res)
+	return nil
+}
+
+func (c *CPU) execSystem(w uint32) error {
+	switch {
+	case w>>20 == 0xD53: // mrs Xt, sysreg
+		c.writeX(w&0x1F, true, false, c.readSysreg(w&0x000FFFE0))
+	case w>>20 == 0xD51: // msr sysreg, Xt
+		c.writeSysreg(w&0x000FFFE0, c.readX(w&0x1F, true, false))
+	case w>>12 == 0xD5032, w>>12 == 0xD5033:
+		// hints (nop/yield/wfe/…) and barriers (dmb/dsb/isb): architecturally
+		// no-ops for this single-core, in-order, flat-memory model.
+	default:
+		return fmt.Errorf("arm64: unimplemented system instruction %08x at %#x", w, c.PC)
+	}
+	return nil
+}
+
+func (c *CPU) execException(w uint32) error {
+	c.ExcImm = uint16((w >> 5) & 0xFFFF)
+	switch (((w >> 21) & 7) << 2) | (w & 3) {
+	case 0b000_01:
+		c.ExcType = "svc"
+	case 0b000_10:
+		c.ExcType = "hvc"
+	case 0b000_11:
+		c.ExcType = "smc"
+	case 0b001_00:
+		c.ExcType = "brk"
+	case 0b010_00:
+		c.ExcType = "hlt"
+	default:
+		return fmt.Errorf("arm64: bad exception %08x at %#x", w, c.PC)
+	}
+	// No exception vectors in this model: surface it as a clean halt so a
+	// caller (e.g. the emu sandbox) can stop the run.
+	c.Halted = true
 	return nil
 }
 

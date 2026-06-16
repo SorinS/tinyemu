@@ -28,6 +28,8 @@ const (
 	clsAddr                    // adr/adrp
 	clsAddSubCarry             // adc/adcs/sbc/sbcs
 	clsCondCmp                 // ccmp/ccmn
+	clsSystem                  // nop/hint/yield/wfe/wfi/sev/sevl/dmb/dsb/isb/mrs/msr
+	clsException               // svc/hvc/smc/brk/hlt
 )
 
 // insn is one mnemonic's encoding facts. Which fields apply depends on class.
@@ -100,6 +102,18 @@ var table = []insn{
 	{name: "sbc", class: clsAddSubCarry}, {name: "sbcs", class: clsAddSubCarry},
 	// --- Conditional compare ---
 	{name: "ccmp", class: clsCondCmp}, {name: "ccmn", class: clsCondCmp},
+	// --- System: hints, barriers, system-register move ---
+	{name: "nop", class: clsSystem}, {name: "yield", class: clsSystem},
+	{name: "wfe", class: clsSystem}, {name: "wfi", class: clsSystem},
+	{name: "sev", class: clsSystem}, {name: "sevl", class: clsSystem},
+	{name: "hint", class: clsSystem},
+	{name: "dmb", class: clsSystem}, {name: "dsb", class: clsSystem},
+	{name: "isb", class: clsSystem},
+	{name: "mrs", class: clsSystem}, {name: "msr", class: clsSystem},
+	// --- Exception generation ---
+	{name: "svc", class: clsException}, {name: "hvc", class: clsException},
+	{name: "smc", class: clsException}, {name: "brk", class: clsException},
+	{name: "hlt", class: clsException},
 	// --- Unconditional immediate branch ---
 	{name: "b", class: clsBranch, op: 0},
 	{name: "bl", class: clsBranch, op: 1},
@@ -243,6 +257,10 @@ func encode(in *insn, ops []string) (uint32, error) {
 		return encodeAddSubCarry(in.name, ops)
 	case clsCondCmp:
 		return encodeCondCmp(in.name, ops)
+	case clsSystem:
+		return encodeSystem(in.name, ops)
+	case clsException:
+		return encodeException(in.name, ops)
 	case clsBranch:
 		return encodeBranch(in, ops)
 	case clsCompareBranch:

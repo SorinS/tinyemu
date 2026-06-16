@@ -22,19 +22,49 @@ type CPU struct {
 
 	Mem *mem.PhysMemoryMap
 
-	Halted   bool // a branch to the sentinel return address stopped the core
+	// Sys holds writable system registers other than NZCV, keyed by their
+	// encoded field bits (so msr/mrs round-trip). NZCV lives in N/Z/C/V.
+	Sys map[uint32]uint64
+
+	Halted   bool   // an exception (svc/brk/hlt) or a real halt stopped the core
+	ExcType  string // "svc"/"hvc"/"smc"/"brk"/"hlt" when Halted by an exception
+	ExcImm   uint16 // the exception's immediate
 	Sentinel uint64
 }
 
 // New creates a CPU over the given physical memory.
-func New(m *mem.PhysMemoryMap) *CPU { return &CPU{Mem: m} }
+func New(m *mem.PhysMemoryMap) *CPU { return &CPU{Mem: m, Sys: map[uint32]uint64{}} }
 
 // Reset clears architectural state.
 func (c *CPU) Reset() {
 	c.X = [31]uint64{}
 	c.SP, c.PC = 0, 0
 	c.N, c.Z, c.C, c.V = false, false, false, false
-	c.Halted = false
+	c.Sys = map[uint32]uint64{}
+	c.Halted, c.ExcType, c.ExcImm = false, "", 0
+}
+
+// a64NZCVField is the encoded sysreg field (bits 19:5) of NZCV
+// (o0=1, op1=3, CRn=4, CRm=2, op2=0).
+const a64NZCVField uint32 = 1<<19 | 3<<16 | 4<<12 | 2<<8
+
+// readSysreg returns a system register's value (NZCV from the flags, else the
+// Sys map; unknown reads as 0).
+func (c *CPU) readSysreg(field uint32) uint64 {
+	if field == a64NZCVField {
+		return c.nzcv()
+	}
+	return c.Sys[field]
+}
+
+// writeSysreg writes a system register (NZCV updates the flags; else the Sys
+// map records it).
+func (c *CPU) writeSysreg(field uint32, v uint64) {
+	if field == a64NZCVField {
+		c.setFlags(v>>31&1 == 1, v>>30&1 == 1, v>>29&1 == 1, v>>28&1 == 1)
+		return
+	}
+	c.Sys[field] = v
 }
 
 // nzcv packs the flags into the architectural NZCV position (bits 31..28), the

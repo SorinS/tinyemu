@@ -78,6 +78,21 @@ func TestARM64_CarryCondCmp(t *testing.T) {
 	runDiff(t, cases)
 }
 
+// TestARM64_System covers hints, barriers, system-register move, and exception
+// generation byte-exact vs llvm-mc.
+func TestARM64_System(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"nop", "yield", "wfe", "wfi", "sev", "sevl", "hint #7",
+		"dmb sy", "dmb ish", "dmb ishst", "dsb sy", "dsb nsh", "isb",
+		"mrs x0, nzcv", "mrs x1, tpidr_el0", "mrs x2, midr_el1",
+		"mrs x3, fpcr", "mrs x4, cntvct_el0", "mrs x5, s3_3_c4_c2_0",
+		"msr nzcv, x0", "msr tpidr_el0, x1", "msr fpsr, x2",
+		"svc #0", "svc #1", "hvc #2", "smc #3", "brk #0", "brk #0xf000", "hlt #1",
+	}
+	runDiff(t, cases)
+}
+
 // runDiff asserts each instruction encodes byte-exact to llvm-mc.
 func runDiff(t *testing.T, cases []string) {
 	t.Helper()

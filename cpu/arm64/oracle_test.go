@@ -303,6 +303,11 @@ func TestARM64_NativeOracle(t *testing.T) {
 		{"cmp x1, x2", "ccmn x3, x4, #15, ne", "cset x0, mi", "cset x6, eq"},
 		{"cmp w1, w2", "ccmp w3, #5, #0, hi", "cset w0, eq", "cset w5, ne"},
 		{"subs x9, x1, x2", "ccmp x3, #0, #4, ge", "cset x0, eq"},
+		// system: hints/barriers are no-ops; mrs/msr round-trip NZCV and the
+		// EL0-accessible tpidr_el0 (read-only/EL1 regs would trap natively).
+		{"nop", "add x0, x1, x2", "dmb sy", "isb", "yield"},
+		{"msr nzcv, x1", "mrs x0, nzcv"},        // x0 = x1 & 0xF0000000
+		{"msr tpidr_el0, x1", "mrs x0, tpidr_el0"}, // x0 = x1
 		// a small straight-line sequence mixing classes
 		{"add x0, x1, x2", "mul x0, x0, x3", "eor x0, x0, x4", "lsr x0, x0, #7", "sub x0, x0, #1"},
 	}
