@@ -2401,7 +2401,7 @@ func (s *Slirp) tcpConnect(inso *Socket, conn *net.TCPConn) {
 	if raw, rerr := conn.SyscallConn(); rerr == nil {
 		dupFd := -1
 		_ = raw.Control(func(c uintptr) {
-			if d, derr := syscall.Dup(int(c)); derr == nil {
+			if d, derr := sockDup(int(c)); derr == nil {
 				dupFd = d
 			}
 		})

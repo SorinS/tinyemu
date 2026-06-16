@@ -46,6 +46,10 @@ func sockShutdownRead(fd int) error  { return syscall.Shutdown(fd, syscall.SHUT_
 func sockShutdownWrite(fd int) error { return syscall.Shutdown(fd, syscall.SHUT_WR) }
 func sockClose(fd int) error         { return syscall.Close(fd) }
 
+// sockDup duplicates a file descriptor — used by the hostfwd inbound path to
+// take ownership of an accepted connection's fd out of the Go runtime.
+func sockDup(fd int) (int, error) { return syscall.Dup(fd) }
+
 // sockSOLSocket exposes SOL_SOCKET for the rare slirp call site that
 // wants to use sockSetsockoptInt directly.
 const sockSOLSocket = syscall.SOL_SOCKET

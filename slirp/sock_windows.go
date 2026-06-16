@@ -60,3 +60,7 @@ func sockSendto(fd int, p []byte, flags int) error {
 func sockShutdownRead(fd int) error  { return syscall.Shutdown(syscall.Handle(fd), syscall.SHUT_RD) }
 func sockShutdownWrite(fd int) error { return syscall.Shutdown(syscall.Handle(fd), syscall.SHUT_WR) }
 func sockClose(fd int) error         { return syscall.Close(syscall.Handle(fd)) }
+
+// sockDup is unsupported on Windows (no fd-dup equivalent for the hostfwd
+// fd-bridge; full slirp networking needs polling support here anyway).
+func sockDup(fd int) (int, error) { return -1, syscall.EWINDOWS }
