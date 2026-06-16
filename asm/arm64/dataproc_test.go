@@ -65,6 +65,19 @@ func TestARM64_CondSelAddr(t *testing.T) {
 	runDiff(t, cases)
 }
 
+// TestARM64_CarryCondCmp covers add/subtract-with-carry and conditional
+// compare (register and immediate forms) byte-exact vs llvm-mc.
+func TestARM64_CarryCondCmp(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"adc x0, x1, x2", "adcs x0, x1, x2", "sbc x0, x1, x2", "sbcs x0, x1, x2",
+		"adc w0, w1, w2", "sbcs w3, w4, w5", "ngc x0, x1", "ngcs x3, x4",
+		"ccmp x0, x1, #0, eq", "ccmp x0, #5, #0, eq", "ccmn x0, x1, #15, ne",
+		"ccmp w0, w1, #4, lt", "ccmn x0, #31, #2, ge", "ccmp x9, #0, #0, al",
+	}
+	runDiff(t, cases)
+}
+
 // runDiff asserts each instruction encodes byte-exact to llvm-mc.
 func runDiff(t *testing.T, cases []string) {
 	t.Helper()

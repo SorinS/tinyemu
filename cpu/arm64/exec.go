@@ -16,9 +16,6 @@ func (c *CPU) Step() error {
 		return err
 	}
 	c.PC = next
-	if c.PC == c.Sentinel {
-		c.Halted = true
-	}
 	return nil
 }
 
@@ -38,6 +35,10 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 		return c.execExtr(w)
 	case (w>>24)&0x1F == 0x10:
 		return c.execAddr(w)
+	case (w>>21)&0xFF == 0xD0:
+		return c.execAddSubCarry(w)
+	case (w>>21)&0xFF == 0xD2:
+		return c.execCondCmp(w)
 	case (w>>21)&0xFF == 0xD4:
 		return c.execCondSel(w)
 	case (w>>24)&0x7F == 0x1B:
@@ -405,6 +406,55 @@ func (c *CPU) execDataProc1(w uint32) error {
 		return fmt.Errorf("arm64: bad 1-source op %08x", w)
 	}
 	c.writeX(rd, sf, false, res)
+	return nil
+}
+
+func (c *CPU) execAddSubCarry(w uint32) error {
+	sf := is64bit(w)
+	op := (w >> 30) & 1
+	s := (w >> 29) & 1
+	rm := (w >> 16) & 0x1F
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	a := c.readX(rn, sf, false)
+	b := c.readX(rm, sf, false)
+	carryIn := uint64(0)
+	if c.C {
+		carryIn = 1
+	}
+	if op == 1 { // sbc: Rn + ~Rm + C
+		b = ^b
+	}
+	res, n, z, cf, v := addWithCarry(a, b, carryIn, sf)
+	c.writeX(rd, sf, false, res)
+	if s == 1 {
+		c.setFlags(n, z, cf, v)
+	}
+	return nil
+}
+
+func (c *CPU) execCondCmp(w uint32) error {
+	sf := is64bit(w)
+	op := (w >> 30) & 1 // 0 = ccmn, 1 = ccmp
+	cond := (w >> 12) & 0xF
+	rn := (w >> 5) & 0x1F
+	nzcv := w & 0xF
+	if c.condHolds(cond) {
+		var b uint64
+		if (w>>11)&1 == 1 { // immediate comparand
+			b = uint64((w >> 16) & 0x1F)
+		} else {
+			b = c.readX((w>>16)&0x1F, sf, false)
+		}
+		carryIn := uint64(0)
+		if op == 1 { // ccmp subtracts
+			b = ^b
+			carryIn = 1
+		}
+		_, n, z, cf, v := addWithCarry(c.readX(rn, sf, false), b, carryIn, sf)
+		c.setFlags(n, z, cf, v)
+	} else { // condition false: take NZCV from the immediate
+		c.setFlags(nzcv>>3&1 == 1, nzcv>>2&1 == 1, nzcv>>1&1 == 1, nzcv&1 == 1)
+	}
 	return nil
 }
 

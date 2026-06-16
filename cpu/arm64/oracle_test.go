@@ -294,6 +294,15 @@ func TestARM64_NativeOracle(t *testing.T) {
 		{"clz x0, x1", "rbit x3, x4", "rev x5, x6", "rev16 x7, x8", "cls x9, x10"},
 		// conditional select
 		{"subs x9, x1, x2", "csel x0, x3, x4, ge", "csinc x5, x6, x7, lt", "csneg x8, x10, x11, eq"},
+		// add/subtract with carry — read the C flag set by a prior adds/subs
+		{"adds x9, x1, x2", "adc x0, x3, x4", "sbc x5, x6, x7"},
+		{"subs x9, x1, x2", "sbcs x0, x3, x4", "cset x5, cc", "cset x6, vs"},
+		{"adds w9, w1, w2", "adc w0, w3, w4"},
+		// conditional compare — chained, then materialize the flags
+		{"cmp x1, x2", "ccmp x3, x4, #0, eq", "cset x0, lt", "cset x5, ge"},
+		{"cmp x1, x2", "ccmn x3, x4, #15, ne", "cset x0, mi", "cset x6, eq"},
+		{"cmp w1, w2", "ccmp w3, #5, #0, hi", "cset w0, eq", "cset w5, ne"},
+		{"subs x9, x1, x2", "ccmp x3, #0, #4, ge", "cset x0, eq"},
 		// a small straight-line sequence mixing classes
 		{"add x0, x1, x2", "mul x0, x0, x3", "eor x0, x0, x4", "lsr x0, x0, #7", "sub x0, x0, #1"},
 	}

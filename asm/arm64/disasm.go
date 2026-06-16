@@ -24,6 +24,10 @@ func Disassemble(w uint32) (string, error) {
 		return disExtr(w), nil
 	case (w>>24)&0x1F == 0x10: // PC-relative address (adr/adrp)
 		return disAddr(w), nil
+	case (w>>21)&0xFF == 0xD0: // add/subtract with carry
+		return disAddSubCarry(w), nil
+	case (w>>21)&0xFF == 0xD2: // conditional compare
+		return disCondCmp(w), nil
 	case (w>>21)&0xFF == 0xD4: // conditional select
 		return disCondSel(w)
 	case (w>>24)&0x7F == 0x1B: // data processing, 3-source (multiply)
@@ -170,6 +174,34 @@ func disLogicalImm(w uint32) (string, error) {
 	// Rd is SP for and/orr/eor, XZR for ands; Rn is always the zero register.
 	return fmt.Sprintf("%s %s, %s, #%#x", mnem,
 		rname(rd, sf, opc != 3), rname(rn, sf, false), val), nil
+}
+
+func disAddSubCarry(w uint32) string {
+	sf := (w>>31)&1 == 1
+	names := [...]string{"adc", "adcs", "sbc", "sbcs"}
+	mnem := names[((w>>30)&1)<<1|((w>>29)&1)]
+	rm := (w >> 16) & 0x1F
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	return fmt.Sprintf("%s %s, %s, %s", mnem,
+		rname(rd, sf, false), rname(rn, sf, false), rname(rm, sf, false))
+}
+
+func disCondCmp(w uint32) string {
+	sf := (w>>31)&1 == 1
+	mnem := "ccmn"
+	if (w>>30)&1 == 1 {
+		mnem = "ccmp"
+	}
+	cond := condNames[(w>>12)&0xF]
+	rn := (w >> 5) & 0x1F
+	nzcv := w & 0xF
+	if (w>>11)&1 == 1 { // immediate form
+		imm5 := (w >> 16) & 0x1F
+		return fmt.Sprintf("%s %s, #%d, #%d, %s", mnem, rname(rn, sf, false), imm5, nzcv, cond)
+	}
+	rm := (w >> 16) & 0x1F
+	return fmt.Sprintf("%s %s, %s, #%d, %s", mnem, rname(rn, sf, false), rname(rm, sf, false), nzcv, cond)
 }
 
 func disCondSel(w uint32) (string, error) {

@@ -56,6 +56,14 @@ func expandAlias(mnem string, ops []string) (string, []string, bool) {
 		if d, ok := zeroSource(ops); ok {
 			return "orn", d, true
 		}
+	case "ngc": // ngc Xd,Xm = sbc Xd,ZR,Xm
+		if d, ok := zeroSource(ops); ok {
+			return "sbc", d, true
+		}
+	case "ngcs": // ngcs Xd,Xm = sbcs Xd,ZR,Xm
+		if d, ok := zeroSource(ops); ok {
+			return "sbcs", d, true
+		}
 	case "mul": // mul Xd,Xn,Xm = madd Xd,Xn,Xm,ZR
 		if d, ok := zeroAccum(ops); ok {
 			return "madd", d, true

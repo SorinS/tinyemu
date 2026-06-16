@@ -67,6 +67,8 @@ func TestARM64_RoundTrip(t *testing.T) {
 		"ubfx x0, x1, #4, #8", "sxtb x0, w1", "uxtb w0, w1",
 		"csel x0, x1, x2, eq", "csinc w0, w1, w2, ne", "csneg x0, x1, x2, gt",
 		"adr x0, #4", "adr x0, #-4", "adrp x0, #4096", "adrp x0, #-8192",
+		"adc x0, x1, x2", "sbcs w3, w4, w5",
+		"ccmp x0, x1, #0, eq", "ccmp x0, #5, #3, lt", "ccmn x0, x1, #15, ne",
 		"b #0", "b #8", "b #-8", "bl #16", "b.eq #8", "b.ne #-4", "b.lt #12",
 		"cbz x0, #8", "cbnz w1, #-8",
 		"ret", "ret x0", "br x1", "blr x2",

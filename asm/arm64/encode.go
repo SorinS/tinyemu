@@ -26,6 +26,8 @@ const (
 	clsExtr                    // extr
 	clsCondSel                 // csel/csinc/csinv/csneg
 	clsAddr                    // adr/adrp
+	clsAddSubCarry             // adc/adcs/sbc/sbcs
+	clsCondCmp                 // ccmp/ccmn
 )
 
 // insn is one mnemonic's encoding facts. Which fields apply depends on class.
@@ -93,6 +95,11 @@ var table = []insn{
 	{name: "csinv", class: clsCondSel}, {name: "csneg", class: clsCondSel},
 	// --- PC-relative address ---
 	{name: "adr", class: clsAddr}, {name: "adrp", class: clsAddr},
+	// --- Add/subtract with carry ---
+	{name: "adc", class: clsAddSubCarry}, {name: "adcs", class: clsAddSubCarry},
+	{name: "sbc", class: clsAddSubCarry}, {name: "sbcs", class: clsAddSubCarry},
+	// --- Conditional compare ---
+	{name: "ccmp", class: clsCondCmp}, {name: "ccmn", class: clsCondCmp},
 	// --- Unconditional immediate branch ---
 	{name: "b", class: clsBranch, op: 0},
 	{name: "bl", class: clsBranch, op: 1},
@@ -232,6 +239,10 @@ func encode(in *insn, ops []string) (uint32, error) {
 		return encodeCondSel(in.name, ops)
 	case clsAddr:
 		return encodeAddr(in.name, ops)
+	case clsAddSubCarry:
+		return encodeAddSubCarry(in.name, ops)
+	case clsCondCmp:
+		return encodeCondCmp(in.name, ops)
 	case clsBranch:
 		return encodeBranch(in, ops)
 	case clsCompareBranch:
