@@ -97,8 +97,64 @@ func expandAlias(mnem string, ops []string) (string, []string, bool) {
 	case "ubfx", "sbfx", "bfxil", "ubfiz", "sbfiz", "bfi",
 		"uxtb", "uxth", "sxtb", "sxth", "sxtw":
 		return expandBitfieldAlias(mnem, ops)
+	case "cset": // cset Xd, cond = csinc Xd, ZR, ZR, invert(cond)
+		if d, ok := csetForm("csinc", ops); ok {
+			return "csinc", d, true
+		}
+	case "csetm": // csetm Xd, cond = csinv Xd, ZR, ZR, invert(cond)
+		if d, ok := csetForm("csinv", ops); ok {
+			return "csinv", d, true
+		}
+	case "cinc": // cinc Xd, Xn, cond = csinc Xd, Xn, Xn, invert(cond)
+		if d, ok := cFromN(ops); ok {
+			return "csinc", d, true
+		}
+	case "cinv":
+		if d, ok := cFromN(ops); ok {
+			return "csinv", d, true
+		}
+	case "cneg":
+		if d, ok := cFromN(ops); ok {
+			return "csneg", d, true
+		}
 	}
 	return mnem, ops, false
+}
+
+// invertCond returns the condition whose code is the given condition's code
+// with its low bit flipped (eq<->ne, lt<->ge, …).
+func invertCond(s string) (string, bool) {
+	c, ok := condCodes[normCond(s)]
+	if !ok {
+		return "", false
+	}
+	return condNames[c^1], true
+}
+
+// csetForm builds "Xd, ZR, ZR, invert(cond)" for cset/csetm.
+func csetForm(_ string, ops []string) ([]string, bool) {
+	if len(ops) != 2 {
+		return nil, false
+	}
+	rd, ok := parseReg(ops[0])
+	inv, ok2 := invertCond(ops[1])
+	if !ok || !ok2 {
+		return nil, false
+	}
+	z := zeroReg(rd.is64)
+	return []string{ops[0], z, z, inv}, true
+}
+
+// cFromN builds "Xd, Xn, Xn, invert(cond)" for cinc/cinv/cneg.
+func cFromN(ops []string) ([]string, bool) {
+	if len(ops) != 3 {
+		return nil, false
+	}
+	inv, ok := invertCond(ops[2])
+	if !ok {
+		return nil, false
+	}
+	return []string{ops[0], ops[1], ops[1], inv}, true
 }
 
 // zeroAccum appends the zero register (of the destination's width) as the

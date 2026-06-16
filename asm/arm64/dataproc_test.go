@@ -47,6 +47,24 @@ func TestARM64_Bitfield(t *testing.T) {
 	runDiff(t, cases)
 }
 
+// TestARM64_CondSelAddr covers conditional-select (and its cset/cinc/… aliases)
+// and adr/adrp, byte-exact vs llvm-mc.
+func TestARM64_CondSelAddr(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		// conditional select
+		"csel x0, x1, x2, eq", "csel w0, w1, w2, ne", "csinc x0, x1, x2, lt",
+		"csinv x0, x1, x2, ge", "csneg x0, x1, x2, gt", "csel x0, x1, x2, hs",
+		// condition-inverting aliases
+		"cset x0, eq", "cset w0, ne", "csetm x0, lt", "cinc x0, x1, ge",
+		"cinv x0, x1, mi", "cneg x0, x1, pl", "cset x5, hi",
+		// PC-relative address (numeric offsets)
+		"adr x0, #0", "adr x0, #4", "adr x0, #-4", "adr x9, #1048572",
+		"adrp x0, #0", "adrp x0, #4096", "adrp x0, #-8192", "adrp x3, #4198400",
+	}
+	runDiff(t, cases)
+}
+
 // runDiff asserts each instruction encodes byte-exact to llvm-mc.
 func runDiff(t *testing.T, cases []string) {
 	t.Helper()

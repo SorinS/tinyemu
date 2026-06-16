@@ -24,6 +24,8 @@ const (
 	clsDataProc1               // rbit/rev/rev16/rev32/clz/cls (1-source)
 	clsBitfield                // ubfm/sbfm/bfm
 	clsExtr                    // extr
+	clsCondSel                 // csel/csinc/csinv/csneg
+	clsAddr                    // adr/adrp
 )
 
 // insn is one mnemonic's encoding facts. Which fields apply depends on class.
@@ -86,6 +88,11 @@ var table = []insn{
 	// --- Bitfield + extract ---
 	{name: "sbfm", class: clsBitfield}, {name: "bfm", class: clsBitfield},
 	{name: "ubfm", class: clsBitfield}, {name: "extr", class: clsExtr},
+	// --- Conditional select ---
+	{name: "csel", class: clsCondSel}, {name: "csinc", class: clsCondSel},
+	{name: "csinv", class: clsCondSel}, {name: "csneg", class: clsCondSel},
+	// --- PC-relative address ---
+	{name: "adr", class: clsAddr}, {name: "adrp", class: clsAddr},
 	// --- Unconditional immediate branch ---
 	{name: "b", class: clsBranch, op: 0},
 	{name: "bl", class: clsBranch, op: 1},
@@ -221,6 +228,10 @@ func encode(in *insn, ops []string) (uint32, error) {
 		return encodeBitfield(in.name, ops)
 	case clsExtr:
 		return encodeExtr(ops)
+	case clsCondSel:
+		return encodeCondSel(in.name, ops)
+	case clsAddr:
+		return encodeAddr(in.name, ops)
 	case clsBranch:
 		return encodeBranch(in, ops)
 	case clsCompareBranch:

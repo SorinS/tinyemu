@@ -22,6 +22,10 @@ func Disassemble(w uint32) (string, error) {
 		return disBitfield(w)
 	case (w>>23)&0x3F == 0x27: // extract (extr)
 		return disExtr(w), nil
+	case (w>>24)&0x1F == 0x10: // PC-relative address (adr/adrp)
+		return disAddr(w), nil
+	case (w>>21)&0xFF == 0xD4: // conditional select
+		return disCondSel(w)
 	case (w>>24)&0x7F == 0x1B: // data processing, 3-source (multiply)
 		return disMul(w)
 	case (w>>21)&0x3FF == 0x0D6: // data processing, 2-source
@@ -166,6 +170,38 @@ func disLogicalImm(w uint32) (string, error) {
 	// Rd is SP for and/orr/eor, XZR for ands; Rn is always the zero register.
 	return fmt.Sprintf("%s %s, %s, #%#x", mnem,
 		rname(rd, sf, opc != 3), rname(rn, sf, false), val), nil
+}
+
+func disCondSel(w uint32) (string, error) {
+	sf := (w>>31)&1 == 1
+	rm := (w >> 16) & 0x1F
+	cond := condNames[(w>>12)&0xF]
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	var mnem string
+	switch ((w>>30)&1)<<1 | ((w>>10)&1) {
+	case 0b00:
+		mnem = "csel"
+	case 0b01:
+		mnem = "csinc"
+	case 0b10:
+		mnem = "csinv"
+	case 0b11:
+		mnem = "csneg"
+	}
+	return fmt.Sprintf("%s %s, %s, %s, %s", mnem,
+		rname(rd, sf, false), rname(rn, sf, false), rname(rm, sf, false), cond), nil
+}
+
+func disAddr(w uint32) string {
+	immlo := (w >> 29) & 3
+	immhi := (w >> 5) & 0x7FFFF
+	imm := signExtend(immhi<<2|immlo, 21)
+	rd := w & 0x1F
+	if (w>>31)&1 == 1 {
+		return fmt.Sprintf("adrp %s, #%d", rname(rd, true, false), imm<<12)
+	}
+	return fmt.Sprintf("adr %s, #%d", rname(rd, true, false), imm)
 }
 
 func disBitfield(w uint32) (string, error) {
