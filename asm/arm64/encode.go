@@ -50,9 +50,17 @@ var table = []insn{
 	{name: "movn", class: clsMoveWide, opc: 0},
 	{name: "movz", class: clsMoveWide, opc: 2},
 	{name: "movk", class: clsMoveWide, opc: 3},
-	// --- Load/store register, unsigned offset ---
-	{name: "str", class: clsLoadStore, op: 0},
-	{name: "ldr", class: clsLoadStore, op: 1},
+	// --- Load/store register (size/sign variants; addressing in loadstore.go) ---
+	{name: "str", class: clsLoadStore}, {name: "ldr", class: clsLoadStore},
+	{name: "strb", class: clsLoadStore}, {name: "ldrb", class: clsLoadStore},
+	{name: "strh", class: clsLoadStore}, {name: "ldrh", class: clsLoadStore},
+	{name: "ldrsb", class: clsLoadStore}, {name: "ldrsh", class: clsLoadStore},
+	{name: "ldrsw", class: clsLoadStore},
+	{name: "stur", class: clsLoadStore}, {name: "ldur", class: clsLoadStore},
+	{name: "sturb", class: clsLoadStore}, {name: "ldurb", class: clsLoadStore},
+	{name: "sturh", class: clsLoadStore}, {name: "ldurh", class: clsLoadStore},
+	{name: "ldursb", class: clsLoadStore}, {name: "ldursh", class: clsLoadStore},
+	{name: "ldursw", class: clsLoadStore},
 	// --- Unconditional immediate branch ---
 	{name: "b", class: clsBranch, op: 0},
 	{name: "bl", class: clsBranch, op: 1},
@@ -175,7 +183,7 @@ func encode(in *insn, ops []string) (uint32, error) {
 	case clsMoveWide:
 		return encodeMoveWide(in, ops)
 	case clsLoadStore:
-		return encodeLoadStore(in, ops)
+		return encodeLoadStore(in.name, ops)
 	case clsBranch:
 		return encodeBranch(in, ops)
 	case clsCompareBranch:
@@ -352,53 +360,6 @@ func encodeMoveWide(in *insn, ops []string) (uint32, error) {
 	return 0x12800000 | sfBit(rd) | in.opc<<29 | hw<<21 | uint32(imm)<<5 | rd.num, nil
 }
 
-func encodeLoadStore(in *insn, ops []string) (uint32, error) {
-	if len(ops) != 2 {
-		return 0, fmt.Errorf("expected 2 operands")
-	}
-	rt, ok := parseReg(ops[0])
-	if !ok {
-		return 0, fmt.Errorf("bad register operand")
-	}
-	base, imm, err := parseMem(ops[1])
-	if err != nil {
-		return 0, err
-	}
-	// size: x→3 (8-byte), w→2 (4-byte). The unsigned offset is scaled by the
-	// access size, so the encoded imm12 = byteOffset / size.
-	var size uint32 = 2
-	scale := int64(4)
-	if rt.is64 {
-		size, scale = 3, 8
-	}
-	if imm < 0 || imm%scale != 0 || imm/scale > 0xFFF {
-		return 0, fmt.Errorf("load/store offset %d not a multiple of %d in range", imm, scale)
-	}
-	imm12 := uint32(imm / scale)
-	return 0x39000000 | size<<30 | in.op<<22 | imm12<<10 | base.num<<5 | rt.num, nil
-}
-
-// parseMem parses a "[Xn]" or "[Xn, #imm]" unsigned-offset memory operand.
-func parseMem(s string) (base reg, imm int64, err error) {
-	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]") {
-		return reg{}, 0, fmt.Errorf("bad memory operand %q", s)
-	}
-	inner := strings.TrimSpace(s[1 : len(s)-1])
-	parts := strings.SplitN(inner, ",", 2)
-	b, ok := parseReg(parts[0])
-	if !ok {
-		return reg{}, 0, fmt.Errorf("bad base register in %q", s)
-	}
-	if len(parts) == 2 {
-		v, ok := parseImm(parts[1])
-		if !ok {
-			return reg{}, 0, fmt.Errorf("bad offset in %q (only [base] / [base, #imm] supported)", s)
-		}
-		imm = v
-	}
-	return b, imm, nil
-}
 
 func encodeBranch(in *insn, ops []string) (uint32, error) {
 	if len(ops) != 1 {

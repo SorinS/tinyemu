@@ -22,7 +22,7 @@ func Disassemble(w uint32) (string, error) {
 		return disAddSubReg(w), nil
 	case (w>>24)&0x1F == 0x0A: // logical shifted register
 		return disLogicalReg(w), nil
-	case (w>>24)&0x3F == 0x39: // load/store register, unsigned offset
+	case (w>>24)&0x3F == 0x39 || (w>>24)&0x3F == 0x38: // load/store register
 		return disLoadStore(w)
 	case (w>>26)&0x1F == 0x05: // unconditional branch immediate (b/bl)
 		return disBranchImm(w), nil
@@ -180,34 +180,124 @@ func disMoveWide(w uint32) (string, error) {
 	return out, nil
 }
 
+// lsSuffix reverses lsForm: from (size, opc) it gives the mnemonic suffix
+// (b/h/sb/sh/sw/""), the data-register width, and whether it is a store.
+func lsSuffix(size, opc uint32) (suffix string, rt64, store, ok bool) {
+	switch opc {
+	case 0: // store
+		switch size {
+		case 0:
+			return "b", false, true, true
+		case 1:
+			return "h", false, true, true
+		case 2:
+			return "", false, true, true
+		case 3:
+			return "", true, true, true
+		}
+	case 1: // load, zero-extend
+		switch size {
+		case 0:
+			return "b", false, false, true
+		case 1:
+			return "h", false, false, true
+		case 2:
+			return "", false, false, true
+		case 3:
+			return "", true, false, true
+		}
+	case 2: // load, sign-extend to 64
+		switch size {
+		case 0:
+			return "sb", true, false, true
+		case 1:
+			return "sh", true, false, true
+		case 2:
+			return "sw", true, false, true
+		}
+	case 3: // load, sign-extend to 32
+		switch size {
+		case 0:
+			return "sb", false, false, true
+		case 1:
+			return "sh", false, false, true
+		}
+	}
+	return "", false, false, false
+}
+
+// lsName builds a load/store mnemonic from the store flag and the suffix.
+func lsName(store bool, prefixLoad, prefixStore, suffix string) string {
+	if store {
+		return prefixStore + suffix
+	}
+	return prefixLoad + suffix
+}
+
 func disLoadStore(w uint32) (string, error) {
 	size := (w >> 30) & 3
 	opc := (w >> 22) & 3
-	imm12 := (w >> 10) & 0xFFF
 	rn := (w >> 5) & 0x1F
 	rt := w & 0x1F
-	if size != 2 && size != 3 {
-		return "", fmt.Errorf("arm64 disasm: load/store size %d not in slice (%08x)", size, w)
+	suffix, rt64, store, ok := lsSuffix(size, opc)
+	if !ok {
+		return "", fmt.Errorf("arm64 disasm: load/store size/opc %d/%d not in slice (%08x)", size, opc, w)
 	}
-	is64 := size == 3
-	var mnem string
-	switch opc {
-	case 0:
-		mnem = "str"
-	case 1:
-		mnem = "ldr"
+	rtName := rname(rt, rt64, false)
+	base := rname(rn, true, true)
+
+	if (w>>24)&1 == 1 { // bits[25:24]=01 → unsigned offset
+		imm12 := (w >> 10) & 0xFFF
+		mem := fmt.Sprintf("[%s]", base)
+		if imm12 != 0 {
+			mem = fmt.Sprintf("[%s, #%d]", base, imm12*(uint32(1)<<size))
+		}
+		return fmt.Sprintf("%s %s, %s", lsName(store, "ldr", "str", suffix), rtName, mem), nil
+	}
+	// bits[25:24]=00 → register offset, or imm9 (unscaled / pre / post)
+	if (w>>21)&1 == 1 && (w>>10)&3 == 0b10 {
+		return disLoadStoreReg(w, store, suffix, rtName, base, size)
+	}
+	imm9 := signExtend((w>>12)&0x1FF, 9)
+	switch (w >> 10) & 3 {
+	case 0b00: // unscaled (stur/ldur)
+		mem := fmt.Sprintf("[%s]", base)
+		if imm9 != 0 {
+			mem = fmt.Sprintf("[%s, #%d]", base, imm9)
+		}
+		return fmt.Sprintf("%s %s, %s", lsName(store, "ldur", "stur", suffix), rtName, mem), nil
+	case 0b01: // post-index
+		return fmt.Sprintf("%s %s, [%s], #%d", lsName(store, "ldr", "str", suffix), rtName, base, imm9), nil
+	case 0b11: // pre-index
+		return fmt.Sprintf("%s %s, [%s, #%d]!", lsName(store, "ldr", "str", suffix), rtName, base, imm9), nil
+	}
+	return "", fmt.Errorf("arm64 disasm: load/store form %08x", w)
+}
+
+func disLoadStoreReg(w uint32, store bool, suffix, rtName, base string, size uint32) (string, error) {
+	rm := (w >> 16) & 0x1F
+	option := (w >> 13) & 7
+	s := (w >> 12) & 1
+	idx := rname(rm, option&1 == 1, false) // option[0]=1 ⇒ 64-bit index
+	var ext string
+	switch option {
+	case 0b011: // lsl / uxtx — rendered as lsl, omitted entirely when S=0
+		if s == 1 {
+			ext = fmt.Sprintf(", lsl #%d", size)
+		}
+	case 0b010:
+		ext = ", uxtw"
+	case 0b110:
+		ext = ", sxtw"
+	case 0b111:
+		ext = ", sxtx"
 	default:
-		return "", fmt.Errorf("arm64 disasm: load/store opc %d not in slice (%08x)", opc, w)
+		return "", fmt.Errorf("arm64 disasm: bad index extend %d (%08x)", option, w)
 	}
-	scale := uint32(4)
-	if is64 {
-		scale = 8
+	if s == 1 && option != 0b011 {
+		ext += fmt.Sprintf(" #%d", size)
 	}
-	mem := fmt.Sprintf("[%s]", rname(rn, true, true))
-	if imm12 != 0 {
-		mem = fmt.Sprintf("[%s, #%d]", rname(rn, true, true), imm12*scale) // byte offset, decimal
-	}
-	return fmt.Sprintf("%s %s, %s", mnem, rname(rt, is64, false), mem), nil
+	return fmt.Sprintf("%s %s, [%s, %s%s]", lsName(store, "ldr", "str", suffix), rtName, base, idx, ext), nil
 }
 
 func disBranchImm(w uint32) string {
