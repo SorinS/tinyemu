@@ -94,7 +94,7 @@ case $NAME in
             KERNEL="$ROOT/bin/alpine64/vmlinuz"
         fi
         INITRD="$ROOT/bin/alpine64/initrd.nonlplug"
-        ISO="$ROOT/bin/alpine/alpine-standard-3.23.4-x86_64.iso"
+        ISO="$ROOT/iso/alpine-standard-3.23.4-x86_64.iso"; [ -f "$ISO" ] || ISO="$ROOT/bin/alpine/alpine-standard-3.23.4-x86_64.iso"
         MEM=512
         # modprobe.blacklist: keep the kernel from auto-loading drivers
         # for hardware we don't emulate. ata_piix in particular has a
@@ -118,7 +118,7 @@ case $NAME in
             KERNEL="$ROOT/bin/alpine64-debug/vmlinuz-virt"
         fi
         INITRD="$ROOT/bin/alpine64-debug/initramfs-virt"
-        ISO="$ROOT/bin/iso/alpine-virt-3.19.1-x86-64.iso"
+        ISO="$ROOT/iso/alpine-virt-3.19.1-x86-64.iso"; [ -f "$ISO" ] || ISO="$ROOT/bin/iso/alpine-virt-3.19.1-x86-64.iso"
         MEM=512
         # Matches run86_iso.sh's alpine path: attach the Alpine ISO as
         # virtio-blk-pci /dev/vda, tell Alpine's init it's the boot

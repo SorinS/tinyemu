@@ -12,7 +12,7 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ISO="$ROOT/bin/TinyCore.iso"
+ISO="$ROOT/iso/TinyCore.iso"; [ -f "$ISO" ] || ISO="$ROOT/bin/TinyCore.iso"
 OUT="$ROOT/bin/tinycore"
 KERNEL="$OUT/vmlinuz"
 CORE="$OUT/core.gz"

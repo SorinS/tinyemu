@@ -7,7 +7,6 @@ tinyemu-*/
 
 # IDE
 .idea/
-.vscode/
 
 # OS files
 .DS_Store
@@ -15,7 +14,14 @@ tinyemu-*/
 # Other
 /tmp/
 bin/
+specs/
 
 # Local-only advisor review report (not for the repo)
 docs/tinyemu-go-advisor-report.md
 
+
+# Large downloaded OS ISOs (runtime media for Alpine; re-fetchable)
+/iso/
+
+# Vendored reference emulators/test-suites (own git repos; not for this tree)
+/helpers/

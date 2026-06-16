@@ -268,7 +268,8 @@ benchmark-cpu-riscv: ## Run RISC-V CPU benchmarks
 .PHONY: clean
 clean: ## Remove build artifacts
 	$(call echo,"Cleaning build artifacts")
-	rm -rf $(BUILD_DIR)
+	rm -f $(BUILD_DIR)/*.bin
+	rm -f $(BUILD_DIR)/*.exe
 	go clean -cache
 
 # ------------------------------------------------------------------------------

@@ -100,7 +100,7 @@ echo "    curl http://127.0.0.1:${HOSTPORT}/"
 echo "Stop with Ctrl-C. (The go-boot '>' shell stays interactive too.)"
 echo
 
-LOG=$(mktemp -t goboot_serve)
+LOG=$(mktemp "${TMPDIR:-/tmp}/goboot_serve.XXXXXX")
 trap 'rm -f "$LOG"' EXIT
 
 # Feed the two shell commands once the firmware/app is up, then hand the

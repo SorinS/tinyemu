@@ -13,4 +13,9 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="${1:--}"
 STEPS="${2:-0}"
-exec go run "$ROOT/cmd/temu" -asm-steps "$STEPS" -run-asm "$SRC"
+
+OS=$(uname -s | tr 'A-Z' 'a-z')
+ARCH=$(uname -m)
+TEMU=bin/temu.${OS}-${ARCH}.bin
+[ ! -x "$TEMU" ] && echo "$TEMU not found, did you run make?" && exit 1
+$TEMU -asm-steps "$STEPS" -run-asm "$SRC"

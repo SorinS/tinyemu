@@ -17,7 +17,7 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ISO="$ROOT/bin/alpine/alpine-standard-3.23.4-x86_64.iso"
+ISO="$ROOT/iso/alpine-standard-3.23.4-x86_64.iso"; [ -f "$ISO" ] || ISO="$ROOT/bin/alpine/alpine-standard-3.23.4-x86_64.iso"
 OUT="$ROOT/bin/alpine64"
 KERNEL="$OUT/vmlinuz"
 VMLINUX="$OUT/vmlinux"

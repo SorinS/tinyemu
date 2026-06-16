@@ -68,12 +68,12 @@ esac
 
 case $NAME in
     tinycore)
-        ISO="$ROOT/bin/TinyCore.iso"
+        ISO="$ROOT/iso/TinyCore.iso"; [ -f "$ISO" ] || ISO="$ROOT/bin/TinyCore.iso"
         MEM=256
         APPEND="console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable text superuser"
         ;;
     alpine)
-        ISO="$ROOT/bin/alpine.iso"
+        ISO="$ROOT/iso/alpine.iso"; [ -f "$ISO" ] || ISO="$ROOT/bin/alpine.iso"
         MEM=512
         APPEND="console=ttyS0,115200 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable libata.force=disable ide=disable alpine_dev=vda:iso9660 usbdelay=1 modules=virtio_pci,virtio_blk,virtio_net,loop,squashfs"
         ;;
