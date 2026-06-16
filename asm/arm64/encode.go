@@ -104,6 +104,9 @@ func assembleWord(src string) (uint64, error) {
 		}
 		return uint64(w), nil
 	}
+	if nm, no, ok := expandAlias(mnem, ops); ok {
+		mnem, ops = nm, no
+	}
 	in, ok := byName[mnem]
 	if !ok {
 		return 0, fmt.Errorf("arm64: unknown instruction %q", mnem)

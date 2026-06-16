@@ -19,6 +19,35 @@ func requireLLVMMC(t *testing.T) {
 	}
 }
 
+// TestARM64_Aliases checks the alias rewrites (mov/cmp/cmn/tst/neg/negs/mvn)
+// encode byte-for-byte to the same base instructions llvm-mc emits.
+func TestARM64_Aliases(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"mov x0, x1", "mov w0, w1", "mov x0, sp", "mov sp, x0",
+		"cmp x0, x1", "cmp x0, #4", "cmp w0, w1, lsl #2", "cmp sp, #16",
+		"cmn x0, x1", "cmn x0, #8",
+		"tst x0, x1", "tst x0, #0xff", "tst w0, #0xf",
+		"neg x0, x1", "neg x0, x1, lsl #3", "neg w0, w1",
+		"negs x0, x1", "mvn x0, x1", "mvn w5, w6",
+	}
+	for _, src := range cases {
+		want, ok := mcEncode(t, src)
+		if !ok {
+			t.Logf("skip %q", src)
+			continue
+		}
+		got, err := Assemble(src)
+		if err != nil {
+			t.Errorf("%q: %v", src, err)
+			continue
+		}
+		if string(got) != string(want) {
+			t.Errorf("%-24q got % x, llvm % x", src, got, want)
+		}
+	}
+}
+
 var encRe = regexp.MustCompile(`encoding:\s*\[([^\]]*)\]`)
 
 // mcEncode assembles one instruction with llvm-mc (AArch64) and returns its 4
