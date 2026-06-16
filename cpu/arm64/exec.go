@@ -1,0 +1,530 @@
+package arm64
+
+import (
+	"fmt"
+	"math/bits"
+)
+
+// Step fetches, decodes, and executes one instruction.
+func (c *CPU) Step() error {
+	word, err := c.Mem.Read32(c.PC)
+	if err != nil {
+		return err
+	}
+	next := c.PC + 4
+	if err := c.exec(word, &next); err != nil {
+		return err
+	}
+	c.PC = next
+	if c.PC == c.Sentinel {
+		c.Halted = true
+	}
+	return nil
+}
+
+// exec decodes and executes one instruction word. next points at the default
+// fall-through address (PC+4); branches overwrite it.
+func (c *CPU) exec(w uint32, next *uint64) error {
+	switch {
+	case (w>>23)&0x3F == 0x22:
+		return c.execAddSubImm(w)
+	case (w>>23)&0x3F == 0x24:
+		return c.execLogicalImm(w)
+	case (w>>23)&0x3F == 0x25:
+		return c.execMoveWide(w)
+	case (w>>23)&0x3F == 0x26:
+		return c.execBitfield(w)
+	case (w>>23)&0x3F == 0x27:
+		return c.execExtr(w)
+	case (w>>24)&0x1F == 0x10:
+		return c.execAddr(w)
+	case (w>>21)&0xFF == 0xD4:
+		return c.execCondSel(w)
+	case (w>>24)&0x7F == 0x1B:
+		return c.execMul(w)
+	case (w>>21)&0x3FF == 0x0D6:
+		return c.execDataProc2(w)
+	case (w>>21)&0x3FF == 0x2D6:
+		return c.execDataProc1(w)
+	case (w>>24)&0x1F == 0x0B:
+		return c.execAddSubReg(w)
+	case (w>>24)&0x1F == 0x0A:
+		return c.execLogicalReg(w)
+	case (w>>24)&0x3F == 0x38 || (w>>24)&0x3F == 0x39:
+		return c.execLoadStore(w)
+	case (w>>25)&0x1F == 0x14:
+		return c.execPair(w)
+	case (w>>26)&0x1F == 0x05:
+		return c.execBranchImm(w, next)
+	case (w>>24)&0xFF == 0x54:
+		return c.execBranchCond(w, next)
+	case (w>>25)&0x3F == 0x1A:
+		return c.execCompareBranch(w, next)
+	case (w>>25)&0x7F == 0x6B:
+		return c.execBranchReg(w, next)
+	}
+	return fmt.Errorf("arm64: unimplemented instruction %08x at %#x", w, c.PC)
+}
+
+func is64bit(w uint32) bool { return (w>>31)&1 == 1 }
+
+func (c *CPU) execAddSubImm(w uint32) error {
+	sf := is64bit(w)
+	op := (w >> 30) & 1
+	s := (w >> 29) & 1
+	sh := (w >> 22) & 1
+	imm := uint64((w >> 10) & 0xFFF)
+	if sh == 1 {
+		imm <<= 12
+	}
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	a := c.readX(rn, sf, true) // Rn may be SP
+	b := imm
+	carry := uint64(0)
+	if op == 1 { // sub
+		b = ^b
+		carry = 1
+	}
+	res, n, z, cf, v := addWithCarry(a, b, carry, sf)
+	c.writeX(rd, sf, s == 0, res) // Rd is SP for add/sub, ZR for adds/subs
+	if s == 1 {
+		c.setFlags(n, z, cf, v)
+	}
+	return nil
+}
+
+func (c *CPU) execAddSubReg(w uint32) error {
+	sf := is64bit(w)
+	op := (w >> 30) & 1
+	s := (w >> 29) & 1
+	rm := (w >> 16) & 0x1F
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	width := widthOf(sf)
+	var a, b uint64
+	rdSP := false
+	if (w>>21)&1 == 1 { // extended register (SP-capable)
+		option := (w >> 13) & 7
+		imm3 := (w >> 10) & 7
+		a = c.readX(rn, sf, true)
+		b = extendReg(c.readX(rm, true, false), option, imm3)
+		if !sf {
+			b &= 0xFFFFFFFF
+		}
+		rdSP = s == 0
+	} else { // shifted register
+		shift := (w >> 22) & 3
+		imm6 := (w >> 10) & 0x3F
+		a = c.readX(rn, sf, false)
+		b = shiftReg(c.readX(rm, sf, false), shift, imm6, width)
+	}
+	carry := uint64(0)
+	if op == 1 {
+		b = ^b
+		carry = 1
+	}
+	res, n, z, cf, v := addWithCarry(a, b, carry, sf)
+	if s == 1 {
+		rdSP = false // adds/subs write ZR
+		c.setFlags(n, z, cf, v)
+	}
+	c.writeX(rd, sf, rdSP, res)
+	return nil
+}
+
+func (c *CPU) execLogicalImm(w uint32) error {
+	sf := is64bit(w)
+	opc := (w >> 29) & 3
+	nbit := (w >> 22) & 1
+	immr := (w >> 16) & 0x3F
+	imms := (w >> 10) & 0x3F
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	regSize := int(widthOf(sf))
+	imm, ok := decodeBitmask(nbit, imms, immr, regSize)
+	if !ok {
+		return fmt.Errorf("arm64: bad logical immediate %08x", w)
+	}
+	a := c.readX(rn, sf, false)
+	res := c.logicalOp(opc, a, imm, sf)
+	c.writeX(rd, sf, opc != 3, res) // and/orr/eor may target SP; ands targets ZR
+	return nil
+}
+
+func (c *CPU) execLogicalReg(w uint32) error {
+	sf := is64bit(w)
+	opc := (w >> 29) & 3
+	nbit := (w >> 21) & 1
+	shift := (w >> 22) & 3
+	rm := (w >> 16) & 0x1F
+	imm6 := (w >> 10) & 0x3F
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	b := shiftReg(c.readX(rm, sf, false), shift, imm6, widthOf(sf))
+	if nbit == 1 {
+		b = ^b // bic/orn/eon/bics
+	}
+	a := c.readX(rn, sf, false)
+	res := c.logicalOp(opc, a, b, sf)
+	c.writeX(rd, sf, false, res)
+	return nil
+}
+
+// logicalOp applies and/orr/eor/ands; ands (opc 3) also sets N/Z (C=V=0).
+func (c *CPU) logicalOp(opc uint32, a, b uint64, sf bool) uint64 {
+	var res uint64
+	switch opc {
+	case 0: // and / bic
+		res = a & b
+	case 1: // orr / orn
+		res = a | b
+	case 2: // eor / eon
+		res = a ^ b
+	case 3: // ands / bics
+		res = a & b
+	}
+	if !sf {
+		res &= 0xFFFFFFFF
+	}
+	if opc == 3 {
+		n := res>>(widthOf(sf)-1)&1 != 0
+		c.setFlags(n, res == 0, false, false)
+	}
+	return res
+}
+
+func (c *CPU) execMoveWide(w uint32) error {
+	sf := is64bit(w)
+	opc := (w >> 29) & 3
+	hw := (w >> 21) & 3
+	imm16 := uint64((w >> 5) & 0xFFFF)
+	rd := w & 0x1F
+	shift := hw * 16
+	switch opc {
+	case 0: // movn
+		c.writeX(rd, sf, false, ^(imm16 << shift))
+	case 2: // movz
+		c.writeX(rd, sf, false, imm16<<shift)
+	case 3: // movk — keep the other 16-bit fields
+		old := c.readX(rd, sf, false)
+		old &^= 0xFFFF << shift
+		c.writeX(rd, sf, false, old|imm16<<shift)
+	default:
+		return fmt.Errorf("arm64: bad move-wide %08x", w)
+	}
+	return nil
+}
+
+func (c *CPU) execBitfield(w uint32) error {
+	sf := is64bit(w)
+	opc := (w >> 29) & 3
+	immr := (w >> 16) & 0x3F
+	imms := (w >> 10) & 0x3F
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	width := widthOf(sf)
+	src := c.readX(rn, sf, false)
+	wmask, tmask := bfmMasks(width, imms, immr)
+	rotated := rorWidth(src, immr&(width-1), width)
+	var bot, top uint64
+	switch opc {
+	case 0: // sbfm
+		bot = rotated & wmask
+		if (src>>imms)&1 == 1 {
+			top = ^uint64(0)
+		}
+	case 1: // bfm
+		dst := c.readX(rd, sf, false)
+		bot = (dst &^ wmask) | (rotated & wmask)
+		top = dst
+	case 2: // ubfm
+		bot = rotated & wmask
+	default:
+		return fmt.Errorf("arm64: bad bitfield %08x", w)
+	}
+	res := (top &^ tmask) | (bot & tmask)
+	c.writeX(rd, sf, false, res)
+	return nil
+}
+
+func (c *CPU) execExtr(w uint32) error {
+	sf := is64bit(w)
+	rm := (w >> 16) & 0x1F
+	lsb := (w >> 10) & 0x3F
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	width := widthOf(sf)
+	hi := c.readX(rn, sf, false)
+	lo := c.readX(rm, sf, false)
+	var res uint64
+	if lsb == 0 {
+		res = lo
+	} else {
+		res = (lo >> lsb) | (hi << (width - lsb))
+	}
+	c.writeX(rd, sf, false, res)
+	return nil
+}
+
+func (c *CPU) execMul(w uint32) error {
+	sf := is64bit(w)
+	op31 := (w >> 21) & 7
+	o0 := (w >> 15) & 1
+	rm := (w >> 16) & 0x1F
+	ra := (w >> 10) & 0x1F
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	switch op31<<1 | o0 {
+	case 0b0000, 0b0001: // madd / msub
+		n := c.readX(rn, sf, false)
+		m := c.readX(rm, sf, false)
+		a := c.readX(ra, sf, false)
+		prod := n * m
+		if o0 == 0 {
+			c.writeX(rd, sf, false, a+prod)
+		} else {
+			c.writeX(rd, sf, false, a-prod)
+		}
+	case 0b0010, 0b0011: // smaddl / smsubl
+		n := int64(int32(c.readX(rn, false, false)))
+		m := int64(int32(c.readX(rm, false, false)))
+		a := int64(c.readX(ra, true, false))
+		prod := n * m
+		if o0 == 0 {
+			c.writeX(rd, true, false, uint64(a+prod))
+		} else {
+			c.writeX(rd, true, false, uint64(a-prod))
+		}
+	case 0b1010, 0b1011: // umaddl / umsubl
+		n := uint64(uint32(c.readX(rn, false, false)))
+		m := uint64(uint32(c.readX(rm, false, false)))
+		a := c.readX(ra, true, false)
+		prod := n * m
+		if o0 == 0 {
+			c.writeX(rd, true, false, a+prod)
+		} else {
+			c.writeX(rd, true, false, a-prod)
+		}
+	case 0b0100: // smulh
+		hi, _ := bits.Mul64(c.readX(rn, true, false), c.readX(rm, true, false))
+		// signed high: adjust the unsigned high product for the sign terms.
+		a := c.readX(rn, true, false)
+		b := c.readX(rm, true, false)
+		shi := int64(hi)
+		if a>>63 != 0 {
+			shi -= int64(b)
+		}
+		if b>>63 != 0 {
+			shi -= int64(a)
+		}
+		c.writeX(rd, true, false, uint64(shi))
+	case 0b1100: // umulh
+		hi, _ := bits.Mul64(c.readX(rn, true, false), c.readX(rm, true, false))
+		c.writeX(rd, true, false, hi)
+	default:
+		return fmt.Errorf("arm64: bad multiply %08x", w)
+	}
+	return nil
+}
+
+func (c *CPU) execDataProc2(w uint32) error {
+	sf := is64bit(w)
+	rm := (w >> 16) & 0x1F
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	width := widthOf(sf)
+	a := c.readX(rn, sf, false)
+	b := c.readX(rm, sf, false)
+	var res uint64
+	switch (w >> 10) & 0x3F {
+	case 0x02: // udiv
+		if b == 0 {
+			res = 0
+		} else {
+			res = a / b
+		}
+	case 0x03: // sdiv
+		res = sdiv(a, b, sf)
+	case 0x08: // lslv
+		res = shiftReg(a, 0, uint32(b)%width, width)
+	case 0x09: // lsrv
+		res = shiftReg(a, 1, uint32(b)%width, width)
+	case 0x0A: // asrv
+		res = shiftReg(a, 2, uint32(b)%width, width)
+	case 0x0B: // rorv
+		res = shiftReg(a, 3, uint32(b)%width, width)
+	default:
+		return fmt.Errorf("arm64: bad 2-source op %08x", w)
+	}
+	c.writeX(rd, sf, false, res)
+	return nil
+}
+
+func sdiv(a, b uint64, sf bool) uint64 {
+	if b == 0 {
+		return 0
+	}
+	if sf {
+		x, y := int64(a), int64(b)
+		if x == -1<<63 && y == -1 {
+			return uint64(x) // INT_MIN / -1 overflows → INT_MIN
+		}
+		return uint64(x / y)
+	}
+	x, y := int32(a), int32(b)
+	if x == -1<<31 && y == -1 {
+		return uint64(uint32(x))
+	}
+	return uint64(uint32(x / y))
+}
+
+func (c *CPU) execDataProc1(w uint32) error {
+	sf := is64bit(w)
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	width := widthOf(sf)
+	a := c.readX(rn, sf, false)
+	var res uint64
+	switch (w >> 10) & 0x3F {
+	case 0x00: // rbit
+		res = bits.Reverse64(a)
+		if !sf {
+			res >>= 32
+		}
+	case 0x01: // rev16
+		res = rev16(a, width)
+	case 0x02: // rev32 (64-bit) or rev (32-bit)
+		if sf {
+			res = rev32in64(a)
+		} else {
+			res = uint64(bits.ReverseBytes32(uint32(a)))
+		}
+	case 0x03: // rev (64-bit)
+		res = bits.ReverseBytes64(a)
+	case 0x04: // clz
+		if sf {
+			res = uint64(bits.LeadingZeros64(a))
+		} else {
+			res = uint64(bits.LeadingZeros32(uint32(a)))
+		}
+	case 0x05: // cls
+		res = uint64(countLeadingSign(a, width))
+	default:
+		return fmt.Errorf("arm64: bad 1-source op %08x", w)
+	}
+	c.writeX(rd, sf, false, res)
+	return nil
+}
+
+func (c *CPU) execCondSel(w uint32) error {
+	sf := is64bit(w)
+	op := (w >> 30) & 1
+	op2 := (w >> 10) & 1
+	cond := (w >> 12) & 0xF
+	rm := (w >> 16) & 0x1F
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	n := c.readX(rn, sf, false)
+	m := c.readX(rm, sf, false)
+	var res uint64
+	if c.condHolds(cond) {
+		res = n
+	} else {
+		switch op<<1 | op2 {
+		case 0b00: // csel
+			res = m
+		case 0b01: // csinc
+			res = m + 1
+		case 0b10: // csinv
+			res = ^m
+		case 0b11: // csneg
+			res = -m
+		}
+	}
+	c.writeX(rd, sf, false, res)
+	return nil
+}
+
+func (c *CPU) execAddr(w uint32) error {
+	immlo := (w >> 29) & 3
+	immhi := (w >> 5) & 0x7FFFF
+	rd := w & 0x1F
+	imm := signExtend(uint64(immhi<<2|immlo), 21)
+	if (w>>31)&1 == 1 { // adrp
+		base := c.PC &^ 0xFFF
+		c.writeX(rd, true, false, base+uint64(imm<<12))
+	} else {
+		c.writeX(rd, true, false, c.PC+uint64(imm))
+	}
+	return nil
+}
+
+func (c *CPU) execBranchImm(w uint32, next *uint64) error {
+	off := signExtend(uint64(w&0x3FFFFFF), 26) << 2
+	if (w>>31)&1 == 1 { // bl
+		c.X[30] = c.PC + 4
+	}
+	*next = c.PC + uint64(off)
+	return nil
+}
+
+func (c *CPU) execBranchCond(w uint32, next *uint64) error {
+	if c.condHolds(w & 0xF) {
+		off := signExtend(uint64((w>>5)&0x7FFFF), 19) << 2
+		*next = c.PC + uint64(off)
+	}
+	return nil
+}
+
+func (c *CPU) execCompareBranch(w uint32, next *uint64) error {
+	sf := is64bit(w)
+	op := (w >> 24) & 1
+	rt := w & 0x1F
+	v := c.readX(rt, sf, false)
+	taken := (v == 0) == (op == 0) // cbz when op==0
+	if taken {
+		off := signExtend(uint64((w>>5)&0x7FFFF), 19) << 2
+		*next = c.PC + uint64(off)
+	}
+	return nil
+}
+
+func (c *CPU) execBranchReg(w uint32, next *uint64) error {
+	rn := (w >> 5) & 0x1F
+	switch (w >> 21) & 0xF {
+	case 0: // br
+		*next = c.readX(rn, true, false)
+	case 1: // blr
+		c.X[30] = c.PC + 4
+		*next = c.readX(rn, true, false)
+	case 2: // ret
+		*next = c.readX(rn, true, false)
+	default:
+		return fmt.Errorf("arm64: bad branch-register %08x", w)
+	}
+	return nil
+}
+
+// rev16 reverses bytes within each 16-bit lane.
+func rev16(v uint64, width uint32) uint64 {
+	var res uint64
+	for i := uint32(0); i < width; i += 16 {
+		h := uint16(v >> i)
+		h = h>>8 | h<<8
+		res |= uint64(h) << i
+	}
+	return res
+}
+
+// rev32in64 reverses bytes within each 32-bit lane of a 64-bit value.
+func rev32in64(v uint64) uint64 {
+	lo := uint64(bits.ReverseBytes32(uint32(v)))
+	hi := uint64(bits.ReverseBytes32(uint32(v >> 32)))
+	return lo | hi<<32
+}
+
+// countLeadingSign counts the number of bits after the sign bit that equal it.
+func countLeadingSign(v uint64, width uint32) int {
+	v &= onesMask(width)
+	sign := (v >> (width - 1)) & 1
+	count := 0
+	for i := int(width) - 2; i >= 0; i-- {
+		if (v>>uint(i))&1 == sign {
+			count++
+		} else {
+			break
+		}
+	}
+	return count
+}
