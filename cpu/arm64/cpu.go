@@ -26,6 +26,19 @@ type CPU struct {
 	// encoded field bits (so msr/mrs round-trip). NZCV lives in N/Z/C/V.
 	Sys map[uint32]uint64
 
+	// MMU control registers (stage-1, EL1). Populated by msr; read by the
+	// translation walk (mmu.go). SCTLR.M (bit 0) enables translation.
+	SCTLR uint64
+	TTBR0 uint64
+	TTBR1 uint64
+	TCR   uint64
+	MAIR  uint64
+
+	// Fault state from the last translation abort (carries type + faulting
+	// address so VBAR_EL1 exception delivery can slot in later).
+	FAR       uint64
+	FaultKind string
+
 	Halted   bool   // an exception (svc/brk/hlt) or a real halt stopped the core
 	ExcType  string // "svc"/"hvc"/"smc"/"brk"/"hlt" when Halted by an exception
 	ExcImm   uint16 // the exception's immediate
@@ -44,27 +57,56 @@ func (c *CPU) Reset() {
 	c.Halted, c.ExcType, c.ExcImm = false, "", 0
 }
 
-// a64NZCVField is the encoded sysreg field (bits 19:5) of NZCV
-// (o0=1, op1=3, CRn=4, CRm=2, op2=0).
-const a64NZCVField uint32 = 1<<19 | 3<<16 | 4<<12 | 2<<8
+// Encoded sysreg fields (bits 19:5) for the registers given dedicated state.
+const (
+	a64NZCVField  uint32 = 1<<19 | 3<<16 | 4<<12 | 2<<8 // NZCV   S3_3_C4_C2_0
+	a64SCTLRField uint32 = 1<<19 | 1<<12                // SCTLR_EL1 S3_0_C1_C0_0
+	a64TTBR0Field uint32 = 1<<19 | 2<<12                // TTBR0_EL1 S3_0_C2_C0_0
+	a64TTBR1Field uint32 = 1<<19 | 2<<12 | 1<<5         // TTBR1_EL1 S3_0_C2_C0_1
+	a64TCRField   uint32 = 1<<19 | 2<<12 | 2<<5         // TCR_EL1   S3_0_C2_C0_2
+	a64MAIRField  uint32 = 1<<19 | 10<<12 | 2<<8        // MAIR_EL1  S3_0_C10_C2_0
+)
 
-// readSysreg returns a system register's value (NZCV from the flags, else the
-// Sys map; unknown reads as 0).
+// readSysreg returns a system register's value. NZCV comes from the flags; the
+// MMU registers from their dedicated fields; everything else from the Sys map
+// (unknown reads as 0).
 func (c *CPU) readSysreg(field uint32) uint64 {
-	if field == a64NZCVField {
+	switch field {
+	case a64NZCVField:
 		return c.nzcv()
+	case a64SCTLRField:
+		return c.SCTLR
+	case a64TTBR0Field:
+		return c.TTBR0
+	case a64TTBR1Field:
+		return c.TTBR1
+	case a64TCRField:
+		return c.TCR
+	case a64MAIRField:
+		return c.MAIR
 	}
 	return c.Sys[field]
 }
 
-// writeSysreg writes a system register (NZCV updates the flags; else the Sys
-// map records it).
+// writeSysreg writes a system register, routing NZCV and the MMU registers to
+// their dedicated state and everything else to the Sys map.
 func (c *CPU) writeSysreg(field uint32, v uint64) {
-	if field == a64NZCVField {
+	switch field {
+	case a64NZCVField:
 		c.setFlags(v>>31&1 == 1, v>>30&1 == 1, v>>29&1 == 1, v>>28&1 == 1)
-		return
+	case a64SCTLRField:
+		c.SCTLR = v
+	case a64TTBR0Field:
+		c.TTBR0 = v
+	case a64TTBR1Field:
+		c.TTBR1 = v
+	case a64TCRField:
+		c.TCR = v
+	case a64MAIRField:
+		c.MAIR = v
+	default:
+		c.Sys[field] = v
 	}
-	c.Sys[field] = v
 }
 
 // nzcv packs the flags into the architectural NZCV position (bits 31..28), the

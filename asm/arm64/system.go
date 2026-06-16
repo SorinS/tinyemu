@@ -115,6 +115,15 @@ var namedSysregs = map[string][5]uint32{
 	"dczid_el0":   {1, 3, 0, 0, 7},
 	"cntfrq_el0":  {1, 3, 14, 0, 0},
 	"cntvct_el0":  {1, 3, 14, 0, 2},
+	// EL1 translation / exception control.
+	"sctlr_el1": {1, 0, 1, 0, 0},
+	"ttbr0_el1": {1, 0, 2, 0, 0},
+	"ttbr1_el1": {1, 0, 2, 0, 1},
+	"tcr_el1":   {1, 0, 2, 0, 2},
+	"mair_el1":  {1, 0, 10, 2, 0},
+	"vbar_el1":  {1, 0, 12, 0, 0},
+	"esr_el1":   {1, 0, 5, 2, 0},
+	"far_el1":   {1, 0, 6, 0, 0},
 }
 
 // parseSysreg resolves a system-register operand — a known name or the generic

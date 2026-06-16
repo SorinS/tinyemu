@@ -47,11 +47,11 @@ func (c *CPU) execLoadStore(w uint32) error {
 
 	nbits := uint32(scale * 8)
 	if opc == 0 { // store
-		if err := c.Mem.Write(addr, c.readX(rt, size == 3, false), int(scale)); err != nil {
+		if err := c.writeMem(addr, c.readX(rt, size == 3, false), int(scale)); err != nil {
 			return err
 		}
 	} else { // load
-		loaded, err := c.Mem.Read(addr, int(scale))
+		loaded, err := c.readMem(addr, int(scale))
 		if err != nil {
 			return err
 		}
@@ -111,18 +111,18 @@ func (c *CPU) execPair(w uint32) error {
 	}
 
 	if l == 0 { // store
-		if err := c.Mem.Write(addr, c.readX(rt, is64, false), int(scale)); err != nil {
+		if err := c.writeMem(addr, c.readX(rt, is64, false), int(scale)); err != nil {
 			return err
 		}
-		if err := c.Mem.Write(addr+uint64(scale), c.readX(rt2, is64, false), int(scale)); err != nil {
+		if err := c.writeMem(addr+uint64(scale), c.readX(rt2, is64, false), int(scale)); err != nil {
 			return err
 		}
 	} else { // load
-		v1, err := c.Mem.Read(addr, int(scale))
+		v1, err := c.readMem(addr, int(scale))
 		if err != nil {
 			return err
 		}
-		v2, err := c.Mem.Read(addr+uint64(scale), int(scale))
+		v2, err := c.readMem(addr+uint64(scale), int(scale))
 		if err != nil {
 			return err
 		}

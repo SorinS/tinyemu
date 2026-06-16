@@ -7,7 +7,7 @@ import (
 
 // Step fetches, decodes, and executes one instruction.
 func (c *CPU) Step() error {
-	word, err := c.Mem.Read32(c.PC)
+	word, err := c.fetch()
 	if err != nil {
 		return err
 	}
