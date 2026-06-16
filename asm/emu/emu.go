@@ -24,7 +24,9 @@ import (
 	"strings"
 
 	"github.com/jtolio/tinyemu-go/asm"
+	a64asm "github.com/jtolio/tinyemu-go/asm/arm64"
 	rvasm "github.com/jtolio/tinyemu-go/asm/riscv"
+	a64cpu "github.com/jtolio/tinyemu-go/cpu/arm64"
 	rvcpu "github.com/jtolio/tinyemu-go/cpu/riscv"
 	"github.com/jtolio/tinyemu-go/cpu/x86"
 	"github.com/jtolio/tinyemu-go/cpu/x86_64"
@@ -46,6 +48,11 @@ const (
 	ramSizeRV  = 0x400000
 	rvRegRA    = 1 // x1
 	rvRegSP    = 2 // x2
+
+	// ARM64 sandbox: RAM/code at 0, stack 3 MiB in.
+	codeBaseARM64 = 0x10000
+	stackTopARM64 = 0x300000
+	ramSizeARM64  = 0x400000
 
 	// Even so a RISC-V jalr (which clears bit 0) still lands exactly on it.
 	sentinelRet  = 0xDEADBEEE
@@ -80,6 +87,14 @@ var fpNamesRV = []string{
 // the 32 FP registers (so index i<32 is a GPR, i>=32 an FP reg).
 var regNamesRVall = append(append([]string{}, regNamesRV...), fpNamesRV...)
 
+// regNamesARM64 is the AArch64 register view: X0..X30 then SP (index 31).
+var regNamesARM64 = []string{
+	"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
+	"x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
+	"x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
+	"x24", "x25", "x26", "x27", "x28", "x29", "x30", "sp",
+}
+
 // fpNameSet marks which register names are floating-point (for display).
 var fpNameSet = func() map[string]bool {
 	m := map[string]bool{}
@@ -89,14 +104,19 @@ var fpNameSet = func() map[string]bool {
 	return m
 }()
 
-// flagDefs are the x86 arithmetic-status flags, in display order, with their
-// bit positions in (R/E)FLAGS.
-var flagDefs = []struct {
+// flagDef is a status flag's display name and its bit position in the CPU's
+// flag word.
+type flagDef struct {
 	name string
 	bit  uint
-}{
+}
+
+// x86Flags are the x86 arithmetic-status flags (in (R/E)FLAGS); armFlags are
+// the AArch64 condition flags (NZCV, bits 31..28). RISC-V has none.
+var x86Flags = []flagDef{
 	{"CF", 0}, {"PF", 2}, {"AF", 4}, {"ZF", 6}, {"SF", 7}, {"OF", 11},
 }
+var armFlags = []flagDef{{"N", 31}, {"Z", 30}, {"C", 29}, {"V", 28}}
 
 // Arch is the target ISA of a program.
 type Arch int
@@ -104,13 +124,18 @@ type Arch int
 const (
 	ArchX86 Arch = iota
 	ArchRISCV
+	ArchARM64
 )
 
 func (a Arch) String() string {
-	if a == ArchRISCV {
+	switch a {
+	case ArchRISCV:
 		return "riscv"
+	case ArchARM64:
+		return "arm64"
+	default:
+		return "x86"
 	}
-	return "x86"
 }
 
 // rvOnly / x86Only are mnemonics distinctive to one ISA (shared ones like
@@ -138,6 +163,8 @@ func DetectArch(src string) Arch {
 		if i := strings.Index(line, "arch:"); i >= 0 {
 			rest := line[i+5:]
 			switch {
+			case strings.Contains(rest, "arm64"), strings.Contains(rest, "aarch64"):
+				return ArchARM64
 			case strings.Contains(rest, "riscv"), strings.Contains(rest, "rv32"), strings.Contains(rest, "rv64"):
 				return ArchRISCV
 			case strings.Contains(rest, "x86"), strings.Contains(rest, "amd64"), strings.Contains(rest, "i386"):
@@ -277,7 +304,7 @@ type sandbox struct {
 	sentinel uint64
 	spans    []span
 	names    []string
-	hasFlags bool
+	flagDefs []flagDef
 	bits     int
 	arch     Arch
 }
@@ -318,6 +345,9 @@ func (sb *sandbox) returnedTo(retAddr uint64) bool {
 	if sb.arch == ArchRISCV {
 		return sb.r.reg(rvRegRA) == retAddr
 	}
+	if sb.arch == ArchARM64 {
+		return sb.r.reg(30) == retAddr // X30 (LR)
+	}
 	rsp := sb.r.reg(regSP)
 	width := sb.bits / 8
 	var v uint64
@@ -343,10 +373,14 @@ func (sb *sandbox) readBytes(addr uint64, n int) []byte {
 // buildSandbox detects the ISA, assembles src, loads it into a flat sandbox,
 // and positions the CPU at the entry.
 func buildSandbox(src string) (*sandbox, error) {
-	if DetectArch(src) == ArchRISCV {
+	switch DetectArch(src) {
+	case ArchRISCV:
 		return buildRISCV(src)
+	case ArchARM64:
+		return buildARM64(src)
+	default:
+		return buildX86(src)
 	}
-	return buildX86(src)
 }
 
 func buildX86(src string) (*sandbox, error) {
@@ -371,7 +405,7 @@ func buildX86(src string) (*sandbox, error) {
 	for i, s := range listing.Spans {
 		spans[i] = span{s.Line, s.Addr, s.Len}
 	}
-	return &sandbox{mm, m, codeBaseX86, sentinelRet, spans, m.names(), true, int(mode), ArchX86}, nil
+	return &sandbox{mm, m, codeBaseX86, sentinelRet, spans, m.names(), x86Flags, int(mode), ArchX86}, nil
 }
 
 func buildRISCV(src string) (*sandbox, error) {
@@ -397,7 +431,32 @@ func buildRISCV(src string) (*sandbox, error) {
 		spans[i] = span{s.Line, s.Addr, s.Len}
 	}
 	m := rvMach{c}
-	return &sandbox{mm, m, codeBaseRV, sentinelRet, spans, regNamesRVall, false, 64, ArchRISCV}, nil
+	return &sandbox{mm, m, codeBaseRV, sentinelRet, spans, regNamesRVall, nil, 64, ArchRISCV}, nil
+}
+
+func buildARM64(src string) (*sandbox, error) {
+	listing, err := a64asm.AssembleListing(src)
+	if err != nil {
+		return nil, err
+	}
+	mm := mem.NewPhysMemoryMap()
+	if _, err := mm.RegisterRAM(0, ramSizeARM64, 0); err != nil {
+		mm.Close()
+		return nil, err
+	}
+	for i, b := range listing.Bytes {
+		_ = mm.Write8(codeBaseARM64+uint64(i), b)
+	}
+	c := a64cpu.New(mm)
+	c.PC = codeBaseARM64
+	c.SP = stackTopARM64
+	c.X[30] = sentinelRet // a final `ret` (to x30) lands on the sentinel
+	c.Sentinel = sentinelRet
+	spans := make([]span, len(listing.Spans))
+	for i, s := range listing.Spans {
+		spans[i] = span{s.Line, s.Addr, s.Len}
+	}
+	return &sandbox{mm, a64Mach{c}, codeBaseARM64, sentinelRet, spans, regNamesARM64, armFlags, 64, ArchARM64}, nil
 }
 
 // traceLoop is the shared, arch-independent stepping/attribution loop.
@@ -435,7 +494,7 @@ func traceLoop(sb *sandbox, opts Options) *Result {
 		}
 		res.Steps++
 		now := snapshot(sb.r, names)
-		ls := lineState(cur, prev, now, names, sb.hasFlags)
+		ls := lineState(cur, prev, now, names, sb.flagDefs)
 		if p, ok := idx[cur]; ok {
 			res.Lines[p] = ls
 		} else {
@@ -484,7 +543,7 @@ func snapshot(r runner, names []string) snap {
 	return snap{gpr: g, pc: r.pc(), flags: r.flags()}
 }
 
-func lineState(line int, prev, now snap, names []string, hasFlags bool) LineState {
+func lineState(line int, prev, now snap, names []string, flagDefs []flagDef) LineState {
 	ls := LineState{Line: line, RIP: now.pc, RFLAGS: now.flags}
 	for i := range names {
 		if now.gpr[i] != prev.gpr[i] {
@@ -492,7 +551,7 @@ func lineState(line int, prev, now snap, names []string, hasFlags bool) LineStat
 		}
 		ls.Regs = append(ls.Regs, mkReg(names[i], now.gpr[i]))
 	}
-	if hasFlags {
+	{
 		for _, f := range flagDefs {
 			nb := (now.flags >> f.bit) & 1
 			if pb := (prev.flags >> f.bit) & 1; nb != pb {
@@ -722,10 +781,8 @@ func (s *Session) State() *DebugState {
 			ds.Changed = append(ds.Changed, mkReg(name, now.gpr[i]))
 		}
 	}
-	if s.sb.hasFlags {
-		for _, f := range flagDefs {
-			ds.Flags = append(ds.Flags, mkReg(f.name, (now.flags>>f.bit)&1))
-		}
+	for _, f := range s.sb.flagDefs {
+		ds.Flags = append(ds.Flags, mkReg(f.name, (now.flags>>f.bit)&1))
 	}
 	return ds
 }
@@ -789,3 +846,20 @@ func (m rvMach) names() []string { return regNamesRVall }
 func (m rvMach) flags() uint64   { return 0 }
 func (m rvMach) hasFlags() bool  { return false }
 func (m rvMach) halted() bool    { return m.c.IsPowerDown() }
+
+// --- ARM64 machine ----------------------------------------------------------
+
+type a64Mach struct{ c *a64cpu.CPU }
+
+func (m a64Mach) step() error { return m.c.Step() }
+func (m a64Mach) pc() uint64  { return m.c.PC }
+func (m a64Mach) reg(i int) uint64 {
+	if i == 31 { // index 31 is the stack pointer in the register view
+		return m.c.SP
+	}
+	return m.c.X[i]
+}
+func (m a64Mach) names() []string { return regNamesARM64 }
+func (m a64Mach) flags() uint64   { return m.c.NZCV() }
+func (m a64Mach) hasFlags() bool  { return true }
+func (m a64Mach) halted() bool    { return m.c.Halted }

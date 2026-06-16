@@ -56,6 +56,9 @@ func (c *CPU) nzcv() uint64 {
 	return v
 }
 
+// NZCV returns the condition flags packed into bits 31..28 (the MRS layout).
+func (c *CPU) NZCV() uint64 { return c.nzcv() }
+
 // readX reads register n as a width-bit value. sp selects whether field 31 is
 // the stack pointer (true) or the zero register (false).
 func (c *CPU) readX(n uint32, is64, sp bool) uint64 {

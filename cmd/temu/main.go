@@ -60,7 +60,7 @@ var (
 	// ISA is auto-detected: x86-64, 32-bit x86 (a BITS 32 directive), or RISC-V.
 	runAsmFile = flag.String("run-asm", "", "assemble & run an asm file (- = stdin), print final registers; ISA auto-detected")
 	asmSteps   = flag.Int("asm-steps", 0, "step cap for -run-asm (0 = default)")
-	asmArch    = flag.String("cpu-arch", "", "force the ISA for -run-asm (x86, x86_64, riscv64); default = auto-detect")
+	asmArch    = flag.String("cpu-arch", "", "force the ISA for -run-asm (x86, x86_64, riscv64, arm64); default = auto-detect")
 
 	// New CLI-first flags
 	biosPath    = flag.String("bios", "", "path to BIOS/bootloader image")
@@ -131,8 +131,10 @@ func runAssembly(path string, maxSteps int, arch string) int {
 		src = "; arch: x86\nBITS 32\n" + src
 	case "riscv", "riscv64", "rv64":
 		src = "; arch: riscv64\n" + src
+	case "arm64", "aarch64":
+		src = "; arch: arm64\n" + src
 	default:
-		fmt.Fprintf(os.Stderr, "run-asm: unknown -cpu-arch %q (want x86, x86_64, or riscv64)\n", arch)
+		fmt.Fprintf(os.Stderr, "run-asm: unknown -cpu-arch %q (want x86, x86_64, riscv64, or arm64)\n", arch)
 		return 1
 	}
 	res, err := emu.Run(src, emu.Options{StopBeforeLine: -1, MaxSteps: maxSteps})

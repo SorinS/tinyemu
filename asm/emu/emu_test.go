@@ -40,6 +40,36 @@ func flag(ls *emu.LineState, name string) (uint64, bool) {
 	return 0, false
 }
 
+// An ARM64 program runs end-to-end: arch detected from the directive, per-line
+// register changes attributed, NZCV flags shown, clean return to the sentinel.
+func TestRunAll_ARM64(t *testing.T) {
+	src := "; arch: arm64\n" + // line 0
+		"  movz x0, #5\n" + // line 1
+		"  movz x1, #7\n" + // line 2
+		"  add x0, x0, x1\n" + // line 3: x0 = 12
+		"  subs x2, x0, x0\n" + // line 4: x2 = 0, sets Z
+		"  ret\n" // line 5
+	r, err := emu.RunAll(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Arch != "arm64" {
+		t.Fatalf("Arch = %q, want arm64", r.Arch)
+	}
+	if r.Stop != emu.StopCompleted {
+		t.Fatalf("Stop = %q (%s), want completed", r.Stop, r.Error)
+	}
+	if v, ok := changed(lineByNum(r, 1), "x0"); !ok || v != 5 {
+		t.Errorf("line1 x0 = %#x ok=%v, want 5", v, ok)
+	}
+	if v, ok := changed(lineByNum(r, 3), "x0"); !ok || v != 12 {
+		t.Errorf("line3 x0 = %#x ok=%v, want 12", v, ok)
+	}
+	if v, ok := flag(lineByNum(r, 4), "Z"); !ok || v != 1 {
+		t.Errorf("line4 Z = %d ok=%v, want 1", v, ok)
+	}
+}
+
 // A clean program that RETs to the sentinel: per-line register changes are
 // attributed correctly and the run reports completion.
 func TestRunAll_CleanReturn(t *testing.T) {

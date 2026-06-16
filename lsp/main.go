@@ -14,16 +14,21 @@ import (
 	"strings"
 
 	"github.com/jtolio/tinyemu-go/asm"
+	a64 "github.com/jtolio/tinyemu-go/asm/arm64"
 	"github.com/jtolio/tinyemu-go/asm/emu"
 	riscv "github.com/jtolio/tinyemu-go/asm/riscv"
 )
 
 // labelsFor collects the label→address map for a buffer in its ISA's scheme.
 func labelsFor(text string, arch emu.Arch) map[string]int64 {
-	if arch == emu.ArchRISCV {
+	switch arch {
+	case emu.ArchRISCV:
 		return riscv.CollectLabels(text)
+	case emu.ArchARM64:
+		return a64.CollectLabels(text)
+	default:
+		return asm.CollectLabels(text)
 	}
-	return asm.CollectLabels(text)
 }
 
 func main() {
@@ -247,9 +252,18 @@ func (s *server) completion(p posParams) any {
 		start--
 	}
 	items := []completionItem{}
-	if emu.DetectArch(s.docs[p.TextDocument.URI]) == emu.ArchRISCV {
+	switch emu.DetectArch(s.docs[p.TextDocument.URI]) {
+	case emu.ArchRISCV:
 		for _, m := range completionsRV(line[start:col]) {
 			items = append(items, completionItem{Label: m, Kind: 3, Detail: "riscv instruction"})
+			if len(items) >= 200 {
+				break
+			}
+		}
+		return items
+	case emu.ArchARM64:
+		for _, m := range completionsA64(line[start:col]) {
+			items = append(items, completionItem{Label: m, Kind: 3, Detail: "arm64 instruction"})
 			if len(items) >= 200 {
 				break
 			}
@@ -270,8 +284,8 @@ func (s *server) completion(p posParams) any {
 }
 
 func (s *server) signatureHelp(p posParams) any {
-	if emu.DetectArch(s.docs[p.TextDocument.URI]) == emu.ArchRISCV {
-		return nil // RISC-V operands are positional; no multi-form signature help
+	if a := emu.DetectArch(s.docs[p.TextDocument.URI]); a == emu.ArchRISCV || a == emu.ArchARM64 {
+		return nil // RISC-V/ARM64 operands are positional; no multi-form signature help
 	}
 	r := buildSignatureHelp(s.lineAt(p), p.Position.Character)
 	if r == nil {
