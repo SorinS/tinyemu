@@ -48,9 +48,26 @@ func (c *CPU) translate(vaddr uint64, access accessType) (uint64, *abort) {
 		return vaddr, nil
 	}
 	write := access == accessWrite
-	t0sz := c.TCR & 0x3F
-	level := startLevel(t0sz)
-	table := c.TTBR0 & descAddrMask
+
+	// Pick the translation base by the top VA bit: the low half uses TTBR0,
+	// the high half TTBR1. The bits above the configured region must be all-0
+	// (TTBR0) or all-1 (TTBR1), else it's an address-size fault (the VA hole).
+	var base, tsz uint64
+	if vaddr&(1<<63) == 0 {
+		tsz = c.TCR & 0x3F
+		if vaddr>>(64-tsz) != 0 {
+			return c.fault("address-size", 0, vaddr, write)
+		}
+		base = c.TTBR0 & descAddrMask
+	} else {
+		tsz = (c.TCR >> 16) & 0x3F
+		if ^vaddr>>(64-tsz) != 0 {
+			return c.fault("address-size", 0, vaddr, write)
+		}
+		base = c.TTBR1 & descAddrMask
+	}
+	level := startLevel(tsz)
+	table := base
 
 	for {
 		shift := uint(12 + 9*(3-level))

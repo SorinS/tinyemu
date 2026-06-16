@@ -135,6 +135,42 @@ func TestMMU_Faults(t *testing.T) {
 	}
 }
 
+// TestMMU_TTBR1 maps a high-half (kernel) VA via TTBR1 and round-trips it, and
+// confirms a VA in the hole between the TTBR0 and TTBR1 regions faults.
+func TestMMU_TTBR1(t *testing.T) {
+	const (
+		l0, l1, l2, l3 = 0x1000, 0x2000, 0x3000, 0x4000
+		pa             = 0x10000
+		kva            = 0xFFFF000040010000 // top 16 bits all 1 → TTBR1; low = 0x40010000
+		sentinel       = 0x1122334455667788
+	)
+	mm := mem.NewPhysMemoryMap()
+	if _, err := mm.RegisterRAM(0, 1<<20, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Indices for low-48 bits 0x40010000: L0=0, L1=1, L2=0, L3=0x10.
+	_ = mm.Write64(l0+0*8, l1|0b11)
+	_ = mm.Write64(l1+1*8, l2|0b11)
+	_ = mm.Write64(l2+0*8, l3|0b11)
+	_ = mm.Write64(l3+0x10*8, pa|(1<<10)|0b11)
+	c := New(mm)
+	c.TTBR1 = l0
+	c.TCR = 16 | (16 << 16) // T0SZ=16, T1SZ=16 (both halves 48-bit)
+	c.SCTLR = 1
+
+	if got, ab := c.translate(kva, accessRead); ab != nil || got != pa {
+		t.Fatalf("translate(kva) = %#x, %v; want %#x", got, ab, uint64(pa))
+	}
+	_ = c.Mem.Write64(pa, sentinel)
+	if v, err := c.readMem(kva, 8); err != nil || v != sentinel {
+		t.Errorf("read through kernel VA = %#x, %v; want %#x", v, err, uint64(sentinel))
+	}
+	// A low VA with bits above the 48-bit region set lands in the hole → fault.
+	if _, ab := c.translate(0x0001000000000000, accessRead); ab == nil || ab.kind != "address-size" {
+		t.Errorf("VA-hole access: got %v, want address-size fault", ab)
+	}
+}
+
 // TestMMU_StartLevel checks the T0SZ→start-level derivation.
 func TestMMU_StartLevel(t *testing.T) {
 	for _, tc := range []struct {
