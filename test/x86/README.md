@@ -79,7 +79,7 @@ r.cpu.IsProtectedMode()
 test suite that runs as a BIOS replacement. It communicates via POST codes written
 to I/O port `0x190`.
 
-The test binary is built from `bin/test386_asm.git/` and loaded at physical
+The test binary is built from `helpers/test386_asm.git/` and loaded at physical
 `0xF0000`. The Go tests capture POST codes and assert milestones:
 
 | Test | Assertion |
@@ -93,7 +93,7 @@ As the emulator gains more opcodes, advance the milestone tests to match.
 ### Rebuilding test386
 
 ```bash
-cd bin/test386_asm.git
+cd helpers/test386_asm.git
 make   # requires nasm
 ```
 

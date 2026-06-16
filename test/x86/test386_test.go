@@ -9,7 +9,7 @@ import (
 	"github.com/jtolio/tinyemu-go/mem"
 )
 
-const test386BinPath = "../../bin/test386_asm.git/test386.bin"
+const test386BinPath = "../../helpers/test386_asm.git/test386.bin"
 
 // postName maps test386 POST codes to human-readable descriptions.
 var postName = map[byte]string{

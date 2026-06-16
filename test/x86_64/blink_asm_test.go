@@ -1,7 +1,7 @@
 package x86_64_test
 
 // These tests adapt cases from third-party Blink emulator's assembly
-// test suite (bin/blink.git/test/asm/, by Justine Tunney; see that
+// test suite (helpers/blink.git/test/asm/, by Justine Tunney; see that
 // directory's README.md). Blink's tests are written in GAS AT&T syntax
 // and use a Jcc + INT3 idiom to signal failure — neither of which our
 // M1 decoder implements yet. So instead of running the .S files
