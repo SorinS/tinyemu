@@ -75,6 +75,8 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 		return c.execFPLoadStore(w)
 	case (w>>24)&0x5F == 0x1E: // scalar FP data-processing (excludes Adv-SIMD-scalar 0x5E/0x7E)
 		return c.execFPDataProc(w)
+	case (w>>24)&0x9F == 0x0E: // Advanced SIMD three-same (vector)
+		return c.execSIMD3(w)
 	case (w>>25)&0x1F == 0x14:
 		return c.execPair(w)
 	case (w>>26)&0x1F == 0x05:

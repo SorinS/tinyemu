@@ -181,6 +181,16 @@ func assembleWord(src string) (uint64, error) {
 		}
 		return uint64(w), nil
 	}
+	// A vector first operand (vN.arr) is an Advanced SIMD instruction. Route it
+	// before alias expansion and the scalar mnemonic table, since mnemonics like
+	// add/mul/orr are shared with the scalar ISA (and mul is a scalar-only alias).
+	if len(ops) > 0 && isVecOperand(ops[0]) {
+		w, err := encodeSIMD(mnem, ops)
+		if err != nil {
+			return 0, fmt.Errorf("arm64 %q: %w", src, err)
+		}
+		return uint64(w), nil
+	}
 	if nm, no, ok := expandAlias(mnem, ops); ok {
 		mnem, ops = nm, no
 	}

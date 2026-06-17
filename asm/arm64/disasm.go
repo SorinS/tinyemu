@@ -46,6 +46,8 @@ func Disassemble(w uint32) (string, error) {
 		return disFPLoadStore(w)
 	case (w>>24)&0x5F == 0x1E: // scalar FP data-processing
 		return disFPDataProc(w)
+	case (w>>24)&0x9F == 0x0E: // Advanced SIMD three-same (vector)
+		return disSIMD3(w)
 	case (w>>25)&0x1F == 0x14: // load/store pair
 		return disPair(w)
 	case (w>>26)&0x1F == 0x05: // unconditional branch immediate (b/bl)

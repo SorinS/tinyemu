@@ -438,6 +438,50 @@ func fpSpecialInputs(dbl bool) []oracleRegs {
 	return []oracleRegs{r}
 }
 
+// vecInputs fills V0–V31 with varied 128-bit patterns for the integer-vector
+// oracle (any bits work; both halves are seeded so .16b/.2d see real data).
+func vecInputs() []oracleRegs {
+	var r oracleRegs
+	for i := 0; i < 32; i++ {
+		lo := uint64(i+1) * 0x0102030405060708
+		hi := 0xF0E0D0C0B0A09080 ^ (uint64(i) * 0x1111111111111111)
+		r.V[i] = [2]uint64{lo, hi}
+	}
+	r.SP = 0x80000
+	return []oracleRegs{r}
+}
+
+func TestARM64_NativeOracleSIMD(t *testing.T) {
+	programs := [][]string{
+		// add/sub across arrangements
+		{"add v0.16b, v1.16b, v2.16b"}, {"add v0.8b, v1.8b, v2.8b"},
+		{"add v0.8h, v1.8h, v2.8h"}, {"add v0.4s, v1.4s, v2.4s"},
+		{"add v0.2d, v1.2d, v2.2d"}, {"add v0.2s, v1.2s, v2.2s"},
+		{"sub v0.16b, v3.16b, v4.16b"}, {"sub v0.4s, v3.4s, v4.4s"},
+		{"sub v0.2d, v3.2d, v4.2d"},
+		// mul (not on .2d)
+		{"mul v0.16b, v1.16b, v2.16b"}, {"mul v0.8h, v1.8h, v2.8h"},
+		{"mul v0.4s, v1.4s, v2.4s"}, {"mul v0.2s, v1.2s, v2.2s"},
+		// bitwise logicals
+		{"and v0.16b, v1.16b, v2.16b"}, {"orr v0.16b, v1.16b, v2.16b"},
+		{"eor v0.16b, v1.16b, v2.16b"}, {"bic v0.16b, v1.16b, v2.16b"},
+		{"orn v0.16b, v1.16b, v2.16b"}, {"and v0.8b, v1.8b, v2.8b"},
+		// chained
+		{"add v0.4s, v1.4s, v2.4s", "mul v0.4s, v0.4s, v3.4s", "eor v0.16b, v0.16b, v4.16b"},
+	}
+	inputs := vecInputs()
+	for _, prog := range programs {
+		label := strings.Join(prog, "; ")
+		_, words := assembleWords(t, prog)
+		bin := oracleBin(t, words)
+		for _, in := range inputs {
+			native := runBin(t, bin, in)
+			got := cpuRun(t, prog, in)
+			diffRegs(t, label, native, got)
+		}
+	}
+}
+
 func TestARM64_NativeOracleFP(t *testing.T) {
 	// Double-precision programs: seeded with float64 values in V0–V31.
 	dbl := [][]string{

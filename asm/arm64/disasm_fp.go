@@ -2,6 +2,82 @@ package arm64
 
 import "fmt"
 
+// arrangementName reverses parseVecReg's arrangement: (Q, size) -> suffix.
+func arrangementName(q, size uint32) string {
+	switch size {
+	case 0b00:
+		if q == 1 {
+			return "16b"
+		}
+		return "8b"
+	case 0b01:
+		if q == 1 {
+			return "8h"
+		}
+		return "4h"
+	case 0b10:
+		if q == 1 {
+			return "4s"
+		}
+		return "2s"
+	default: // 0b11
+		if q == 1 {
+			return "2d"
+		}
+		return "1d"
+	}
+}
+
+func vecName(n, q, size uint32) string {
+	return fmt.Sprintf("v%d.%s", n, arrangementName(q, size))
+}
+
+// disSIMD3 decodes the Advanced SIMD three-same group (add/sub/mul + logicals).
+func disSIMD3(w uint32) (string, error) {
+	if (w>>21)&1 != 1 || (w>>10)&1 != 1 {
+		return "", fmt.Errorf("arm64 disasm: unsupported Adv-SIMD encoding %08x", w)
+	}
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	size := (w >> 22) & 3
+	opcode := (w >> 11) & 0x1F
+	rm, rn, rd := (w>>16)&0x1F, (w>>5)&0x1F, w&0x1F
+
+	var mnem string
+	asize := size // arrangement element size (logicals always render as byte)
+	switch opcode {
+	case 0x10:
+		if u == 0 {
+			mnem = "add"
+		} else {
+			mnem = "sub"
+		}
+	case 0x13:
+		if u != 0 {
+			return "", fmt.Errorf("arm64 disasm: unsupported Adv-SIMD opcode %08x", w)
+		}
+		mnem = "mul"
+	case 0x03: // logical: size field selects the op, arrangement is .8b/.16b
+		asize = 0b00
+		switch {
+		case u == 1:
+			mnem = "eor"
+		case size == 0b00:
+			mnem = "and"
+		case size == 0b01:
+			mnem = "bic"
+		case size == 0b10:
+			mnem = "orr"
+		default:
+			mnem = "orn"
+		}
+	default:
+		return "", fmt.Errorf("arm64 disasm: unsupported Adv-SIMD opcode %08x", w)
+	}
+	return fmt.Sprintf("%s %s, %s, %s", mnem,
+		vecName(rd, q, asize), vecName(rn, q, asize), vecName(rm, q, asize)), nil
+}
+
 // Scalar floating-point disassembly: the decode counterpart of fp.go, covering
 // exactly the forms the assembler encodes so bytes round-trip through Assemble.
 

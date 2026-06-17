@@ -88,6 +88,11 @@ func TestARM64_RoundTrip(t *testing.T) {
 		"ldr d0, [x1]", "ldr d0, [x1, #8]", "str s2, [x3, #4]", "ldr q0, [x1]",
 		"str q1, [x2, #48]", "ldr d0, [x1, x2, lsl #3]", "str s0, [x1], #4",
 		"ldr d0, [x1, #8]!", "ldur d0, [x1, #7]", "stur s2, [x3, #-4]",
+		// vector (Advanced SIMD three-same)
+		"add v0.16b, v1.16b, v2.16b", "add v0.4s, v1.4s, v2.4s", "add v0.2d, v1.2d, v2.2d",
+		"sub v3.8h, v4.8h, v5.8h", "mul v0.2s, v1.2s, v2.2s",
+		"and v0.8b, v1.8b, v2.8b", "orr v0.16b, v1.16b, v2.16b",
+		"eor v0.16b, v1.16b, v2.16b", "bic v0.16b, v1.16b, v2.16b", "orn v0.8b, v1.8b, v2.8b",
 	}
 	for _, src := range cases {
 		want, ok := mcEncode(t, src)
