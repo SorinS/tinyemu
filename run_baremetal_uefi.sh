@@ -105,21 +105,17 @@ for f in "$UEFI_LOADER" "$PURE64_SYS" "$KERNEL"; do
 done
 [ -r "$PAYLOAD" ] || { echo "missing payload $PAYLOAD" >&2; exit 1; }
 
-# --- Assemble BOOTX64.EFI: splice [pure64-uefi.sys ++ kernel.sys ++ payload]
-#     into a copy of uefi.sys at file offset 0x1000 (the PAYLOAD label). ---
-PAYLOAD_OFF=4096   # 0x1000
-blob="$DIR/.uefi-blob"
-cat "$PURE64_SYS" "$KERNEL" "$PAYLOAD" > "$blob"
-blobsz=$(wc -c < "$blob")
-# The loader copies 32 KiB from PAYLOAD to 0x8000 and Pure64 relocates the
-# <=26 KiB after itself; the embedded region is 60 KiB. Warn past that.
-if [ "$blobsz" -gt 61440 ]; then
-    echo "[run_baremetal_uefi] WARNING: blob is ${blobsz} B > 60 KiB embedded region; will be truncated" >&2
-fi
-cp "$UEFI_LOADER" "$EFI"
-dd if="$blob" of="$EFI" bs=1 seek=$PAYLOAD_OFF conv=notrunc status=none
-rm -f "$blob"
-echo "[run_baremetal_uefi] BOOTX64.EFI = uefi.sys + ${blobsz} B blob @ 0x1000 (pure64+kernel+$(basename "$PAYLOAD"))"
+# Rebuild BOOTX64.EFI + the ESP image only when an input changed: the ESP is
+# missing/stale, the payload differs from the one last baked in, or any input
+# (.sys/payload) is newer than the cached ESP. Building the ESP is slow
+# (hdiutil create+attach+detach on macOS), so skip it when nothing changed.
+MARKER="$DIR/.esp-inputs"
+rebuild=0
+{ [ -r "$ESP" ] && [ -r "$EFI" ]; } || rebuild=1
+[ -r "$MARKER" ] && [ "$(cat "$MARKER" 2>/dev/null)" = "$PAYLOAD" ] || rebuild=1
+for f in "$UEFI_LOADER" "$PURE64_SYS" "$KERNEL" "$PAYLOAD"; do
+    [ "$f" -nt "$ESP" ] && rebuild=1
+done
 
 # --- Build a FAT EFI System Partition holding \EFI\BOOT\BOOTX64.EFI. ---
 build_esp_darwin() {
@@ -145,11 +141,32 @@ build_esp_mtools() {
     mcopy -i "$ESP" "$EFI" ::/EFI/BOOT/BOOTX64.EFI
 }
 
-echo "[run_baremetal_uefi] building ESP image $ESP"
-case $OS in
-    darwin) build_esp_darwin ;;
-    *)      build_esp_mtools ;;
-esac
+if [ "$rebuild" -eq 1 ]; then
+    # Splice [pure64-uefi.sys ++ kernel.sys ++ payload] into a copy of uefi.sys
+    # at file offset 0x1000 (the loader's PAYLOAD label), then build the ESP.
+    PAYLOAD_OFF=4096   # 0x1000
+    blob="$DIR/.uefi-blob"
+    cat "$PURE64_SYS" "$KERNEL" "$PAYLOAD" > "$blob"
+    blobsz=$(wc -c < "$blob")
+    # The loader copies 32 KiB from PAYLOAD to 0x8000 and Pure64 relocates the
+    # <=26 KiB after itself; the embedded region is 60 KiB. Warn past that.
+    if [ "$blobsz" -gt 61440 ]; then
+        echo "[run_baremetal_uefi] WARNING: blob is ${blobsz} B > 60 KiB embedded region; will be truncated" >&2
+    fi
+    cp "$UEFI_LOADER" "$EFI"
+    dd if="$blob" of="$EFI" bs=1 seek=$PAYLOAD_OFF conv=notrunc status=none
+    rm -f "$blob"
+    echo "[run_baremetal_uefi] BOOTX64.EFI = uefi.sys + ${blobsz} B blob @ 0x1000 (pure64+kernel+$(basename "$PAYLOAD"))"
+
+    echo "[run_baremetal_uefi] building ESP image $ESP"
+    case $OS in
+        darwin) build_esp_darwin ;;
+        *)      build_esp_mtools ;;
+    esac
+    printf '%s\n' "$PAYLOAD" > "$MARKER"
+else
+    echo "[run_baremetal_uefi] reusing ESP image $ESP (inputs unchanged)"
+fi
 
 echo "Starting BareMetal (UEFI/Pure64) under OVMF (x86_64, ${MEM} MiB) at: $(date)"
 echo "  (exit temu with Ctrl-A x)"
