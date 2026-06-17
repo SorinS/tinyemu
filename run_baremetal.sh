@@ -118,6 +118,14 @@ case "${1:-}" in
         ;;
 esac
 
-exec "$TEMU" -machine x86_64 -m 128 \
+# -apic wires a real local APIC. BareMetal is an APIC-based exokernel: its
+# SMP dispatch (b_smp_set/b_smp_get + b_smp_wakeup) drives inter-processor
+# interrupts through the local APIC's ICR and polls the ICR Delivery-Status
+# bit. Without a real APIC, IA32_APIC_BASE reports base address 0, so the
+# kernel reads "APIC" registers out of low physical RAM; the bogus
+# Delivery-Status bit never clears and b_smp_wakeup spins forever, so the
+# payload at 0x1E0000 is never dispatched (the "[ BareMetal ] ... system
+# ready" banner prints but the payload's output never appears).
+exec "$TEMU" -machine x86_64 -m 128 -apic \
     -bios "$BIOS" \
     -drive "$IMG"

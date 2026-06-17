@@ -307,6 +307,9 @@ func (l *LocalAPIC) MMIORead(_ any, offset uint32, _ int) uint32 {
 	case lapicESR:
 		return l.esr
 	case lapicICRLow:
+		if lapicDebug {
+			fmt.Fprintf(os.Stderr, "[lapic] R ICRLow -> %#x\n", l.icrLow)
+		}
 		return l.icrLow
 	case lapicICRHigh:
 		return l.icrHigh
