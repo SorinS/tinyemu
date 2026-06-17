@@ -476,9 +476,15 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"smov x0, v1.b[3]", "smov x3, v2.h[1]", "smov x4, v3.s[1]", "smov w5, v4.b[6]"},
 		{"ins v0.s[1], w2", "ins v3.d[0], x4", "ins v5.b[9], w6"},
 		{"ins v0.s[1], v2.s[3]", "ins v3.d[1], v4.d[0]", "ins v5.b[2], v6.b[11]"},
+		// integer compares (per-lane all-ones/all-zeros)
+		{"cmgt v0.4s, v1.4s, v2.4s"}, {"cmge v0.16b, v3.16b, v4.16b"},
+		{"cmhi v0.8h, v1.8h, v2.8h"}, {"cmhs v0.2d, v3.2d, v4.2d"},
+		{"cmeq v0.4s, v1.4s, v2.4s"}, {"cmtst v0.16b, v1.16b, v2.16b"},
+		{"cmgt v0.2d, v1.2d, v2.2d"}, {"cmeq v0.8b, v3.8b, v4.8b"},
 		// chained
 		{"add v0.4s, v1.4s, v2.4s", "mul v0.4s, v0.4s, v3.4s", "eor v0.16b, v0.16b, v4.16b"},
 		{"dup v0.4s, w1", "ins v0.s[0], w2", "umov w3, v0.s[3]"},
+		{"cmgt v0.4s, v1.4s, v2.4s", "and v3.16b, v0.16b, v5.16b"}, // mask then select bits
 	}
 	runVec := func(progs [][]string, inputs []oracleRegs) {
 		for _, prog := range progs {

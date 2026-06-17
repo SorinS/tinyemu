@@ -20,6 +20,10 @@ func TestARM64_SIMD3(t *testing.T) {
 		"and v0.8b, v1.8b, v2.8b", "and v0.16b, v1.16b, v2.16b",
 		"orr v0.16b, v1.16b, v2.16b", "eor v0.16b, v1.16b, v2.16b",
 		"bic v0.8b, v1.8b, v2.8b", "orn v0.16b, v1.16b, v2.16b",
+		// integer compares
+		"cmgt v0.4s, v1.4s, v2.4s", "cmge v0.16b, v1.16b, v2.16b", "cmhi v0.8h, v1.8h, v2.8h",
+		"cmhs v0.2d, v1.2d, v2.2d", "cmeq v0.4s, v1.4s, v2.4s", "cmtst v0.8b, v1.8b, v2.8b",
+		"cmgt v0.2d, v1.2d, v2.2d", "cmeq v0.16b, v1.16b, v2.16b",
 	}
 	runDiff(t, cases)
 }

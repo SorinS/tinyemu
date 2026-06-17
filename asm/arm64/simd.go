@@ -81,6 +81,13 @@ var simd3Ops = map[string]simd3{
 	"add": {u: 0, opcode: 0x10, fixedSize: -1, maxSize: 3},
 	"sub": {u: 1, opcode: 0x10, fixedSize: -1, maxSize: 3},
 	"mul": {u: 0, opcode: 0x13, fixedSize: -1, maxSize: 2}, // not on .2d
+	// integer compares — per-lane all-ones / all-zeros result
+	"cmgt":  {u: 0, opcode: 0x06, fixedSize: -1, maxSize: 3}, // signed >
+	"cmge":  {u: 0, opcode: 0x07, fixedSize: -1, maxSize: 3}, // signed >=
+	"cmhi":  {u: 1, opcode: 0x06, fixedSize: -1, maxSize: 3}, // unsigned >
+	"cmhs":  {u: 1, opcode: 0x07, fixedSize: -1, maxSize: 3}, // unsigned >=
+	"cmeq":  {u: 1, opcode: 0x11, fixedSize: -1, maxSize: 3}, // equal
+	"cmtst": {u: 0, opcode: 0x11, fixedSize: -1, maxSize: 3}, // (a & b) != 0
 	// bitwise logicals: size field is fixed, arrangement limited to 8b/16b.
 	"and": {u: 0, opcode: 0x03, fixedSize: 0b00, maxSize: 0},
 	"bic": {u: 0, opcode: 0x03, fixedSize: 0b01, maxSize: 0},
@@ -309,6 +316,10 @@ func encodeSIMD3(op simd3, ops []string) (uint32, error) {
 	}
 	if int(rd.size) > op.maxSize {
 		return 0, fmt.Errorf("element size not allowed for this op")
+	}
+	// 64-bit elements exist only as the full vector .2d; .1d (Q=0) is invalid.
+	if op.fixedSize < 0 && rd.size == 0b11 && rd.q == 0 {
+		return 0, fmt.Errorf("invalid .1d arrangement")
 	}
 	size := rd.size
 	if op.fixedSize >= 0 {

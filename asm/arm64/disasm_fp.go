@@ -115,6 +115,24 @@ func disSIMD3(w uint32) (string, error) {
 			return "", fmt.Errorf("arm64 disasm: unsupported Adv-SIMD opcode %08x", w)
 		}
 		mnem = "mul"
+	case 0x06:
+		if u == 0 {
+			mnem = "cmgt"
+		} else {
+			mnem = "cmhi"
+		}
+	case 0x07:
+		if u == 0 {
+			mnem = "cmge"
+		} else {
+			mnem = "cmhs"
+		}
+	case 0x11:
+		if u == 0 {
+			mnem = "cmtst"
+		} else {
+			mnem = "cmeq"
+		}
 	case 0x03: // logical: size field selects the op, arrangement is .8b/.16b
 		asize = 0b00
 		switch {

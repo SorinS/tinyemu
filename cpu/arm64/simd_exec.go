@@ -136,6 +136,24 @@ func (c *CPU) execSIMD3(w uint32) error {
 		res = laneOp(vn, vm, size, q, func(a, b uint64) uint64 { return a * b })
 	case 0x03: // bitwise logicals — size field selects the op, whole-register
 		res = simdLogical(vn, vm, size, u)
+	case 0x06: // cmgt (signed, U=0) / cmhi (unsigned, U=1)
+		if u == 0 {
+			res = laneCmp(vn, vm, size, q, func(a, b uint64, e uint) bool { return sextLane(a, e) > sextLane(b, e) })
+		} else {
+			res = laneCmp(vn, vm, size, q, func(a, b uint64, e uint) bool { return a > b })
+		}
+	case 0x07: // cmge (signed, U=0) / cmhs (unsigned, U=1)
+		if u == 0 {
+			res = laneCmp(vn, vm, size, q, func(a, b uint64, e uint) bool { return sextLane(a, e) >= sextLane(b, e) })
+		} else {
+			res = laneCmp(vn, vm, size, q, func(a, b uint64, e uint) bool { return a >= b })
+		}
+	case 0x11: // cmtst (U=0) / cmeq (U=1)
+		if u == 0 {
+			res = laneCmp(vn, vm, size, q, func(a, b uint64, e uint) bool { return a&b != 0 })
+		} else {
+			res = laneCmp(vn, vm, size, q, func(a, b uint64, e uint) bool { return a == b })
+		}
 	default:
 		return fmt.Errorf("arm64: unsupported Adv-SIMD opcode %08x at %#x", w, c.PC)
 	}
@@ -213,6 +231,44 @@ func (c *CPU) execSIMD3F(w uint32) error {
 	}
 	c.Vreg[rd] = res
 	return nil
+}
+
+// sextLane sign-extends the low ebits of v to a signed 64-bit value.
+func sextLane(v uint64, ebits uint) int64 {
+	if ebits >= 64 {
+		return int64(v)
+	}
+	shift := 64 - ebits
+	return int64(v<<shift) >> shift
+}
+
+// laneCmp produces a per-lane all-ones (predicate true) or all-zeros mask, the
+// result form of the vector compares (cmgt/cmge/cmeq/…).
+func laneCmp(vn, vm [2]uint64, size, q uint32, pred func(a, b uint64, ebits uint) bool) [2]uint64 {
+	ebits := uint(8) << size
+	var mask uint64
+	if ebits >= 64 {
+		mask = ^uint64(0)
+	} else {
+		mask = (uint64(1) << ebits) - 1
+	}
+	words := 1
+	if q == 1 {
+		words = 2
+	}
+	var res [2]uint64
+	for wi := 0; wi < words; wi++ {
+		var out uint64
+		for off := uint(0); off < 64; off += ebits {
+			a := (vn[wi] >> off) & mask
+			b := (vm[wi] >> off) & mask
+			if pred(a, b, ebits) {
+				out |= mask << off
+			}
+		}
+		res[wi] = out
+	}
+	return res
 }
 
 // laneOp applies op to each element lane of vn/vm. size is the 2-bit element
