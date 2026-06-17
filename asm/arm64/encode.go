@@ -30,6 +30,7 @@ const (
 	clsCondCmp                 // ccmp/ccmn
 	clsSystem                  // nop/hint/yield/wfe/wfi/sev/sevl/dmb/dsb/isb/mrs/msr
 	clsException               // svc/hvc/smc/brk/hlt
+	clsFP                      // scalar floating-point (fadd/fmul/fmov/fcmp/fcvt/…)
 )
 
 // insn is one mnemonic's encoding facts. Which fields apply depends on class.
@@ -115,6 +116,14 @@ var table = []insn{
 	{name: "svc", class: clsException}, {name: "hvc", class: clsException},
 	{name: "smc", class: clsException}, {name: "brk", class: clsException},
 	{name: "hlt", class: clsException},
+	// --- Scalar floating-point ---
+	{name: "fadd", class: clsFP}, {name: "fsub", class: clsFP},
+	{name: "fmul", class: clsFP}, {name: "fdiv", class: clsFP},
+	{name: "fmax", class: clsFP}, {name: "fmin", class: clsFP},
+	{name: "fmaxnm", class: clsFP}, {name: "fminnm", class: clsFP},
+	{name: "fnmul", class: clsFP},
+	{name: "fabs", class: clsFP}, {name: "fneg", class: clsFP},
+	{name: "fsqrt", class: clsFP}, {name: "fmov", class: clsFP},
 	// --- Unconditional immediate branch ---
 	{name: "b", class: clsBranch, op: 0},
 	{name: "bl", class: clsBranch, op: 1},
@@ -263,6 +272,8 @@ func encode(in *insn, ops []string) (uint32, error) {
 		return encodeSystem(in.name, ops)
 	case clsException:
 		return encodeException(in.name, ops)
+	case clsFP:
+		return encodeFP(in.name, ops)
 	case clsBranch:
 		return encodeBranch(in, ops)
 	case clsCompareBranch:
