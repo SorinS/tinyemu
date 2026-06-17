@@ -480,17 +480,63 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"add v0.4s, v1.4s, v2.4s", "mul v0.4s, v0.4s, v3.4s", "eor v0.16b, v0.16b, v4.16b"},
 		{"dup v0.4s, w1", "ins v0.s[0], w2", "umov w3, v0.s[3]"},
 	}
-	inputs := vecInputs()
-	for _, prog := range programs {
-		label := strings.Join(prog, "; ")
-		_, words := assembleWords(t, prog)
-		bin := oracleBin(t, words)
-		for _, in := range inputs {
-			native := runBin(t, bin, in)
-			got := cpuRun(t, prog, in)
-			diffRegs(t, label, native, got)
+	runVec := func(progs [][]string, inputs []oracleRegs) {
+		for _, prog := range progs {
+			label := strings.Join(prog, "; ")
+			_, words := assembleWords(t, prog)
+			bin := oracleBin(t, words)
+			for _, in := range inputs {
+				native := runBin(t, bin, in)
+				got := cpuRun(t, prog, in)
+				diffRegs(t, label, native, got)
+			}
 		}
 	}
+	runVec(programs, vecInputs())
+
+	// Float three-same, seeded with clean float values (split by precision so a
+	// .4s read of a double seed never produces a divergent NaN, as with the
+	// scalar oracle). Single = two float32 lanes per 64-bit word; double = one.
+	fpSingle := [][]string{
+		{"fadd v0.4s, v1.4s, v2.4s"}, {"fadd v0.2s, v1.2s, v2.2s"},
+		{"fsub v0.4s, v3.4s, v4.4s"}, {"fmul v0.4s, v1.4s, v5.4s"},
+		{"fdiv v0.4s, v6.4s, v1.4s"}, {"fmax v0.4s, v4.4s, v5.4s"},
+		{"fmin v0.4s, v4.4s, v5.4s"}, {"fmaxnm v0.4s, v1.4s, v4.4s"},
+		{"fminnm v0.4s, v1.4s, v4.4s"},
+		{"fadd v0.4s, v1.4s, v2.4s", "fmul v0.4s, v0.4s, v3.4s", "fsub v0.4s, v0.4s, v4.4s"},
+	}
+	fpDouble := [][]string{
+		{"fadd v0.2d, v1.2d, v2.2d"}, {"fsub v0.2d, v3.2d, v4.2d"},
+		{"fmul v0.2d, v1.2d, v5.2d"}, {"fdiv v0.2d, v6.2d, v1.2d"},
+		{"fmax v0.2d, v4.2d, v5.2d"}, {"fmin v0.2d, v4.2d, v5.2d"},
+		{"fmaxnm v0.2d, v1.2d, v4.2d"}, {"fminnm v0.2d, v1.2d, v4.2d"},
+	}
+	runVec(fpSingle, vecFPInputs(false))
+	runVec(fpDouble, vecFPInputs(true))
+}
+
+// vecFPInputs fills V0–V31 with clean float values for the float-vector oracle.
+// With dbl set, each 64-bit word holds one float64; otherwise it holds two
+// float32 lanes. Values stay free of NaN/inf so no divergent-NaN concern.
+func vecFPInputs(dbl bool) []oracleRegs {
+	var r oracleRegs
+	for i := 0; i < 32; i++ {
+		if dbl {
+			lo := fpSeedValues[(i)%len(fpSeedValues)]
+			hi := fpSeedValues[(i+5)%len(fpSeedValues)]
+			r.V[i] = [2]uint64{math.Float64bits(lo), math.Float64bits(hi)}
+		} else {
+			l0 := float32(fpSeedValues[(i)%len(fpSeedValues)])
+			l1 := float32(fpSeedValues[(i+3)%len(fpSeedValues)])
+			h0 := float32(fpSeedValues[(i+7)%len(fpSeedValues)])
+			h1 := float32(fpSeedValues[(i+11)%len(fpSeedValues)])
+			lo := uint64(math.Float32bits(l0)) | uint64(math.Float32bits(l1))<<32
+			hi := uint64(math.Float32bits(h0)) | uint64(math.Float32bits(h1))<<32
+			r.V[i] = [2]uint64{lo, hi}
+		}
+	}
+	r.SP = 0x80000
+	return []oracleRegs{r}
 }
 
 func TestARM64_NativeOracleFP(t *testing.T) {

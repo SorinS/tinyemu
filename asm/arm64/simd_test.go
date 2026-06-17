@@ -43,3 +43,18 @@ func TestARM64_SIMDCopy(t *testing.T) {
 	}
 	runDiff(t, cases)
 }
+
+// TestARM64_SIMD3F holds the float three-same vector encoders byte-exact vs
+// llvm-mc (fadd/fsub/fmul/fdiv/fmax/fmin/fmaxnm/fminnm over .2s/.4s/.2d).
+func TestARM64_SIMD3F(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"fadd v0.4s, v1.4s, v2.4s", "fadd v0.2s, v1.2s, v2.2s", "fadd v0.2d, v1.2d, v2.2d",
+		"fsub v0.4s, v1.4s, v2.4s", "fsub v0.2d, v1.2d, v2.2d",
+		"fmul v0.4s, v1.4s, v2.4s", "fmul v0.2d, v1.2d, v2.2d", "fmul v0.2s, v1.2s, v2.2s",
+		"fdiv v0.4s, v1.4s, v2.4s", "fdiv v0.2d, v1.2d, v2.2d",
+		"fmax v3.4s, v4.4s, v5.4s", "fmin v0.4s, v1.4s, v2.4s",
+		"fmaxnm v0.2d, v1.2d, v2.2d", "fminnm v0.4s, v1.4s, v2.4s",
+	}
+	runDiff(t, cases)
+}

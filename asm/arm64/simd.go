@@ -138,11 +138,35 @@ func elemImm5(szLog int, index uint32) uint32 {
 // elemSizeArr maps an element-size log2 to the arrangement size field.
 func arrToSzLog(size uint32) int { return int(size) }
 
+// simd3F describes a float "three same" vector op. The FP encoding reuses the
+// three-same template but bit23 ('a') is part of the op selector and bit22 is
+// the element size (sz: 0=single, 1=double), so the integer (size, opcode)
+// decode does not apply. opcode[15:11] >= 0x18 marks the FP sub-group.
+type simd3F struct {
+	u      uint32
+	a      uint32 // bit23
+	opcode uint32 // bits[15:11]
+}
+
+var simd3FOps = map[string]simd3F{
+	"fadd":   {u: 0, a: 0, opcode: 0x1A},
+	"fsub":   {u: 0, a: 1, opcode: 0x1A},
+	"fmul":   {u: 1, a: 0, opcode: 0x1B},
+	"fdiv":   {u: 1, a: 0, opcode: 0x1F},
+	"fmax":   {u: 0, a: 0, opcode: 0x1E},
+	"fmin":   {u: 0, a: 1, opcode: 0x1E},
+	"fmaxnm": {u: 0, a: 0, opcode: 0x18},
+	"fminnm": {u: 0, a: 1, opcode: 0x18},
+}
+
 // encodeSIMD dispatches a vector instruction whose mnemonic/operands indicate
 // the Advanced SIMD encoding.
 func encodeSIMD(mnem string, ops []string) (uint32, error) {
 	if op, ok := simd3Ops[mnem]; ok {
 		return encodeSIMD3(op, ops)
+	}
+	if op, ok := simd3FOps[mnem]; ok {
+		return encodeSIMD3F(op, ops)
 	}
 	switch mnem {
 	case "dup":
@@ -241,6 +265,31 @@ func encodeIns(ops []string) (uint32, error) {
 		return 0, fmt.Errorf("bad ins source")
 	}
 	return 1<<30 | 0x0E000000 | imm5<<16 | 0b0011<<11 | 1<<10 | g.num<<5 | dst.num, nil
+}
+
+// encodeSIMD3F encodes a float three-same vector instruction (fadd/fmul/…) over
+// the .2s/.4s/.2d arrangements.
+func encodeSIMD3F(op simd3F, ops []string) (uint32, error) {
+	if len(ops) != 3 {
+		return 0, fmt.Errorf("expected Vd, Vn, Vm")
+	}
+	rd, ok1 := parseVecReg(ops[0])
+	rn, ok2 := parseVecReg(ops[1])
+	rm, ok3 := parseVecReg(ops[2])
+	if !ok1 || !ok2 || !ok3 {
+		return 0, fmt.Errorf("bad SIMD register")
+	}
+	if rd.q != rn.q || rd.q != rm.q || rd.size != rn.size || rd.size != rm.size {
+		return 0, fmt.Errorf("SIMD arrangement mismatch")
+	}
+	// FP vectors are .2s (Q0 size10), .4s (Q1 size10) or .2d (Q1 size11). .1d
+	// (Q0 size11) is not a valid FP arrangement.
+	if rd.size < 0b10 || (rd.size == 0b11 && rd.q == 0) {
+		return 0, fmt.Errorf("invalid FP vector arrangement")
+	}
+	sz := rd.size & 1 // 0=single, 1=double
+	return rd.q<<30 | op.u<<29 | 0x0E000000 | op.a<<23 | sz<<22 | 1<<21 |
+		rm.num<<16 | op.opcode<<11 | 1<<10 | rn.num<<5 | rd.num, nil
 }
 
 // encodeSIMD3 encodes a three-same vector instruction: Vd, Vn, Vm with a common

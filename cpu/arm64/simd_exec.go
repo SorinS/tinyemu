@@ -2,6 +2,7 @@ package arm64
 
 import (
 	"fmt"
+	"math"
 	"math/bits"
 )
 
@@ -113,6 +114,11 @@ func (c *CPU) execSIMD3(w uint32) error {
 	rm := (w >> 16) & 0x1F
 	rn := (w >> 5) & 0x1F
 	rd := w & 0x1F
+	// FP three-same reuses this template but with opcode[15:11] >= 0x18 and a
+	// different field split (bit23 is part of the op, bit22 is the sz bit).
+	if opcode >= 0x18 {
+		return c.execSIMD3F(w)
+	}
 	vn, vm := c.Vreg[rn], c.Vreg[rm]
 
 	var res [2]uint64
@@ -135,6 +141,75 @@ func (c *CPU) execSIMD3(w uint32) error {
 	}
 	if q == 0 {
 		res[1] = 0 // a 64-bit (half-vector) op zeros the upper 64 bits
+	}
+	c.Vreg[rd] = res
+	return nil
+}
+
+// simd3FScalarOp maps a float three-same op (keyed by U:bit23:opcode) to the
+// scalar fpArith2 opcode (fp_exec.go), so the per-lane math reuses one place.
+func simd3FScalarOp(u, a, opcode uint32) (uint32, bool) {
+	switch u<<6 | a<<5 | opcode {
+	case 0<<6 | 0<<5 | 0x1A: // fadd
+		return 2, true
+	case 0<<6 | 1<<5 | 0x1A: // fsub
+		return 3, true
+	case 1<<6 | 0<<5 | 0x1B: // fmul
+		return 0, true
+	case 1<<6 | 0<<5 | 0x1F: // fdiv
+		return 1, true
+	case 0<<6 | 0<<5 | 0x1E: // fmax
+		return 4, true
+	case 0<<6 | 1<<5 | 0x1E: // fmin
+		return 5, true
+	case 0<<6 | 0<<5 | 0x18: // fmaxnm
+		return 6, true
+	case 0<<6 | 1<<5 | 0x18: // fminnm
+		return 7, true
+	}
+	return 0, false
+}
+
+// execSIMD3F executes a float three-same vector op (fadd/fmul/…). bit22 is the
+// element size (0=single, 1=double); per-lane arithmetic reuses the scalar FP
+// kernels, so the same IEEE-754 behaviour (and the same not-yet-modelled NaN
+// payload / rounding caveats) applies.
+func (c *CPU) execSIMD3F(w uint32) error {
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	a := (w >> 23) & 1
+	sz := (w >> 22) & 1
+	opcode := (w >> 11) & 0x1F
+	rm, rn, rd := (w>>16)&0x1F, (w>>5)&0x1F, w&0x1F
+	scalarOp, ok := simd3FScalarOp(u, a, opcode)
+	if !ok {
+		return fmt.Errorf("arm64: unsupported FP-vector op %08x at %#x", w, c.PC)
+	}
+	vn, vm := c.Vreg[rn], c.Vreg[rm]
+	words := 1
+	if q == 1 {
+		words = 2
+	}
+	var res [2]uint64
+	if sz == 1 { // double: one 64-bit lane per word
+		for wi := 0; wi < words; wi++ {
+			r, _ := fpArith2Apply(scalarOp, math.Float64frombits(vn[wi]), math.Float64frombits(vm[wi]))
+			res[wi] = math.Float64bits(r)
+		}
+	} else { // single: two 32-bit lanes per word
+		for wi := 0; wi < words; wi++ {
+			var out uint64
+			for off := uint(0); off < 64; off += 32 {
+				av := math.Float32frombits(uint32(vn[wi] >> off))
+				bv := math.Float32frombits(uint32(vm[wi] >> off))
+				r, _ := fpArith2Apply32(scalarOp, av, bv)
+				out |= uint64(math.Float32bits(r)) << off
+			}
+			res[wi] = out
+		}
+	}
+	if q == 0 {
+		res[1] = 0
 	}
 	c.Vreg[rd] = res
 	return nil

@@ -97,6 +97,9 @@ func disSIMD3(w uint32) (string, error) {
 	size := (w >> 22) & 3
 	opcode := (w >> 11) & 0x1F
 	rm, rn, rd := (w>>16)&0x1F, (w>>5)&0x1F, w&0x1F
+	if opcode >= 0x18 { // FP three-same sub-group
+		return disSIMD3F(w)
+	}
 
 	var mnem string
 	asize := size // arrangement element size (logicals always render as byte)
@@ -131,6 +134,47 @@ func disSIMD3(w uint32) (string, error) {
 	}
 	return fmt.Sprintf("%s %s, %s, %s", mnem,
 		vecName(rd, q, asize), vecName(rn, q, asize), vecName(rm, q, asize)), nil
+}
+
+// fpVecMnem names a float three-same op from (U, bit23 'a', opcode[15:11]).
+func fpVecMnem(u, a, opcode uint32) (string, bool) {
+	switch u<<6 | a<<5 | opcode {
+	case 0<<6 | 0<<5 | 0x1A:
+		return "fadd", true
+	case 0<<6 | 1<<5 | 0x1A:
+		return "fsub", true
+	case 1<<6 | 0<<5 | 0x1B:
+		return "fmul", true
+	case 1<<6 | 0<<5 | 0x1F:
+		return "fdiv", true
+	case 0<<6 | 0<<5 | 0x1E:
+		return "fmax", true
+	case 0<<6 | 1<<5 | 0x1E:
+		return "fmin", true
+	case 0<<6 | 0<<5 | 0x18:
+		return "fmaxnm", true
+	case 0<<6 | 1<<5 | 0x18:
+		return "fminnm", true
+	}
+	return "", false
+}
+
+// disSIMD3F decodes the float three-same group. The arrangement is .2s/.4s (sz=0)
+// or .2d (sz=1); render via a synthetic size field (10 for single, 11 for double).
+func disSIMD3F(w uint32) (string, error) {
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	a := (w >> 23) & 1
+	sz := (w >> 22) & 1
+	opcode := (w >> 11) & 0x1F
+	rm, rn, rd := (w>>16)&0x1F, (w>>5)&0x1F, w&0x1F
+	mnem, ok := fpVecMnem(u, a, opcode)
+	if !ok {
+		return "", fmt.Errorf("arm64 disasm: unsupported FP-vector op %08x", w)
+	}
+	size := 0b10 | sz // .2s/.4s -> size 10, .2d -> size 11
+	return fmt.Sprintf("%s %s, %s, %s", mnem,
+		vecName(rd, q, uint32(size)), vecName(rn, q, uint32(size)), vecName(rm, q, uint32(size))), nil
 }
 
 // Scalar floating-point disassembly: the decode counterpart of fp.go, covering

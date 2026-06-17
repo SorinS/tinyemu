@@ -97,6 +97,10 @@ func TestARM64_RoundTrip(t *testing.T) {
 		"dup v0.4s, w1", "dup v0.2d, x1", "dup v0.16b, v1.b[3]", "dup v0.2d, v1.d[1]",
 		"umov w0, v1.s[2]", "umov x0, v1.d[1]", "smov x0, v1.b[1]", "smov x0, v1.h[2]",
 		"ins v0.s[1], w2", "ins v0.d[0], x3", "ins v0.s[1], v2.s[3]", "ins v0.b[2], v3.b[7]",
+		// float three-same
+		"fadd v0.4s, v1.4s, v2.4s", "fadd v0.2d, v1.2d, v2.2d", "fsub v0.4s, v1.4s, v2.4s",
+		"fmul v0.2d, v1.2d, v2.2d", "fdiv v0.4s, v1.4s, v2.4s", "fmax v0.4s, v1.4s, v2.4s",
+		"fmin v0.2d, v1.2d, v2.2d", "fmaxnm v0.4s, v1.4s, v2.4s", "fminnm v0.2s, v1.2s, v2.2s",
 	}
 	for _, src := range cases {
 		want, ok := mcEncode(t, src)
