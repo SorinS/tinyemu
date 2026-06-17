@@ -20,6 +20,12 @@ type CPU struct {
 	// NZCV condition flags.
 	N, Z, C, V bool
 
+	// SIMD&FP register file V0–V31 (128-bit each: [0]=low 64, [1]=high 64).
+	// Scalar S/D writes zero the unused high bits, like a W write zeros an X.
+	Vreg  [32][2]uint64
+	FPCR  uint64
+	FPSR  uint64
+
 	// Exception/privilege state. EL is the current exception level (0 or 1),
 	// SPSel selects SP_EL0 (0) vs SP_ELx (1), DAIF holds the interrupt masks
 	// (bits 3..0 = D,A,I,F). SP is the live stack pointer for the active bank;

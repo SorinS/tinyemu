@@ -71,6 +71,10 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 		return c.execLogicalReg(w)
 	case (w>>24)&0x3F == 0x38 || (w>>24)&0x3F == 0x39:
 		return c.execLoadStore(w)
+	case (w>>24)&0x3F == 0x3C || (w>>24)&0x3F == 0x3D: // FP load/store (V bit set)
+		return c.execFPLoadStore(w)
+	case (w>>24)&0x5F == 0x1E: // scalar FP data-processing (excludes Adv-SIMD-scalar 0x5E/0x7E)
+		return c.execFPDataProc(w)
 	case (w>>25)&0x1F == 0x14:
 		return c.execPair(w)
 	case (w>>26)&0x1F == 0x05:

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,15 +26,24 @@ import (
 // validated as outputs.
 
 // oracleRegs mirrors the C struct `regs_t` byte-for-byte (all uint64, no pad).
+// The V field holds V0–V31 as 32×{low64,high64}. The integer fields keep their
+// original offsets so the GPR trampoline code is unchanged; V/FPCR/FPSR are
+// appended.
 type oracleRegs struct {
-	X    [31]uint64
-	SP   uint64
-	NZCV uint64
+	X    [31]uint64    // off 0
+	SP   uint64        // off 248
+	NZCV uint64        // off 256
+	V    [32][2]uint64 // off 264 (each reg low64 then high64)
+	FPCR uint64        // off 776
+	FPSR uint64        // off 784
 }
 
 const harnessC = `#include <stdint.h>
 #include <stdio.h>
-typedef struct { uint64_t x[31]; uint64_t sp; uint64_t nzcv; } regs_t;
+typedef struct {
+    uint64_t x[31]; uint64_t sp; uint64_t nzcv;
+    uint64_t v[64]; uint64_t fpcr; uint64_t fpsr;
+} regs_t;
 void run_test(const regs_t* in, regs_t* out);
 int main(void){
     static regs_t in, out;
@@ -44,9 +54,24 @@ int main(void){
 }
 `
 
-// trampolineTmpl is the AArch64 trampoline; %s is replaced by the payload words.
-const trampolineTmpl = `	.section __DATA,__data
-	.p2align 3
+// vBlock emits `op qN, [base, #(start+16*N)]` for N=0..31 — the input-load and
+// output-store sweeps over the V register file.
+func vBlock(op, base string, start int) string {
+	var b strings.Builder
+	for n := 0; n < 32; n++ {
+		fmt.Fprintf(&b, "\t%s q%d, [%s, #%d]\n", op, n, base, start+16*n)
+	}
+	return b.String()
+}
+
+// buildTrampoline assembles the full AArch64 trampoline around the payload. It
+// preserves the C ABI callee-saved registers (x19–x29 plus the low 64 bits of
+// v8–v15) in g_ctx, loads the input GPRs/SP/NZCV/FPCR/V from the in struct, runs
+// the payload, then writes back GPRs/NZCV/FPCR/FPSR/V to the out struct.
+func buildTrampoline(payload string) string {
+	const vOff = 264 // offset of regs_t.v
+	return `	.section __DATA,__data
+	.p2align 4
 g_ctx:
 	.space 256
 
@@ -66,11 +91,22 @@ _run_test:
 	stp  x25, x26, [x16, #72]
 	stp  x27, x28, [x16, #88]
 	str  x29, [x16, #104]
+	str  q8,  [x16, #112]
+	str  q9,  [x16, #128]
+	str  q10, [x16, #144]
+	str  q11, [x16, #160]
+	str  q12, [x16, #176]
+	str  q13, [x16, #192]
+	str  q14, [x16, #208]
+	str  q15, [x16, #224]
 	ldr  x17, [x0, #248]
 	mov  sp, x17
 	ldr  x17, [x0, #256]
 	msr  nzcv, x17
-	ldp  x2,  x3,  [x0, #16]
+	ldr  x17, [x0, #776]
+	msr  fpcr, x17
+	add  x16, x0, #` + fmt.Sprint(vOff) + `
+` + vBlock("ldr", "x16", 0) + `	ldp  x2,  x3,  [x0, #16]
 	ldp  x4,  x5,  [x0, #32]
 	ldp  x6,  x7,  [x0, #48]
 	ldp  x8,  x9,  [x0, #64]
@@ -87,7 +123,7 @@ _run_test:
 	ldp  x16, x17, [x0, #128]
 	ldr  x1,  [x0, #8]
 	ldr  x0,  [x0, #0]
-%s
+` + payload + `
 	adrp x16, g_ctx@PAGE
 	add  x16, x16, g_ctx@PAGEOFF
 	ldr  x16, [x16, #16]
@@ -113,7 +149,12 @@ _run_test:
 	str  x17, [x16, #248]
 	mrs  x17, nzcv
 	str  x17, [x16, #256]
-	adrp x16, g_ctx@PAGE
+	mrs  x17, fpcr
+	str  x17, [x16, #776]
+	mrs  x17, fpsr
+	str  x17, [x16, #784]
+	add  x16, x16, #` + fmt.Sprint(vOff) + `
+` + vBlock("str", "x16", 0) + `	adrp x16, g_ctx@PAGE
 	add  x16, x16, g_ctx@PAGEOFF
 	ldr  x17, [x16, #0]
 	mov  sp, x17
@@ -124,8 +165,17 @@ _run_test:
 	ldp  x25, x26, [x16, #72]
 	ldp  x27, x28, [x16, #88]
 	ldr  x29, [x16, #104]
+	ldr  q8,  [x16, #112]
+	ldr  q9,  [x16, #128]
+	ldr  q10, [x16, #144]
+	ldr  q11, [x16, #160]
+	ldr  q12, [x16, #176]
+	ldr  q13, [x16, #192]
+	ldr  q14, [x16, #208]
+	ldr  q15, [x16, #224]
 	ret
 `
+}
 
 func assembleWords(t *testing.T, instrs []string) ([]byte, []uint32) {
 	t.Helper()
@@ -163,7 +213,7 @@ func oracleBin(t *testing.T, words []uint32) string {
 		return p
 	}
 	cPath := must("harness.c", harnessC)
-	sPath := must("tramp.s", fmt.Sprintf(trampolineTmpl, pay.String()))
+	sPath := must("tramp.s", buildTrampoline(pay.String()))
 	bin := filepath.Join(dir, "oracle")
 	out, err := exec.Command(cc, "-O0", "-o", bin, cPath, sPath).CombinedOutput()
 	if err != nil {
@@ -213,13 +263,15 @@ func cpuRun(t *testing.T, instrs []string, in oracleRegs) oracleRegs {
 	c.Z = in.NZCV>>30&1 == 1
 	c.C = in.NZCV>>29&1 == 1
 	c.V = in.NZCV>>28&1 == 1
+	c.Vreg = in.V
+	c.FPCR = in.FPCR
 	end := uint64(base) + uint64(len(code))
 	for step := 0; c.PC < end && step < 1000; step++ {
 		if err := c.Step(); err != nil {
 			t.Fatalf("step at %#x: %v", c.PC, err)
 		}
 	}
-	out := oracleRegs{X: c.X, SP: c.SP, NZCV: c.nzcv()}
+	out := oracleRegs{X: c.X, SP: c.SP, NZCV: c.nzcv(), V: c.Vreg, FPCR: c.FPCR, FPSR: c.FPSR}
 	return out
 }
 
@@ -244,6 +296,14 @@ func diffRegs(t *testing.T, label string, native, got oracleRegs) {
 		t.Errorf("%s: nzcv native=%032b cpu=%032b", label, native.NZCV>>28, got.NZCV>>28)
 		bad = true
 	}
+	for i := 0; i < 32; i++ {
+		if native.V[i] != got.V[i] {
+			t.Errorf("%s: v%d native=%016x_%016x cpu=%016x_%016x", label, i,
+				native.V[i][1], native.V[i][0], got.V[i][1], got.V[i][0])
+			bad = true
+		}
+	}
+	// FPSR exception flags aren't modelled, so they're intentionally not compared.
 	if bad {
 		t.Logf("%s instrs failed", label)
 	}
@@ -322,4 +382,123 @@ func TestARM64_NativeOracle(t *testing.T) {
 			diffRegs(t, label, native, got)
 		}
 	}
+}
+
+// fpSeedValues are clean, exactly-representable values used to fill V0–V31 for
+// the FP oracle. Kept free of NaN so single-precision reads of a double seed (or
+// vice versa) never produce divergent NaN payloads; division/sqrt round
+// identically on hardware and in Go (both IEEE-754 round-to-nearest).
+var fpSeedValues = []float64{
+	3.5, 1.25, 2.0, 8.0, -4.0, 0.5, 100.0, -0.25,
+	16.0, 7.0, -2.5, 64.0, 0.125, -1.0, 9.0, 256.0,
+	-0.5, 5.0, 1.0, -16.0, 32.0, 0.75, -8.0, 4.0,
+	1.5, -32.0, 10.0, 0.0625, -100.0, 6.0, 0.25, -3.0,
+}
+
+// fpInputs returns register fills for the FP oracle. With dbl set, each V[i]
+// holds float64(value); otherwise the low 32 bits hold float32(value). The GPRs
+// carry small integers so scvtf/ucvtf have meaningful sources.
+func fpInputs(dbl bool) []oracleRegs {
+	var r oracleRegs
+	for i := 0; i < 32; i++ {
+		if dbl {
+			r.V[i][0] = math.Float64bits(fpSeedValues[i])
+		} else {
+			r.V[i][0] = uint64(math.Float32bits(float32(fpSeedValues[i])))
+		}
+	}
+	for i := 0; i < 31; i++ {
+		r.X[i] = uint64(int64(i*7 - 80)) // mix of negative and positive
+	}
+	r.SP = 0x80000
+	return []oracleRegs{r}
+}
+
+// fpSpecialInputs seeds V0–V7 with infinities, NaN and out-of-range magnitudes
+// to drive the saturation and unordered-compare paths. With dbl set the slot
+// holds a float64 special; otherwise its low 32 bits hold a float32 special.
+// Used only by programs that don't write a V register, so the seed bits pass
+// through unchanged on both sides.
+func fpSpecialInputs(dbl bool) []oracleRegs {
+	dv := []float64{
+		math.Inf(1), math.Inf(-1), math.NaN(), 1e300, -1e300, 3.5, 2.0, 0.0,
+	}
+	var r oracleRegs
+	for i := 0; i < 8; i++ {
+		if dbl {
+			r.V[i][0] = math.Float64bits(dv[i])
+		} else {
+			r.V[i][0] = uint64(math.Float32bits(float32(dv[i])))
+		}
+	}
+	for i := 0; i < 31; i++ {
+		r.X[i] = uint64(int64(i))
+	}
+	r.SP = 0x80000
+	return []oracleRegs{r}
+}
+
+func TestARM64_NativeOracleFP(t *testing.T) {
+	// Double-precision programs: seeded with float64 values in V0–V31.
+	dbl := [][]string{
+		{"fadd d0, d1, d2"}, {"fsub d0, d3, d4"}, {"fmul d0, d1, d5"},
+		{"fdiv d0, d6, d1"}, {"fnmul d0, d2, d3"},
+		{"fmax d0, d4, d5", "fmin d3, d4, d5"},
+		{"fmaxnm d0, d1, d4", "fminnm d3, d1, d4"},
+		{"fabs d0, d4", "fneg d3, d1", "fsqrt d5, d6"},
+		{"fmov d0, d7"},
+		{"fmov x0, d1", "fmov d2, x3"}, // FP↔GPR bit moves
+		{"fcvt s0, d1", "fcvt d3, s0"}, // round-trip precision
+		{"scvtf d0, x1", "ucvtf d2, x3"},
+		{"fcvtzs x0, d4", "fcvtzu x2, d1"}, // truncation + saturation
+		{"fcmp d1, d2", "cset x0, mi", "cset x3, gt"},
+		{"fcmp d4, d4", "cset x0, eq"},
+		{"fcmp d1, #0.0", "cset x0, gt", "fcmp d4, #0.0", "cset x3, mi"},
+		{"fcsel d0, d1, d2, eq", "fcmp d1, d2", "fcsel d3, d4, d5, lt"},
+		{"fadd d0, d1, d2", "fmul d0, d0, d3", "fsub d0, d0, d4", "fdiv d0, d0, d5"},
+	}
+	// Single-precision programs: seeded with float32 values.
+	sgl := [][]string{
+		{"fadd s0, s1, s2"}, {"fsub s0, s3, s4"}, {"fmul s0, s1, s5"},
+		{"fdiv s0, s6, s1"}, {"fnmul s0, s2, s3"},
+		{"fmax s0, s4, s5", "fmin s3, s4, s5"},
+		{"fabs s0, s4", "fneg s3, s1", "fsqrt s5, s6"},
+		{"fmov w0, s1", "fmov s2, w3"},
+		{"scvtf s0, w1", "ucvtf s2, w3"},
+		{"fcvtzs w0, s4", "fcvtzu w2, s1"},
+		{"fcmp s1, s2", "cset x0, mi", "cset x3, gt"},
+		{"fcsel s0, s1, s2, gt"},
+	}
+	run := func(progs [][]string, inputs []oracleRegs) {
+		for _, prog := range progs {
+			label := strings.Join(prog, "; ")
+			_, words := assembleWords(t, prog)
+			bin := oracleBin(t, words)
+			for _, in := range inputs {
+				native := runBin(t, bin, in)
+				got := cpuRun(t, prog, in)
+				diffRegs(t, label, native, got)
+			}
+		}
+	}
+	run(dbl, fpInputs(true))
+	run(sgl, fpInputs(false))
+
+	// Saturation + unordered-compare paths, hardware-checked with inf/NaN seeds.
+	// These programs write only GPRs/NZCV (never a propagated NaN into V), so the
+	// divergent-NaN-payload concern that keeps NaN out of fpSeedValues doesn't
+	// apply: the V registers carry the seed bits through unchanged on both sides.
+	specialD := [][]string{
+		{"fcvtzs x0, d0", "fcvtzs x3, d1", "fcvtzs x4, d2"}, // +inf, -inf, NaN -> MAX, MIN, 0
+		{"fcvtzu x0, d0", "fcvtzu x3, d1", "fcvtzu x4, d2"}, // MAX, 0, 0
+		{"fcvtzs x0, d3", "fcvtzs x3, d4"},                  // ±1e300 -> ±sat
+		{"fcmp d2, d5", "cset x0, vs", "cset x3, cs", "cset x4, mi", "cset x5, eq", "cset x6, gt"}, // unordered: V=C=1
+		{"fcmp d0, d1", "cset x0, gt", "cset x3, mi"}, // +inf > -inf
+	}
+	specialS := [][]string{
+		{"fcvtzs w0, s0", "fcvtzs w3, s1", "fcvtzu w4, s0", "fcvtzs w5, s2"}, // 32-bit saturation + NaN
+		{"fcmp s2, s5", "cset x0, vs", "cset x3, vc"},                        // single-precision unordered
+	}
+	run(specialD, fpSpecialInputs(true))
+	run(specialS, fpSpecialInputs(false))
 }
