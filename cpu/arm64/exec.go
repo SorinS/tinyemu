@@ -422,6 +422,11 @@ func (c *CPU) execSystem(w uint32) error {
 	case w>>12 == 0xD5032, w>>12 == 0xD5033:
 		// hints (nop/yield/wfe/…) and barriers (dmb/dsb/isb): architecturally
 		// no-ops for this single-core, in-order, flat-memory model.
+	case w>>19 == 0x1AA1: // SYS (tlbi/dc/ic/at)
+		if (w>>12)&0xF == 8 { // CRn==8 → TLBI: conservative full flush
+			c.flushTLB()
+		}
+		// dc/ic/at (CRn 7) are no-ops here (no caches modelled).
 	default:
 		return fmt.Errorf("arm64: unimplemented system instruction %08x at %#x", w, c.PC)
 	}

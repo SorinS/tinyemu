@@ -41,14 +41,51 @@ func startLevel(t0sz uint64) int {
 	return 4 - levels
 }
 
-// translate resolves a virtual to a physical address for the given access. It
-// records FAR/FaultKind on a fault.
+// tlbSize is the direct-mapped TLB capacity (entries indexed by VA page number).
+const tlbSize = 1024
+
+// tlbEntry caches one 4 KiB VA→PA translation plus whether the page is writable.
+type tlbEntry struct {
+	valid    bool
+	vpn      uint64
+	ppn      uint64
+	writable bool
+}
+
+// flushTLB invalidates every cached translation.
+func (c *CPU) flushTLB() { c.tlb = [tlbSize]tlbEntry{} }
+
+// translate resolves a virtual to a physical address for the given access,
+// consulting the TLB and walking the page tables on a miss.
 func (c *CPU) translate(vaddr uint64, access accessType) (uint64, *abort) {
 	if !c.mmuEnabled() {
 		return vaddr, nil
 	}
 	write := access == accessWrite
+	vpn := vaddr >> 12
+	e := &c.tlb[vpn&(tlbSize-1)]
+	if e.valid && e.vpn == vpn {
+		if write && !e.writable {
+			return 0, c.fault("permission", 3, vaddr, write)
+		}
+		return e.ppn<<12 | (vaddr & 0xFFF), nil
+	}
+	pa, writable, ab := c.walk(vaddr, write)
+	if ab != nil {
+		return 0, ab
+	}
+	*e = tlbEntry{valid: true, vpn: vpn, ppn: pa >> 12, writable: writable}
+	if write && !writable {
+		return 0, c.fault("permission", 3, vaddr, write)
+	}
+	return pa, nil
+}
 
+// walk performs the stage-1 table walk and the access-flag check, returning the
+// physical address and whether the page is writable (AP[2]==0). Write-permission
+// enforcement is left to translate so a cached entry can serve both reads and
+// writes.
+func (c *CPU) walk(vaddr uint64, write bool) (uint64, bool, *abort) {
 	// Pick the translation base by the top VA bit: the low half uses TTBR0,
 	// the high half TTBR1. The bits above the configured region must be all-0
 	// (TTBR0) or all-1 (TTBR1), else it's an address-size fault (the VA hole).
@@ -56,13 +93,13 @@ func (c *CPU) translate(vaddr uint64, access accessType) (uint64, *abort) {
 	if vaddr&(1<<63) == 0 {
 		tsz = c.TCR & 0x3F
 		if vaddr>>(64-tsz) != 0 {
-			return c.fault("address-size", 0, vaddr, write)
+			return 0, false, c.fault("address-size", 0, vaddr, write)
 		}
 		base = c.TTBR0 & descAddrMask
 	} else {
 		tsz = (c.TCR >> 16) & 0x3F
 		if ^vaddr>>(64-tsz) != 0 {
-			return c.fault("address-size", 0, vaddr, write)
+			return 0, false, c.fault("address-size", 0, vaddr, write)
 		}
 		base = c.TTBR1 & descAddrMask
 	}
@@ -72,17 +109,15 @@ func (c *CPU) translate(vaddr uint64, access accessType) (uint64, *abort) {
 	for {
 		shift := uint(12 + 9*(3-level))
 		idx := (vaddr >> shift) & 0x1FF
-		descAddr := table + idx*8
-		desc, err := c.Mem.Read64(descAddr)
+		desc, err := c.Mem.Read64(table + idx*8)
 		if err != nil || desc&1 == 0 { // unreadable table or invalid descriptor
-			return c.fault("translation", level, vaddr, write)
+			return 0, false, c.fault("translation", level, vaddr, write)
 		}
 		if desc&2 != 0 { // bit1 set
 			if level == 3 { // 0b11 at L3 = page (leaf)
-				return c.finishLeaf(desc&descAddrMask|(vaddr&0xFFF), desc, level, vaddr, write)
+				return c.leaf(desc&descAddrMask|(vaddr&0xFFF), desc, level, vaddr, write)
 			}
-			// 0b11 at L0–L2 = table descriptor; descend.
-			table = desc & descAddrMask
+			table = desc & descAddrMask // 0b11 at L0–L2 = table; descend
 			level++
 			continue
 		}
@@ -91,29 +126,27 @@ func (c *CPU) translate(vaddr uint64, access accessType) (uint64, *abort) {
 		if level == 1 || level == 2 {
 			blockMask := descAddrMask &^ ((uint64(1) << shift) - 1)
 			pa := (desc & blockMask) | (vaddr & ((uint64(1) << shift) - 1))
-			return c.finishLeaf(pa, desc, level, vaddr, write)
+			return c.leaf(pa, desc, level, vaddr, write)
 		}
-		return c.fault("translation", level, vaddr, write)
+		return 0, false, c.fault("translation", level, vaddr, write)
 	}
 }
 
-// finishLeaf applies the access-flag and permission checks of a leaf descriptor.
-func (c *CPU) finishLeaf(pa, desc uint64, level int, vaddr uint64, write bool) (uint64, *abort) {
+// leaf checks the access flag of a leaf descriptor and returns the physical
+// address with the writable flag (AP[2]==0). AP[1]/bit 6 (EL0 access) and
+// UXN/PXN are decoded once EL0 execution is modelled.
+func (c *CPU) leaf(pa, desc uint64, level int, vaddr uint64, write bool) (uint64, bool, *abort) {
 	if desc&(1<<10) == 0 { // AF: access flag not set
-		return c.fault("accessflag", level, vaddr, write)
+		return 0, false, c.fault("accessflag", level, vaddr, write)
 	}
-	// AP[2] (bit 7): read-only when set. (AP[1]/bit 6 = EL0 access, and
-	// UXN/PXN, are decoded once EL0 execution is modelled.)
-	if write && desc&(1<<7) != 0 {
-		return c.fault("permission", level, vaddr, write)
-	}
-	return pa, nil
+	return pa, desc&(1<<7) == 0, nil
 }
 
-func (c *CPU) fault(kind string, level int, vaddr uint64, write bool) (uint64, *abort) {
+// fault records FAR/FaultKind and returns the abort.
+func (c *CPU) fault(kind string, level int, vaddr uint64, write bool) *abort {
 	c.FAR = vaddr
 	c.FaultKind = kind
-	return 0, &abort{kind: kind, level: level, far: vaddr, write: write}
+	return &abort{kind: kind, level: level, far: vaddr, write: write}
 }
 
 // fetch reads the instruction word at PC (a 4-byte aligned access never crosses

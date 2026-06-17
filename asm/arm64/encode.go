@@ -110,6 +110,7 @@ var table = []insn{
 	{name: "dmb", class: clsSystem}, {name: "dsb", class: clsSystem},
 	{name: "isb", class: clsSystem},
 	{name: "mrs", class: clsSystem}, {name: "msr", class: clsSystem},
+	{name: "tlbi", class: clsSystem},
 	// --- Exception generation ---
 	{name: "svc", class: clsException}, {name: "hvc", class: clsException},
 	{name: "smc", class: clsException}, {name: "brk", class: clsException},

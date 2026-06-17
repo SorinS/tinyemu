@@ -1,6 +1,7 @@
 package arm64
 
 import (
+	"encoding/binary"
 	"testing"
 
 	asmarm64 "github.com/jtolio/tinyemu-go/asm/arm64"
@@ -168,6 +169,52 @@ func TestMMU_TTBR1(t *testing.T) {
 	// A low VA with bits above the 48-bit region set lands in the hole → fault.
 	if _, ab := c.translate(0x0001000000000000, accessRead); ab == nil || ab.kind != "address-size" {
 		t.Errorf("VA-hole access: got %v, want address-size fault", ab)
+	}
+}
+
+// TestMMU_TLB proves the translation is cached (a page-table edit isn't seen
+// until a flush) and that both a TLBI instruction and a TTBR write flush it.
+func TestMMU_TLB(t *testing.T) {
+	exec := func(c *CPU, src string) {
+		t.Helper()
+		b, err := asmarm64.Assemble(src)
+		if err != nil {
+			t.Fatalf("assemble %q: %v", src, err)
+		}
+		next := c.PC
+		if err := c.exec(binary.LittleEndian.Uint32(b), &next); err != nil {
+			t.Fatalf("exec %q: %v", src, err)
+		}
+	}
+
+	c := newMMUCPU(t)
+	const pa2 = 0x20000
+	_ = c.Mem.Write64(mmuL3+mmuL3Idx*8, mmuPA|(1<<10)|0b11)
+	_ = c.Mem.Write64(mmuPA, 0xAAAA)
+	if v, _ := c.readMem(mmuVA, 8); v != 0xAAAA { // fills the TLB
+		t.Fatalf("initial read = %#x", v)
+	}
+
+	// Re-point the page to pa2 in memory, WITHOUT flushing: the cached entry
+	// must still resolve to the old PA.
+	_ = c.Mem.Write64(mmuL3+mmuL3Idx*8, pa2|(1<<10)|0b11)
+	_ = c.Mem.Write64(pa2, 0xBBBB)
+	if v, _ := c.readMem(mmuVA, 8); v != 0xAAAA {
+		t.Errorf("expected stale TLB hit 0xAAAA, got %#x", v)
+	}
+
+	// A TLBI instruction flushes → the new mapping is seen.
+	exec(c, "tlbi vmalle1")
+	if v, _ := c.readMem(mmuVA, 8); v != 0xBBBB {
+		t.Errorf("after tlbi expected 0xBBBB, got %#x", v)
+	}
+
+	// A TTBR write also flushes: re-point back to mmuPA, msr ttbr0, see old data.
+	_ = c.Mem.Write64(mmuL3+mmuL3Idx*8, mmuPA|(1<<10)|0b11)
+	c.X[0] = mmuL0
+	exec(c, "msr ttbr0_el1, x0")
+	if v, _ := c.readMem(mmuVA, 8); v != 0xAAAA {
+		t.Errorf("after ttbr write expected 0xAAAA, got %#x", v)
 	}
 }
 

@@ -43,8 +43,56 @@ func encodeSystem(mnem string, ops []string) (uint32, error) {
 		return encodeMRS(ops)
 	case "msr":
 		return encodeMSR(ops)
+	case "tlbi":
+		return encodeTLBI(ops)
 	}
 	return 0, fmt.Errorf("unknown system op %q", mnem)
+}
+
+// tlbiOps maps a TLBI operation name to its {op1, CRm, op2} and whether it takes
+// an Xt operand. All are SYS instructions with CRn=8.
+var tlbiOps = map[string][3]uint32{
+	"vmalle1": {0, 7, 0}, "vmalle1is": {0, 3, 0},
+	"alle1": {4, 7, 4}, "alle1is": {4, 3, 4},
+	"vae1": {0, 7, 1}, "vae1is": {0, 3, 1},
+	"vaae1": {0, 7, 3}, "vaae1is": {0, 3, 3},
+	"aside1": {0, 7, 2}, "vale1": {0, 7, 5},
+}
+
+// tlbiHasReg reports whether a TLBI op takes a register operand (the by-address
+// / by-ASID forms do; the all/whole-context ones don't).
+func tlbiHasReg(name string) bool {
+	switch name {
+	case "vae1", "vae1is", "vaae1", "vaae1is", "aside1", "vale1":
+		return true
+	}
+	return false
+}
+
+func encodeTLBI(ops []string) (uint32, error) {
+	if len(ops) < 1 {
+		return 0, fmt.Errorf("tlbi expects an operation")
+	}
+	name := strings.ToLower(strings.TrimSpace(ops[0]))
+	f, ok := tlbiOps[name]
+	if !ok {
+		return 0, fmt.Errorf("unknown TLBI operation %q", ops[0])
+	}
+	rt := uint32(31) // xzr when no register operand
+	if tlbiHasReg(name) {
+		if len(ops) != 2 {
+			return 0, fmt.Errorf("tlbi %s expects a register operand", name)
+		}
+		r, ok := parseReg(ops[1])
+		if !ok || !r.is64 {
+			return 0, fmt.Errorf("bad TLBI register %q", ops[1])
+		}
+		rt = r.num
+	} else if len(ops) != 1 {
+		return 0, fmt.Errorf("tlbi %s takes no register operand", name)
+	}
+	// SYS: bits[31:19]=0x1AA1 (=0xD5080000), CRn=8 (TLBI) at bits[15:12].
+	return 0xD5080000 | 8<<12 | f[0]<<16 | f[1]<<8 | f[2]<<5 | rt, nil
 }
 
 // hintWord builds a HINT instruction for hint number n (CRm:op2).

@@ -39,6 +39,8 @@ type CPU struct {
 	FAR       uint64
 	FaultKind string
 
+	tlb [tlbSize]tlbEntry // cached VA→PA translations
+
 	Halted   bool   // an exception (svc/brk/hlt) or a real halt stopped the core
 	ExcType  string // "svc"/"hvc"/"smc"/"brk"/"hlt" when Halted by an exception
 	ExcImm   uint16 // the exception's immediate
@@ -55,6 +57,9 @@ func (c *CPU) Reset() {
 	c.N, c.Z, c.C, c.V = false, false, false, false
 	c.Sys = map[uint32]uint64{}
 	c.Halted, c.ExcType, c.ExcImm = false, "", 0
+	c.SCTLR, c.TTBR0, c.TTBR1, c.TCR, c.MAIR = 0, 0, 0, 0, 0
+	c.FAR, c.FaultKind = 0, ""
+	c.flushTLB()
 }
 
 // Encoded sysreg fields (bits 19:5) for the registers given dedicated state.
@@ -96,12 +101,16 @@ func (c *CPU) writeSysreg(field uint32, v uint64) {
 		c.setFlags(v>>31&1 == 1, v>>30&1 == 1, v>>29&1 == 1, v>>28&1 == 1)
 	case a64SCTLRField:
 		c.SCTLR = v
+		c.flushTLB() // enabling/disabling translation invalidates cached entries
 	case a64TTBR0Field:
 		c.TTBR0 = v
+		c.flushTLB()
 	case a64TTBR1Field:
 		c.TTBR1 = v
+		c.flushTLB()
 	case a64TCRField:
 		c.TCR = v
+		c.flushTLB()
 	case a64MAIRField:
 		c.MAIR = v
 	default:
