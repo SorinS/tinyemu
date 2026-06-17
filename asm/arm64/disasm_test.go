@@ -69,7 +69,7 @@ func TestARM64_RoundTrip(t *testing.T) {
 		"adr x0, #4", "adr x0, #-4", "adrp x0, #4096", "adrp x0, #-8192",
 		"adc x0, x1, x2", "sbcs w3, w4, w5",
 		"ccmp x0, x1, #0, eq", "ccmp x0, #5, #3, lt", "ccmn x0, x1, #15, ne",
-		"nop", "wfi", "dmb sy", "dmb ish", "isb", "hint #7",
+		"nop", "wfi", "dmb sy", "dmb ish", "isb", "hint #7", "eret",
 		"mrs x0, nzcv", "mrs x1, tpidr_el0", "msr nzcv, x2", "msr fpcr, x3",
 		"svc #5", "brk #0xf000", "hlt #1",
 		"b #0", "b #8", "b #-8", "bl #16", "b.eq #8", "b.ne #-4", "b.lt #12",

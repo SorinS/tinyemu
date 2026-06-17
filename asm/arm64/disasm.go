@@ -637,6 +637,8 @@ func disBranchReg(w uint32) (string, error) {
 			return "ret", nil
 		}
 		return fmt.Sprintf("ret %s", rname(rn, true, false)), nil
+	case 4:
+		return "eret", nil
 	}
 	return "", fmt.Errorf("arm64 disasm: bad branch-register %08x", w)
 }

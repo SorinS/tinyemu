@@ -172,6 +172,11 @@ var namedSysregs = map[string][5]uint32{
 	"vbar_el1":  {1, 0, 12, 0, 0},
 	"esr_el1":   {1, 0, 5, 2, 0},
 	"far_el1":   {1, 0, 6, 0, 0},
+	"spsr_el1":  {1, 0, 4, 0, 0},
+	"elr_el1":   {1, 0, 4, 0, 1},
+	"sp_el0":    {1, 0, 4, 1, 0},
+	"spsel":     {1, 0, 4, 2, 0},
+	"currentel": {1, 0, 4, 2, 2},
 }
 
 // parseSysreg resolves a system-register operand — a known name or the generic

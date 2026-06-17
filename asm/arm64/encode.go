@@ -125,6 +125,7 @@ var table = []insn{
 	{name: "br", class: clsBranchReg, base: 0xD61F0000},
 	{name: "blr", class: clsBranchReg, base: 0xD63F0000},
 	{name: "ret", class: clsBranchReg, base: 0xD65F0000},
+	{name: "eret", class: clsBranchReg, base: 0xD69F03E0},
 }
 
 var byName = func() map[string]*insn {
@@ -493,6 +494,12 @@ func encodeCompareBranch(in *insn, ops []string) (uint32, error) {
 }
 
 func encodeBranchReg(in *insn, ops []string) (uint32, error) {
+	if in.name == "eret" { // fixed encoding, no register operand
+		if len(ops) != 0 {
+			return 0, fmt.Errorf("eret takes no operands")
+		}
+		return in.base, nil
+	}
 	rn := reg{num: 30, is64: true} // ret defaults to x30 (lr)
 	if len(ops) == 1 {
 		r, ok := parseReg(ops[0])

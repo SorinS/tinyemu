@@ -20,6 +20,22 @@ type CPU struct {
 	// NZCV condition flags.
 	N, Z, C, V bool
 
+	// Exception/privilege state. EL is the current exception level (0 or 1),
+	// SPSel selects SP_EL0 (0) vs SP_ELx (1), DAIF holds the interrupt masks
+	// (bits 3..0 = D,A,I,F). SP is the live stack pointer for the active bank;
+	// the inactive bank is parked in SP_EL0/SP_EL1.
+	EL    uint8
+	SPSel uint8
+	DAIF  uint8
+	SPEL0 uint64
+	SPEL1 uint64
+
+	// EL1 exception registers.
+	SPSR uint64 // SPSR_EL1
+	ELR  uint64 // ELR_EL1
+	ESR  uint64 // ESR_EL1
+	VBAR uint64 // VBAR_EL1
+
 	Mem *mem.PhysMemoryMap
 
 	// Sys holds writable system registers other than NZCV, keyed by their
@@ -47,8 +63,10 @@ type CPU struct {
 	Sentinel uint64
 }
 
-// New creates a CPU over the given physical memory.
-func New(m *mem.PhysMemoryMap) *CPU { return &CPU{Mem: m, Sys: map[uint32]uint64{}} }
+// New creates a CPU over the given physical memory, in the EL1h reset state.
+func New(m *mem.PhysMemoryMap) *CPU {
+	return &CPU{Mem: m, Sys: map[uint32]uint64{}, EL: 1, SPSel: 1, DAIF: 0xF}
+}
 
 // Reset clears architectural state.
 func (c *CPU) Reset() {
@@ -60,6 +78,11 @@ func (c *CPU) Reset() {
 	c.SCTLR, c.TTBR0, c.TTBR1, c.TCR, c.MAIR = 0, 0, 0, 0, 0
 	c.FAR, c.FaultKind = 0, ""
 	c.flushTLB()
+	// Reset enters EL1h (SPSel=1) with interrupts masked — the state a bare
+	// program / kernel starts in.
+	c.EL, c.SPSel, c.DAIF = 1, 1, 0xF
+	c.SPEL0, c.SPEL1 = 0, 0
+	c.SPSR, c.ELR, c.ESR, c.VBAR = 0, 0, 0, 0
 }
 
 // Encoded sysreg fields (bits 19:5) for the registers given dedicated state.
@@ -70,6 +93,15 @@ const (
 	a64TTBR1Field uint32 = 1<<19 | 2<<12 | 1<<5         // TTBR1_EL1 S3_0_C2_C0_1
 	a64TCRField   uint32 = 1<<19 | 2<<12 | 2<<5         // TCR_EL1   S3_0_C2_C0_2
 	a64MAIRField  uint32 = 1<<19 | 10<<12 | 2<<8        // MAIR_EL1  S3_0_C10_C2_0
+
+	a64SPSRField   uint32 = 1<<19 | 4<<12               // SPSR_EL1  S3_0_C4_C0_0
+	a64ELRField    uint32 = 1<<19 | 4<<12 | 1<<5        // ELR_EL1   S3_0_C4_C0_1
+	a64SPEL0Field  uint32 = 1<<19 | 4<<12 | 1<<8        // SP_EL0    S3_0_C4_C1_0
+	a64SPSelField  uint32 = 1<<19 | 4<<12 | 2<<8        // SPSel     S3_0_C4_C2_0
+	a64CurELField  uint32 = 1<<19 | 4<<12 | 2<<8 | 2<<5 // CurrentEL S3_0_C4_C2_2
+	a64ESRField    uint32 = 1<<19 | 5<<12 | 2<<8        // ESR_EL1   S3_0_C5_C2_0
+	a64FARField    uint32 = 1<<19 | 6<<12               // FAR_EL1   S3_0_C6_C0_0
+	a64VBARField   uint32 = 1<<19 | 12<<12              // VBAR_EL1  S3_0_C12_C0_0
 )
 
 // readSysreg returns a system register's value. NZCV comes from the flags; the
@@ -89,6 +121,22 @@ func (c *CPU) readSysreg(field uint32) uint64 {
 		return c.TCR
 	case a64MAIRField:
 		return c.MAIR
+	case a64SPSRField:
+		return c.SPSR
+	case a64ELRField:
+		return c.ELR
+	case a64ESRField:
+		return c.ESR
+	case a64FARField:
+		return c.FAR
+	case a64VBARField:
+		return c.VBAR
+	case a64SPEL0Field:
+		return c.SPEL0
+	case a64SPSelField:
+		return uint64(c.SPSel)
+	case a64CurELField:
+		return uint64(c.EL) << 2
 	}
 	return c.Sys[field]
 }
@@ -113,6 +161,20 @@ func (c *CPU) writeSysreg(field uint32, v uint64) {
 		c.flushTLB()
 	case a64MAIRField:
 		c.MAIR = v
+	case a64SPSRField:
+		c.SPSR = v
+	case a64ELRField:
+		c.ELR = v
+	case a64ESRField:
+		c.ESR = v
+	case a64FARField:
+		c.FAR = v
+	case a64VBARField:
+		c.VBAR = v
+	case a64SPEL0Field:
+		c.SPEL0 = v
+	case a64SPSelField:
+		c.switchEL(c.EL, uint8(v&1)) // banking: re-select the active SP
 	default:
 		c.Sys[field] = v
 	}

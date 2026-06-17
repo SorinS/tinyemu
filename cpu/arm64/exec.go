@@ -9,13 +9,31 @@ import (
 func (c *CPU) Step() error {
 	word, err := c.fetch()
 	if err != nil {
+		if ab, ok := err.(*abort); ok {
+			return c.handleAbort(ab, false) // instruction abort
+		}
 		return err
 	}
 	next := c.PC + 4
 	if err := c.exec(word, &next); err != nil {
+		if ab, ok := err.(*abort); ok {
+			return c.handleAbort(ab, true) // data abort
+		}
 		return err
 	}
 	c.PC = next
+	return nil
+}
+
+// handleAbort delivers an MMU abort to EL1 when a vector table is installed,
+// else surfaces it as a fault (the bare run-and-check behaviour). For an abort
+// the return address (ELR) is the faulting instruction itself, so the handler
+// can fix the mapping and eret to retry.
+func (c *CPU) handleAbort(ab *abort, data bool) error {
+	if c.VBAR == 0 {
+		return ab
+	}
+	c.takeException(excSync, esrAbort(ab, data, c.EL), ab.far, c.PC, true)
 	return nil
 }
 
@@ -62,7 +80,7 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 	case (w>>25)&0x3F == 0x1A:
 		return c.execCompareBranch(w, next)
 	case (w>>24)&0xFF == 0xD4:
-		return c.execException(w)
+		return c.execException(w, next)
 	case (w>>24)&0xFF == 0xD5:
 		return c.execSystem(w)
 	case (w>>25)&0x7F == 0x6B:
@@ -433,8 +451,9 @@ func (c *CPU) execSystem(w uint32) error {
 	return nil
 }
 
-func (c *CPU) execException(w uint32) error {
-	c.ExcImm = uint16((w >> 5) & 0xFFFF)
+func (c *CPU) execException(w uint32, next *uint64) error {
+	imm := uint16((w >> 5) & 0xFFFF)
+	c.ExcImm = imm
 	switch (((w >> 21) & 7) << 2) | (w & 3) {
 	case 0b000_01:
 		c.ExcType = "svc"
@@ -449,9 +468,23 @@ func (c *CPU) execException(w uint32) error {
 	default:
 		return fmt.Errorf("arm64: bad exception %08x at %#x", w, c.PC)
 	}
-	// No exception vectors in this model: surface it as a clean halt so a
-	// caller (e.g. the emu sandbox) can stop the run.
-	c.Halted = true
+	if c.VBAR == 0 {
+		// No vector table installed: surface as a clean halt so a bare caller
+		// (the emu sandbox) can stop the run.
+		c.Halted = true
+		return nil
+	}
+	// Vector to EL1. svc returns to the next instruction; brk/hlt to the
+	// trapping instruction itself.
+	esr, elr := esrSVC(imm), *next
+	switch c.ExcType {
+	case "brk":
+		esr, elr = esrBRK(imm), c.PC
+	case "hlt":
+		esr, elr = esrBRK(imm), c.PC
+	}
+	c.takeException(excSync, esr, 0, elr, false)
+	*next = c.PC
 	return nil
 }
 
@@ -586,6 +619,9 @@ func (c *CPU) execBranchReg(w uint32, next *uint64) error {
 		*next = c.readX(rn, true, false)
 	case 2: // ret
 		*next = c.readX(rn, true, false)
+	case 4: // eret — restore PSTATE from SPSR_EL1, jump to ELR_EL1
+		c.eret()
+		*next = c.PC
 	default:
 		return fmt.Errorf("arm64: bad branch-register %08x", w)
 	}

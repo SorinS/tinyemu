@@ -93,6 +93,8 @@ func TestARM64_System(t *testing.T) {
 		"mrs x3, sctlr_el1", "msr vbar_el1, x4",
 		"tlbi vmalle1", "tlbi vae1, x0", "tlbi alle1", "tlbi aside1, x3",
 		"tlbi vmalle1is", "tlbi vale1, x5", "tlbi vaae1, x6",
+		"eret", "msr spsr_el1, x0", "msr elr_el1, x1", "mrs x2, currentel",
+		"msr sp_el0, x3", "mrs x4, esr_el1", "msr vbar_el1, x5", "mrs x6, far_el1",
 	}
 	runDiff(t, cases)
 }
