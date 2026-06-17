@@ -193,16 +193,26 @@ func encodeMov2GPR(mnem string, ops []string) (uint32, error) {
 	}
 	imm5 := elemImm5(elem.szLog, elem.index)
 	var q, imm4 uint32
+	if g.is64 {
+		q = 1
+	}
+	// Match the valid width pairings (the forms llvm-mc accepts): UMOV moves a
+	// B/H/S lane to Wd or only a D lane to Xd; SMOV sign-extends a B/H lane to Wd
+	// or a B/H/S lane to Xd. Reject the rest rather than emit bytes llvm won't.
 	if mnem == "umov" {
 		imm4 = 0b0111
-		// 64-bit UMOV (Q=1) only for .d; everything else is Wd (Q=0).
-		if g.is64 {
-			q = 1
+		ok := (!g.is64 && elem.szLog <= 2) || (g.is64 && elem.szLog == 3)
+		if !ok {
+			return 0, fmt.Errorf("invalid umov width: %s from .%c", ops[0], "bhsd"[elem.szLog])
 		}
 	} else { // smov
 		imm4 = 0b0101
+		maxSz := 1 // Wd: B/H
 		if g.is64 {
-			q = 1
+			maxSz = 2 // Xd: B/H/S
+		}
+		if elem.szLog > maxSz {
+			return 0, fmt.Errorf("invalid smov width: %s from .%c", ops[0], "bhsd"[elem.szLog])
 		}
 	}
 	return q<<30 | 0x0E000000 | imm5<<16 | imm4<<11 | 1<<10 | elem.num<<5 | g.num, nil
