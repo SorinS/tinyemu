@@ -91,7 +91,7 @@ func encodeLoadStore(mnem string, ops []string) (uint32, error) {
 	if fp, isFP := parseFPReg(ops[0]); isFP {
 		// FP/SIMD load/store: V=1, size/opc/scale from the register width.
 		var ok bool
-		if size, opc, scale, ok = fpLoadStoreForm(mnem, fp.size); !ok {
+		if size, opc, scale, unscaled, ok = fpLoadStoreForm(mnem, fp.size); !ok {
 			return 0, fmt.Errorf("unsupported FP load/store %q %s", mnem, ops[0])
 		}
 		rt, vbit = reg{num: fp.num}, 1<<26
@@ -158,11 +158,20 @@ func encodeLoadStore(mnem string, ops []string) (uint32, error) {
 }
 
 // fpLoadStoreForm gives the size/opc fields and the access scale for a ldr/str
-// of a B/H/S/D/Q register. Q (128-bit) uses size=00 with opc bit set.
-func fpLoadStoreForm(mnem string, fpSize int) (size, opc uint32, scale int64, ok bool) {
-	load := mnem == "ldr"
-	if mnem != "ldr" && mnem != "str" {
-		return 0, 0, 0, false
+// of a B/H/S/D/Q register. Q (128-bit) uses size=00 with opc bit set. ldur/stur
+// select the same fields but force the unscaled imm9 form.
+func fpLoadStoreForm(mnem string, fpSize int) (size, opc uint32, scale int64, unscaled, ok bool) {
+	var load bool
+	switch mnem {
+	case "ldr":
+		load = true
+	case "str":
+	case "ldur":
+		load, unscaled = true, true
+	case "stur":
+		unscaled = true
+	default:
+		return 0, 0, 0, false, false
 	}
 	switch fpSize {
 	case 8:
@@ -175,16 +184,16 @@ func fpLoadStoreForm(mnem string, fpSize int) (size, opc uint32, scale int64, ok
 		size, scale = 3, 8
 	case 128: // Q: size=00, opc = 11 (ldr) / 10 (str)
 		if load {
-			return 0, 0b11, 16, true
+			return 0, 0b11, 16, unscaled, true
 		}
-		return 0, 0b10, 16, true
+		return 0, 0b10, 16, unscaled, true
 	default:
-		return 0, 0, 0, false
+		return 0, 0, 0, false, false
 	}
 	if load {
 		opc = 0b01
 	}
-	return size, opc, scale, true
+	return size, opc, scale, unscaled, true
 }
 
 // lsUImm encodes the unsigned-offset form (bits[25:24]=01); v is the SIMD&FP bit.

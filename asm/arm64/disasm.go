@@ -42,6 +42,10 @@ func Disassemble(w uint32) (string, error) {
 		return disLogicalReg(w), nil
 	case (w>>24)&0x3F == 0x39 || (w>>24)&0x3F == 0x38: // load/store register
 		return disLoadStore(w)
+	case (w>>24)&0x3F == 0x3C || (w>>24)&0x3F == 0x3D: // FP load/store (V bit set)
+		return disFPLoadStore(w)
+	case (w>>24)&0x5F == 0x1E: // scalar FP data-processing
+		return disFPDataProc(w)
 	case (w>>25)&0x1F == 0x14: // load/store pair
 		return disPair(w)
 	case (w>>26)&0x1F == 0x05: // unconditional branch immediate (b/bl)

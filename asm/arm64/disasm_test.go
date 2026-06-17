@@ -75,6 +75,19 @@ func TestARM64_RoundTrip(t *testing.T) {
 		"b #0", "b #8", "b #-8", "bl #16", "b.eq #8", "b.ne #-4", "b.lt #12",
 		"cbz x0, #8", "cbnz w1, #-8",
 		"ret", "ret x0", "br x1", "blr x2",
+		// scalar floating-point
+		"fadd d0, d1, d2", "fsub s3, s4, s5", "fmul d0, d1, d2", "fdiv s0, s1, s2",
+		"fmax d7, d8, d9", "fmin s0, s1, s2", "fmaxnm d0, d1, d2", "fminnm s0, s1, s2",
+		"fnmul d0, d1, d2", "fabs d0, d1", "fneg s0, s1", "fsqrt d0, d1", "fmov d0, d1",
+		"fmov d0, x1", "fmov x2, d3", "fmov s0, w1", "fmov w2, s3",
+		"fcvt d0, s1", "fcvt s0, d1", "fcvt h0, s1", "fcvt s0, h1",
+		"scvtf d0, x1", "ucvtf s2, w3", "fcvtzs x0, d1", "fcvtzu w4, s5",
+		"fcmp d0, d1", "fcmp s2, s3", "fcmp d0, #0.0", "fcmpe d0, d1",
+		"fcsel d0, d1, d2, eq", "fcsel s0, s1, s2, gt",
+		// FP load/store
+		"ldr d0, [x1]", "ldr d0, [x1, #8]", "str s2, [x3, #4]", "ldr q0, [x1]",
+		"str q1, [x2, #48]", "ldr d0, [x1, x2, lsl #3]", "str s0, [x1], #4",
+		"ldr d0, [x1, #8]!", "ldur d0, [x1, #7]", "stur s2, [x3, #-4]",
 	}
 	for _, src := range cases {
 		want, ok := mcEncode(t, src)
@@ -121,6 +134,15 @@ func TestARM64_DisasmVsLLVM(t *testing.T) {
 		"csneg x0, x1, x2, gt", "adr x0, #4", "adrp x0, #4096",
 		"cbz x0, #8", "cbnz w1, #16",
 		"br x1", "blr x2",
+		// scalar floating-point (none of these are alias-preferred by llvm)
+		"fadd d0, d1, d2", "fsub s3, s4, s5", "fmul d0, d1, d2", "fdiv s0, s1, s2",
+		"fmax d7, d8, d9", "fminnm s0, s1, s2", "fnmul d0, d1, d2",
+		"fabs d0, d1", "fneg s0, s1", "fsqrt d0, d1", "fmov d0, d1",
+		"fmov d0, x1", "fmov w2, s3", "fcvt d0, s1", "fcvt s0, d1",
+		"scvtf d0, x1", "ucvtf s2, w3", "fcvtzs x0, d1", "fcvtzu w4, s5",
+		"fcmp d0, d1", "fcmpe d0, d1", "fcsel d0, d1, d2, eq",
+		"ldr d0, [x1, #8]", "str s2, [x3, #4]", "ldr q0, [x1]",
+		"ldr d0, [x1, x2, lsl #3]", "ldur d0, [x1, #7]",
 	}
 	for _, src := range cases {
 		b, ok := mcEncode(t, src)
