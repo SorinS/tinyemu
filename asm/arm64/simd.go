@@ -45,12 +45,26 @@ func parseVecReg(s string) (vecReg, bool) {
 	return vecReg{uint32(n), a[0], a[1]}, true
 }
 
-// isVecOperand reports whether an operand is a vector register (vN.arr) — used
-// to route mnemonics that collide with scalar ones (add/sub/and/...) into the
-// SIMD encoder.
+// isVecOperand reports whether an operand is a vector register (vN.arr) or an
+// indexed lane (vN.t[i]) — used to route mnemonics that collide with scalar ones
+// (add/sub/and/...) into the SIMD encoder.
 func isVecOperand(s string) bool {
-	_, ok := parseVecReg(s)
+	if _, ok := parseVecReg(s); ok {
+		return true
+	}
+	_, ok := parseVecElem(s)
 	return ok
+}
+
+// simdOnlyMnemonics are vector instructions whose first operand may be a GPR
+// (umov/smov), so they must route to the SIMD encoder by name.
+var simdOnlyMnemonics = map[string]bool{
+	"dup": true, "umov": true, "smov": true, "ins": true,
+}
+
+// isSIMDLine reports whether a parsed line is an Advanced SIMD instruction.
+func isSIMDLine(mnem string, ops []string) bool {
+	return simdOnlyMnemonics[mnem] || (len(ops) > 0 && isVecOperand(ops[0]))
 }
 
 // simd3 describes a "three same" vector op. fixedSize >= 0 forces the size field
@@ -75,13 +89,148 @@ var simd3Ops = map[string]simd3{
 	"eor": {u: 1, opcode: 0x03, fixedSize: 0b00, maxSize: 0},
 }
 
+// vecElem is a parsed indexed lane operand "vN.<t>[index]" (e.g. v1.s[0]).
+// szLog is the element-size log2 (0=B,1=H,2=S,3=D).
+type vecElem struct {
+	num   uint32
+	szLog int
+	index uint32
+}
+
+// parseVecElem parses "vN.<t>[index]".
+func parseVecElem(s string) (vecElem, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	dot := strings.IndexByte(s, '.')
+	lb := strings.IndexByte(s, '[')
+	if dot < 0 || lb < 0 || s[0] != 'v' || !strings.HasSuffix(s, "]") || lb < dot {
+		return vecElem{}, false
+	}
+	n, err := strconv.Atoi(s[1:dot])
+	if err != nil || n < 0 || n > 31 {
+		return vecElem{}, false
+	}
+	var szLog int
+	switch s[dot+1 : lb] {
+	case "b":
+		szLog = 0
+	case "h":
+		szLog = 1
+	case "s":
+		szLog = 2
+	case "d":
+		szLog = 3
+	default:
+		return vecElem{}, false
+	}
+	idx, err := strconv.Atoi(s[lb+1 : len(s)-1])
+	if err != nil || idx < 0 || idx >= (16>>szLog) {
+		return vecElem{}, false
+	}
+	return vecElem{uint32(n), szLog, uint32(idx)}, true
+}
+
+// elemImm5 builds the imm5 field encoding element size + index: the low set bit
+// marks the size (B=…1, H=…10, S=…100, D=1000) and the index sits above it.
+func elemImm5(szLog int, index uint32) uint32 {
+	return (index << (szLog + 1)) | (1 << szLog)
+}
+
+// elemSizeArr maps an element-size log2 to the arrangement size field.
+func arrToSzLog(size uint32) int { return int(size) }
+
 // encodeSIMD dispatches a vector instruction whose mnemonic/operands indicate
 // the Advanced SIMD encoding.
 func encodeSIMD(mnem string, ops []string) (uint32, error) {
 	if op, ok := simd3Ops[mnem]; ok {
 		return encodeSIMD3(op, ops)
 	}
+	switch mnem {
+	case "dup":
+		return encodeDup(ops)
+	case "umov", "smov":
+		return encodeMov2GPR(mnem, ops)
+	case "ins":
+		return encodeIns(ops)
+	}
 	return 0, fmt.Errorf("unsupported SIMD op %q", mnem)
+}
+
+// encodeDup encodes DUP (general) "dup Vd.T, Rn" and DUP (element)
+// "dup Vd.T, Vn.Ts[index]".
+func encodeDup(ops []string) (uint32, error) {
+	if len(ops) != 2 {
+		return 0, fmt.Errorf("dup expects two operands")
+	}
+	rd, ok := parseVecReg(ops[0])
+	if !ok {
+		return 0, fmt.Errorf("dup needs a vector destination")
+	}
+	if elem, ok := parseVecElem(ops[1]); ok { // DUP (element)
+		if int(rd.size) != elem.szLog {
+			return 0, fmt.Errorf("dup element size mismatch")
+		}
+		imm5 := elemImm5(elem.szLog, elem.index)
+		return rd.q<<30 | 0x0E000400 | imm5<<16 | elem.num<<5 | rd.num, nil
+	}
+	g, ok := parseReg(ops[1]) // DUP (general)
+	if !ok {
+		return 0, fmt.Errorf("bad dup source")
+	}
+	imm5 := elemImm5(arrToSzLog(rd.size), 0)
+	return rd.q<<30 | 0x0E000C00 | imm5<<16 | g.num<<5 | rd.num, nil
+}
+
+// encodeMov2GPR encodes UMOV (zero-extend) and SMOV (sign-extend) of a lane to
+// a GPR: "umov Wd, Vn.Ts[index]".
+func encodeMov2GPR(mnem string, ops []string) (uint32, error) {
+	if len(ops) != 2 {
+		return 0, fmt.Errorf("%s expects two operands", mnem)
+	}
+	g, ok1 := parseReg(ops[0])
+	elem, ok2 := parseVecElem(ops[1])
+	if !ok1 || !ok2 {
+		return 0, fmt.Errorf("bad %s operands", mnem)
+	}
+	imm5 := elemImm5(elem.szLog, elem.index)
+	var q, imm4 uint32
+	if mnem == "umov" {
+		imm4 = 0b0111
+		// 64-bit UMOV (Q=1) only for .d; everything else is Wd (Q=0).
+		if g.is64 {
+			q = 1
+		}
+	} else { // smov
+		imm4 = 0b0101
+		if g.is64 {
+			q = 1
+		}
+	}
+	return q<<30 | 0x0E000000 | imm5<<16 | imm4<<11 | 1<<10 | elem.num<<5 | g.num, nil
+}
+
+// encodeIns encodes INS (general) "ins Vd.Ts[index], Rn" and INS (element)
+// "ins Vd.Ts[idx1], Vn.Ts[idx2]".
+func encodeIns(ops []string) (uint32, error) {
+	if len(ops) != 2 {
+		return 0, fmt.Errorf("ins expects two operands")
+	}
+	dst, ok := parseVecElem(ops[0])
+	if !ok {
+		return 0, fmt.Errorf("ins needs Vd.Ts[index]")
+	}
+	imm5 := elemImm5(dst.szLog, dst.index)
+	if src, ok := parseVecElem(ops[1]); ok { // INS (element): op=1
+		if src.szLog != dst.szLog {
+			return 0, fmt.Errorf("ins element size mismatch")
+		}
+		imm4 := src.index << dst.szLog
+		return 1<<30 | 1<<29 | 0x0E000000 | imm5<<16 | imm4<<11 | 1<<10 | src.num<<5 | dst.num, nil
+	}
+	g, ok := parseReg(ops[1]) // INS (general): op=0, imm4=0011, Q=1
+	if !ok {
+		return 0, fmt.Errorf("bad ins source")
+	}
+	return 1<<30 | 0x0E000000 | imm5<<16 | 0b0011<<11 | 1<<10 | g.num<<5 | dst.num, nil
 }
 
 // encodeSIMD3 encodes a three-same vector instruction: Vd, Vn, Vm with a common

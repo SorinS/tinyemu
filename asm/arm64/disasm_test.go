@@ -93,6 +93,10 @@ func TestARM64_RoundTrip(t *testing.T) {
 		"sub v3.8h, v4.8h, v5.8h", "mul v0.2s, v1.2s, v2.2s",
 		"and v0.8b, v1.8b, v2.8b", "orr v0.16b, v1.16b, v2.16b",
 		"eor v0.16b, v1.16b, v2.16b", "bic v0.16b, v1.16b, v2.16b", "orn v0.8b, v1.8b, v2.8b",
+		// vector copy group (dup/umov/smov/ins)
+		"dup v0.4s, w1", "dup v0.2d, x1", "dup v0.16b, v1.b[3]", "dup v0.2d, v1.d[1]",
+		"umov w0, v1.s[2]", "umov x0, v1.d[1]", "smov x0, v1.b[1]", "smov x0, v1.h[2]",
+		"ins v0.s[1], w2", "ins v0.d[0], x3", "ins v0.s[1], v2.s[3]", "ins v0.b[2], v3.b[7]",
 	}
 	for _, src := range cases {
 		want, ok := mcEncode(t, src)

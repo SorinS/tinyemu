@@ -32,6 +32,61 @@ func vecName(n, q, size uint32) string {
 	return fmt.Sprintf("v%d.%s", n, arrangementName(q, size))
 }
 
+// disSIMD dispatches the Advanced SIMD data group: three-same (bit21=1) vs the
+// copy group (bits[23:21]=000).
+func disSIMD(w uint32) (string, error) {
+	switch {
+	case (w>>21)&1 == 1 && (w>>10)&1 == 1:
+		return disSIMD3(w)
+	case (w>>21)&7 == 0 && (w>>15)&1 == 0 && (w>>10)&1 == 1:
+		return disSIMDCopy(w)
+	}
+	return "", fmt.Errorf("arm64 disasm: unsupported Adv-SIMD encoding %08x", w)
+}
+
+// elemLetter maps an element-size log2 to its lane-suffix letter.
+var elemLetter = [4]byte{'b', 'h', 's', 'd'}
+
+// vecElemName renders an indexed lane operand "vN.<t>[index]".
+func vecElemName(n, szLog, index uint32) string {
+	return fmt.Sprintf("v%d.%c[%d]", n, elemLetter[szLog], index)
+}
+
+// disSIMDCopy decodes dup/umov/smov/ins.
+func disSIMDCopy(w uint32) (string, error) {
+	q := (w >> 30) & 1
+	op := (w >> 29) & 1
+	imm5 := (w >> 16) & 0x1F
+	imm4 := (w >> 11) & 0xF
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	if imm5 == 0 {
+		return "", fmt.Errorf("arm64 disasm: bad SIMD copy imm5 %08x", w)
+	}
+	szLog := uint32(0)
+	for szLog < 4 && imm5&(1<<szLog) == 0 {
+		szLog++
+	}
+	index := imm5 >> (szLog + 1)
+
+	if op == 1 { // ins (element)
+		return fmt.Sprintf("ins %s, %s",
+			vecElemName(rd, szLog, index), vecElemName(rn, szLog, imm4>>szLog)), nil
+	}
+	switch imm4 {
+	case 0b0000: // dup (element)
+		return fmt.Sprintf("dup %s, %s", vecName(rd, q, szLog), vecElemName(rn, szLog, index)), nil
+	case 0b0001: // dup (general)
+		return fmt.Sprintf("dup %s, %s", vecName(rd, q, szLog), rname(rn, szLog == 3, false)), nil
+	case 0b0011: // ins (general)
+		return fmt.Sprintf("ins %s, %s", vecElemName(rd, szLog, index), rname(rn, szLog == 3, false)), nil
+	case 0b0111: // umov
+		return fmt.Sprintf("umov %s, %s", rname(rd, q == 1, false), vecElemName(rn, szLog, index)), nil
+	case 0b0101: // smov
+		return fmt.Sprintf("smov %s, %s", rname(rd, q == 1, false), vecElemName(rn, szLog, index)), nil
+	}
+	return "", fmt.Errorf("arm64 disasm: unsupported SIMD copy imm4=%d %08x", imm4, w)
+}
+
 // disSIMD3 decodes the Advanced SIMD three-same group (add/sub/mul + logicals).
 func disSIMD3(w uint32) (string, error) {
 	if (w>>21)&1 != 1 || (w>>10)&1 != 1 {

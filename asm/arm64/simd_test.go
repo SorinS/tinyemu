@@ -23,3 +23,23 @@ func TestARM64_SIMD3(t *testing.T) {
 	}
 	runDiff(t, cases)
 }
+
+// TestARM64_SIMDCopy holds the Advanced SIMD copy group (dup/umov/smov/ins)
+// byte-exact vs llvm-mc.
+func TestARM64_SIMDCopy(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		// dup (general) — GPR to all lanes
+		"dup v0.4s, w1", "dup v0.16b, w1", "dup v0.2d, x1", "dup v0.8h, w2",
+		// dup (element) — lane to all lanes
+		"dup v0.4s, v1.s[2]", "dup v0.2d, v1.d[1]", "dup v0.16b, v1.b[3]",
+		// umov / smov — lane to GPR
+		"umov w0, v1.s[2]", "umov x0, v1.d[1]", "umov w0, v1.b[5]", "umov w0, v1.h[3]",
+		"smov x0, v1.b[1]", "smov x0, v1.h[2]", "smov w0, v1.b[0]", "smov x0, v1.s[1]",
+		// ins (general) — GPR to lane
+		"ins v0.s[1], w2", "ins v0.d[0], x3", "ins v0.b[4], w5",
+		// ins (element) — lane to lane
+		"ins v0.s[1], v2.s[3]", "ins v0.d[1], v2.d[0]", "ins v0.b[2], v3.b[7]",
+	}
+	runDiff(t, cases)
+}

@@ -447,6 +447,9 @@ func vecInputs() []oracleRegs {
 		hi := 0xF0E0D0C0B0A09080 ^ (uint64(i) * 0x1111111111111111)
 		r.V[i] = [2]uint64{lo, hi}
 	}
+	for i := 0; i < 31; i++ {
+		r.X[i] = 0xCAFE0000_00000000 ^ (uint64(i+1) * 0x1234567)
+	}
 	r.SP = 0x80000
 	return []oracleRegs{r}
 }
@@ -466,8 +469,16 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"and v0.16b, v1.16b, v2.16b"}, {"orr v0.16b, v1.16b, v2.16b"},
 		{"eor v0.16b, v1.16b, v2.16b"}, {"bic v0.16b, v1.16b, v2.16b"},
 		{"orn v0.16b, v1.16b, v2.16b"}, {"and v0.8b, v1.8b, v2.8b"},
+		// copy group: dup (general/element), umov, smov, ins
+		{"dup v0.4s, w1"}, {"dup v0.16b, w2"}, {"dup v0.2d, x3"}, {"dup v0.8h, w4"},
+		{"dup v0.4s, v1.s[2]"}, {"dup v0.2d, v1.d[1]"}, {"dup v0.16b, v1.b[5]"},
+		{"umov w0, v1.s[2]", "umov x3, v2.d[1]", "umov w4, v3.b[7]", "umov w5, v4.h[2]"},
+		{"smov x0, v1.b[3]", "smov x3, v2.h[1]", "smov x4, v3.s[1]", "smov w5, v4.b[6]"},
+		{"ins v0.s[1], w2", "ins v3.d[0], x4", "ins v5.b[9], w6"},
+		{"ins v0.s[1], v2.s[3]", "ins v3.d[1], v4.d[0]", "ins v5.b[2], v6.b[11]"},
 		// chained
 		{"add v0.4s, v1.4s, v2.4s", "mul v0.4s, v0.4s, v3.4s", "eor v0.16b, v0.16b, v4.16b"},
+		{"dup v0.4s, w1", "ins v0.s[0], w2", "umov w3, v0.s[3]"},
 	}
 	inputs := vecInputs()
 	for _, prog := range programs {

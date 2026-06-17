@@ -1,15 +1,107 @@
 package arm64
 
-import "fmt"
+import (
+	"fmt"
+	"math/bits"
+)
 
-// Advanced SIMD (vector) execution. First slice: the "three same" integer group
-// — add/sub/mul over every arrangement and the bitwise logicals — matching the
+// Advanced SIMD (vector) execution. First slices: the "three same" integer group
+// (add/sub/mul + logicals) and the copy group (dup/umov/smov/ins), matching the
 // asm/arm64 encoder. Validated against native Apple Silicon (the oracle dumps
 // V0–V31).
 
-// execSIMD3 executes a three-same vector instruction. It is reached for the
-// Advanced SIMD data group (bits[28:24]=0b01110); non-three-same members return
-// an unimplemented error so they surface rather than mis-execute.
+// execSIMD dispatches the Advanced SIMD data group (bits[28:24]=0b01110):
+// three-same (bit21=1) vs the copy group (bits[23:21]=000).
+func (c *CPU) execSIMD(w uint32) error {
+	switch {
+	case (w>>21)&1 == 1 && (w>>10)&1 == 1:
+		return c.execSIMD3(w)
+	case (w>>21)&7 == 0 && (w>>15)&1 == 0 && (w>>10)&1 == 1:
+		return c.execSIMDCopy(w)
+	}
+	return fmt.Errorf("arm64: unsupported Adv-SIMD encoding %08x at %#x", w, c.PC)
+}
+
+// lane geometry helpers: an element of width (8<<szLog) bits never crosses a
+// 64-bit word boundary (8/16/32/64 all divide 64).
+func laneMask(szLog uint32) uint64 {
+	wb := uint(8) << szLog
+	if wb >= 64 {
+		return ^uint64(0)
+	}
+	return (uint64(1) << wb) - 1
+}
+
+func (c *CPU) readLane(reg, szLog, index uint32) uint64 {
+	wb := uint(8) << szLog
+	bit := uint(index) * wb
+	return (c.Vreg[reg][bit/64] >> (bit % 64)) & laneMask(szLog)
+}
+
+func (c *CPU) writeLane(reg, szLog, index uint32, val uint64) {
+	wb := uint(8) << szLog
+	bit := uint(index) * wb
+	m := laneMask(szLog)
+	word := bit / 64
+	off := bit % 64
+	c.Vreg[reg][word] = (c.Vreg[reg][word] &^ (m << off)) | ((val & m) << off)
+}
+
+// broadcast fills the destination register with val in every lane of the given
+// element size; q selects 64- vs 128-bit (the upper half is zeroed when q==0).
+func (c *CPU) broadcast(reg, szLog, q uint32, val uint64) {
+	wb := uint(8) << szLog
+	total := uint(64)
+	if q == 1 {
+		total = 128
+	}
+	c.Vreg[reg] = [2]uint64{}
+	for bit := uint(0); bit < total; bit += wb {
+		m := laneMask(szLog)
+		c.Vreg[reg][bit/64] |= (val & m) << (bit % 64)
+	}
+}
+
+// execSIMDCopy executes dup (general/element), umov, smov and ins
+// (general/element). The element size + index live in imm5 (lowest set bit marks
+// the size); op (bit29) and imm4 select the variant.
+func (c *CPU) execSIMDCopy(w uint32) error {
+	q := (w >> 30) & 1
+	op := (w >> 29) & 1
+	imm5 := (w >> 16) & 0x1F
+	imm4 := (w >> 11) & 0xF
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	if imm5 == 0 {
+		return fmt.Errorf("arm64: bad SIMD copy imm5 %08x", w)
+	}
+	szLog := uint32(bits.TrailingZeros32(imm5))
+	index := imm5 >> (szLog + 1)
+	wbits := uint32(8) << szLog
+
+	if op == 1 { // INS (element): Vd[index] = Vn[imm4>>szLog]
+		c.writeLane(rd, szLog, index, c.readLane(rn, szLog, imm4>>szLog))
+		return nil
+	}
+	switch imm4 {
+	case 0b0000: // DUP (element)
+		c.broadcast(rd, szLog, q, c.readLane(rn, szLog, index))
+	case 0b0001: // DUP (general)
+		c.broadcast(rd, szLog, q, c.readX(rn, true, false))
+	case 0b0011: // INS (general): Vd[index] = Rn
+		c.writeLane(rd, szLog, index, c.readX(rn, true, false))
+	case 0b0111: // UMOV: Rd = zero-extended lane
+		c.writeX(rd, q == 1, false, c.readLane(rn, szLog, index))
+	case 0b0101: // SMOV: Rd = sign-extended lane
+		v := uint64(signExtend(c.readLane(rn, szLog, index), wbits))
+		c.writeX(rd, q == 1, false, v)
+	default:
+		return fmt.Errorf("arm64: unsupported SIMD copy imm4=%d %08x", imm4, w)
+	}
+	return nil
+}
+
+// execSIMD3 executes a three-same vector instruction.
 func (c *CPU) execSIMD3(w uint32) error {
 	if (w>>21)&1 != 1 || (w>>10)&1 != 1 {
 		return fmt.Errorf("arm64: unsupported Adv-SIMD encoding %08x at %#x", w, c.PC)
