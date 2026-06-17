@@ -37,7 +37,9 @@
 #
 # Env knobs:
 #   MEM=1024                    guest RAM in MiB (default 256)
-#   OVMF=bin/ovmf/OVMF.fd       firmware (release = faster/quiet; DEBUG default)
+#   OVMF=bin/ovmf/OVMF_DEBUG.fd firmware (release OVMF.fd is the default and is
+#                               ~20% faster + quiet; use the DEBUG build to trace
+#                               the SEC/PEI/DXE firmware log)
 #   PURE64=~/Dev/Assembler/Pure64.git   re-copy uefi.sys/pure64-uefi.sys from here
 #   TINYEMU_BIOS_DEBUG=stderr   stream the OVMF SEC/PEI/DXE log
 #
@@ -81,7 +83,11 @@ ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 TEMU="$ROOT/bin/temu.${OS}-${ARCH}.bin"
 
 MEM=${MEM:-256}
-OVMF="${OVMF:-$ROOT/bin/ovmf/OVMF_DEBUG.fd}"
+# Default to the release OVMF build: ~20% faster than OVMF_DEBUG.fd (no DEBUG()
+# serial spew or assertions), which is most of the slowness lever short of a
+# firmware snapshot. Set OVMF=.../OVMF_DEBUG.fd to trace the firmware boot.
+OVMF="${OVMF:-$ROOT/bin/ovmf/OVMF.fd}"
+[ -r "$OVMF" ] || OVMF="$ROOT/bin/ovmf/OVMF_DEBUG.fd" # fall back if release absent
 DIR="$ROOT/bin/baremetal"
 PAYLOAD=${2:-$DIR/hello.bin}
 
