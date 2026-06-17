@@ -124,6 +124,11 @@ var table = []insn{
 	{name: "fnmul", class: clsFP},
 	{name: "fabs", class: clsFP}, {name: "fneg", class: clsFP},
 	{name: "fsqrt", class: clsFP}, {name: "fmov", class: clsFP},
+	{name: "fcvt", class: clsFP},
+	{name: "scvtf", class: clsFP}, {name: "ucvtf", class: clsFP},
+	{name: "fcvtzs", class: clsFP}, {name: "fcvtzu", class: clsFP},
+	{name: "fcmp", class: clsFP}, {name: "fcmpe", class: clsFP},
+	{name: "fcsel", class: clsFP},
 	// --- Unconditional immediate branch ---
 	{name: "b", class: clsBranch, op: 0},
 	{name: "bl", class: clsBranch, op: 1},

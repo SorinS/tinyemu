@@ -19,6 +19,14 @@ func TestARM64_FPScalar(t *testing.T) {
 		"fmov d0, d1", "fmov s0, s1",
 		// fmov: FP ↔ GPR
 		"fmov d0, x1", "fmov x2, d3", "fmov s0, w1", "fmov w2, s3",
+		// precision conversion
+		"fcvt d0, s1", "fcvt s0, d1", "fcvt h0, s1", "fcvt s0, h1", "fcvt d0, h1",
+		// int ↔ FP
+		"scvtf d0, x1", "scvtf s0, w1", "ucvtf d0, x1", "ucvtf s2, w3",
+		"fcvtzs x0, d1", "fcvtzs w0, s1", "fcvtzu x2, d3", "fcvtzu w4, s5",
+		// compare + select
+		"fcmp d0, d1", "fcmp s2, s3", "fcmp d0, #0.0", "fcmpe d0, d1", "fcmpe s0, #0.0",
+		"fcsel d0, d1, d2, eq", "fcsel s0, s1, s2, gt",
 	}
 	runDiff(t, cases)
 }
