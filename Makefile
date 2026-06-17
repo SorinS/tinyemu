@@ -106,6 +106,62 @@ build-darwin-amd64: ## Build for darwin/amd64
 	@echo "  -> $(BUILD_DIR)/$(BINARY_NAME).darwin-amd64.bin"
 
 # ------------------------------------------------------------------------------
+# Boot assets (firmware, kernels, disk-image inputs) — built ONCE into bin/.
+# The run_*.sh scripts only run a prebuilt artifact; they never build. Prepare
+# what a target needs with these, e.g. `make seabios ovmf` or `make images`.
+# ISOs you supply live in iso/ (see docs); the extract targets need them.
+# ------------------------------------------------------------------------------
+
+PURE64_SRC    ?= $(HOME)/Dev/Assembler/Pure64.git
+BAREMETAL_SRC ?= $(HOME)/Dev/Assembler/BareMetal.git
+
+.PHONY: images
+images: seabios ovmf osv tinycore64 tinycore baremetal ## Build all locally-buildable boot assets
+
+.PHONY: seabios
+seabios: ## Stage SeaBIOS into bin/seabios/ (reuses local qemu, else downloads)
+	sh scripts/extract_seabios.sh
+
+.PHONY: ovmf
+ovmf: ## Fetch OVMF firmware (release + debug) into bin/ovmf/
+	sh scripts/fetch_ovmf.sh
+	curl -fsSL -o $(BUILD_DIR)/ovmf/OVMF_DEBUG.fd https://retrage.github.io/edk2-nightly/bin/DEBUGX64_OVMF.fd
+
+.PHONY: osv
+osv: ## Download the OSv loader into bin/osv/
+	sh scripts/extract_osv.sh
+
+.PHONY: alpine64
+alpine64: ## Extract Alpine x86_64 boot files (needs the ISO in iso/)
+	sh scripts/extract_alpine64.sh
+
+.PHONY: alpine
+alpine: ## Extract Alpine x86 (32-bit) boot files (needs the ISO in iso/)
+	sh scripts/extract_alpine.sh
+
+.PHONY: tinycore64
+tinycore64: ## Build the TinyCore64 serial initramfs (needs bin/tinycore64/{vmlinuz64,corepure64.gz})
+	sh scripts/extract_tinycore64.sh
+
+.PHONY: tinycore
+tinycore: ## Extract TinyCore (32-bit) boot files (needs iso/TinyCore.iso)
+	sh scripts/extract_tinycore.sh
+
+.PHONY: baremetal
+baremetal: ## Build Pure64 + BareMetal kernel into bin/baremetal/
+	@command -v nasm >/dev/null 2>&1 || { echo "need nasm (brew install nasm)" >&2; exit 1; }
+	@test -d "$(PURE64_SRC)"    || { echo "missing Pure64 source $(PURE64_SRC) (set PURE64_SRC=...)" >&2; exit 1; }
+	@test -d "$(BAREMETAL_SRC)" || { echo "missing BareMetal source $(BAREMETAL_SRC) (set BAREMETAL_SRC=...)" >&2; exit 1; }
+	$(call echo,"Building Pure64 + BareMetal kernel")
+	cd "$(PURE64_SRC)" && bash build.sh
+	@mkdir -p $(BUILD_DIR)/baremetal
+	cp "$(PURE64_SRC)/bin/bios-novideo.sys" "$(PURE64_SRC)/bin/pure64-bios-novideo.sys" \
+	   "$(PURE64_SRC)/bin/uefi.sys" "$(PURE64_SRC)/bin/pure64-uefi.sys" $(BUILD_DIR)/baremetal/
+	cd "$(BAREMETAL_SRC)/src" && nasm -dNO_VGA -dNO_LFB kernel.asm -o "$(CURDIR)/$(BUILD_DIR)/baremetal/kernel.sys"
+	nasm docs/baremetal-payload-example/hello.asm -o $(BUILD_DIR)/baremetal/hello.bin
+	@echo "  -> $(BUILD_DIR)/baremetal/ (kernel.sys + Pure64 loaders + hello.bin payload)"
+
+# ------------------------------------------------------------------------------
 # Test targets
 # ------------------------------------------------------------------------------
 

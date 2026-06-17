@@ -55,7 +55,7 @@ MBR="$ROOT/bin/baremetal/bios-novideo.sys"
 LOADER="$ROOT/bin/baremetal/pure64-bios-novideo.sys"
 KERNEL="$ROOT/bin/baremetal/kernel.sys"
 for f in "$MBR" "$LOADER" "$KERNEL"; do
-    [ -r "$f" ] || { echo "missing $f -- build Pure64 + BareMetal and copy into bin/baremetal/" >&2; exit 1; }
+    [ -r "$f" ] || { echo "missing $f -- run 'make baremetal'" >&2; exit 1; }
 done
 
 # Optional second arg: a flat-binary payload to append after kernel.sys.
