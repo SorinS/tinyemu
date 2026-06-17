@@ -84,15 +84,27 @@ func encodeLoadStore(mnem string, ops []string) (uint32, error) {
 	if len(ops) < 2 || len(ops) > 3 {
 		return 0, fmt.Errorf("expected 2-3 operands")
 	}
-	rt, ok := parseReg(ops[0])
-	if !ok {
-		return 0, fmt.Errorf("bad register operand %q", ops[0])
+	var rt reg
+	var size, opc, vbit uint32
+	var unscaled bool
+	var scale int64
+	if fp, isFP := parseFPReg(ops[0]); isFP {
+		// FP/SIMD load/store: V=1, size/opc/scale from the register width.
+		var ok bool
+		if size, opc, scale, ok = fpLoadStoreForm(mnem, fp.size); !ok {
+			return 0, fmt.Errorf("unsupported FP load/store %q %s", mnem, ops[0])
+		}
+		rt, vbit = reg{num: fp.num}, 1<<26
+	} else {
+		var ok bool
+		if rt, ok = parseReg(ops[0]); !ok {
+			return 0, fmt.Errorf("bad register operand %q", ops[0])
+		}
+		if size, opc, unscaled, ok = lsForm(mnem, rt); !ok {
+			return 0, fmt.Errorf("unknown load/store %q", mnem)
+		}
+		scale = int64(1) << size
 	}
-	size, opc, unscaled, ok := lsForm(mnem, rt)
-	if !ok {
-		return 0, fmt.Errorf("unknown load/store %q", mnem)
-	}
-	scale := int64(1) << size
 
 	// Post-index "[Xn], #imm" arrives as two operands: the bare base and the imm.
 	if len(ops) == 3 {
@@ -104,7 +116,7 @@ func encodeLoadStore(mnem string, ops []string) (uint32, error) {
 		if !ok {
 			return 0, fmt.Errorf("bad post-index immediate %q", ops[2])
 		}
-		return lsImm9(size, opc, base, rt, imm, 0b01)
+		return lsImm9(vbit, size, opc, base, rt, imm, 0b01)
 	}
 
 	mem := strings.TrimSpace(ops[1])
@@ -114,7 +126,7 @@ func encodeLoadStore(mnem string, ops []string) (uint32, error) {
 		if !ok {
 			return 0, fmt.Errorf("bad pre-index operand %q", mem)
 		}
-		return lsImm9(size, opc, base, rt, imm, 0b11)
+		return lsImm9(vbit, size, opc, base, rt, imm, 0b11)
 	}
 	if !strings.HasPrefix(mem, "[") || !strings.HasSuffix(mem, "]") {
 		return 0, fmt.Errorf("bad memory operand %q", mem)
@@ -127,46 +139,75 @@ func encodeLoadStore(mnem string, ops []string) (uint32, error) {
 	}
 	if len(parts) == 1 { // [Xn]
 		if unscaled {
-			return lsImm9(size, opc, base, rt, 0, 0b00)
+			return lsImm9(vbit, size, opc, base, rt, 0, 0b00)
 		}
-		return lsUImm(size, opc, base, rt, 0, scale)
+		return lsUImm(vbit, size, opc, base, rt, 0, scale)
 	}
 	// Register offset if the second piece is a register, else an immediate.
 	if _, isReg := parseReg(firstField(parts[1])); isReg {
-		return lsRegOffset(size, opc, base, rt, parts[1:])
+		return lsRegOffset(vbit, size, opc, base, rt, parts[1:])
 	}
 	imm, ok := parseImm(parts[1])
 	if !ok {
 		return 0, fmt.Errorf("bad offset in %q", mem)
 	}
 	if !unscaled && imm >= 0 && imm%scale == 0 && imm/scale <= 0xFFF {
-		return lsUImm(size, opc, base, rt, imm, scale)
+		return lsUImm(vbit, size, opc, base, rt, imm, scale)
 	}
-	return lsImm9(size, opc, base, rt, imm, 0b00) // unscaled fallback (STUR-style)
+	return lsImm9(vbit, size, opc, base, rt, imm, 0b00) // unscaled fallback (STUR-style)
 }
 
-// lsUImm encodes the unsigned-offset form (bits[25:24]=01).
-func lsUImm(size, opc uint32, base, rt reg, imm, scale int64) (uint32, error) {
+// fpLoadStoreForm gives the size/opc fields and the access scale for a ldr/str
+// of a B/H/S/D/Q register. Q (128-bit) uses size=00 with opc bit set.
+func fpLoadStoreForm(mnem string, fpSize int) (size, opc uint32, scale int64, ok bool) {
+	load := mnem == "ldr"
+	if mnem != "ldr" && mnem != "str" {
+		return 0, 0, 0, false
+	}
+	switch fpSize {
+	case 8:
+		size, scale = 0, 1
+	case 16:
+		size, scale = 1, 2
+	case 32:
+		size, scale = 2, 4
+	case 64:
+		size, scale = 3, 8
+	case 128: // Q: size=00, opc = 11 (ldr) / 10 (str)
+		if load {
+			return 0, 0b11, 16, true
+		}
+		return 0, 0b10, 16, true
+	default:
+		return 0, 0, 0, false
+	}
+	if load {
+		opc = 0b01
+	}
+	return size, opc, scale, true
+}
+
+// lsUImm encodes the unsigned-offset form (bits[25:24]=01); v is the SIMD&FP bit.
+func lsUImm(v, size, opc uint32, base, rt reg, imm, scale int64) (uint32, error) {
 	if imm < 0 || imm%scale != 0 || imm/scale > 0xFFF {
 		return 0, fmt.Errorf("offset %d is not a non-negative multiple of %d within range", imm, scale)
 	}
-	return 0x39000000 | size<<30 | opc<<22 | uint32(imm/scale)<<10 | base.num<<5 | rt.num, nil
+	return 0x39000000 | v | size<<30 | opc<<22 | uint32(imm/scale)<<10 | base.num<<5 | rt.num, nil
 }
 
 // lsImm9 encodes the unscaled / pre-index / post-index forms (bits[25:24]=00),
-// mode selecting 00 unscaled, 01 post-index, 11 pre-index.
-func lsImm9(size, opc uint32, base, rt reg, imm int64, mode uint32) (uint32, error) {
+// mode selecting 00 unscaled, 01 post-index, 11 pre-index; v is the SIMD&FP bit.
+func lsImm9(v, size, opc uint32, base, rt reg, imm int64, mode uint32) (uint32, error) {
 	if imm < -256 || imm > 255 {
 		return 0, fmt.Errorf("offset %d out of signed 9-bit range", imm)
 	}
 	imm9 := uint32(imm&0x1FF) << 12
-	return 0x38000000 | size<<30 | opc<<22 | imm9 | mode<<10 | base.num<<5 | rt.num, nil
+	return 0x38000000 | v | size<<30 | opc<<22 | imm9 | mode<<10 | base.num<<5 | rt.num, nil
 }
 
-// lsRegOffset encodes the register-offset form (bit21=1, bits[11:10]=10).
-// extra is the operand pieces after the base: ["Xm"], ["Xm","lsl #3"],
-// ["Wm","sxtw"], ["Wm","uxtw #2"], …
-func lsRegOffset(size, opc uint32, base, rt reg, extra []string) (uint32, error) {
+// lsRegOffset encodes the register-offset form (bit21=1, bits[11:10]=10);
+// v is the SIMD&FP bit. extra is the operand pieces after the base.
+func lsRegOffset(v, size, opc uint32, base, rt reg, extra []string) (uint32, error) {
 	idx, ok := parseReg(strings.TrimSpace(extra[0]))
 	if !ok {
 		return 0, fmt.Errorf("bad index register %q", extra[0])
@@ -205,7 +246,7 @@ func lsRegOffset(size, opc uint32, base, rt reg, extra []string) (uint32, error)
 			}
 		}
 	}
-	return 0x38200000 | size<<30 | opc<<22 | idx.num<<16 | option<<13 | s<<12 | 0b10<<10 | base.num<<5 | rt.num, nil
+	return 0x38200000 | v | size<<30 | opc<<22 | idx.num<<16 | option<<13 | s<<12 | 0b10<<10 | base.num<<5 | rt.num, nil
 }
 
 // encodePair encodes the load/store pair instructions (ldp/stp/ldpsw). imm is

@@ -27,6 +27,12 @@ func TestARM64_FPScalar(t *testing.T) {
 		// compare + select
 		"fcmp d0, d1", "fcmp s2, s3", "fcmp d0, #0.0", "fcmpe d0, d1", "fcmpe s0, #0.0",
 		"fcsel d0, d1, d2, eq", "fcsel s0, s1, s2, gt",
+		// FP load/store (S/D/Q), all addressing modes
+		"ldr d0, [x1]", "ldr d0, [x1, #8]", "str d0, [x1, #16]", "ldr s0, [x1, #4]",
+		"str s2, [x3, #8]", "ldr q0, [x1]", "str q1, [x2, #48]", "ldr q3, [sp]",
+		"ldr b0, [x1]", "ldr h0, [x1, #2]",
+		"ldr d0, [x1, x2, lsl #3]", "str s0, [x1], #4", "ldr d0, [x1, #8]!",
+		"str q0, [x1, #-16]",
 	}
 	runDiff(t, cases)
 }
