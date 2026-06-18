@@ -167,6 +167,10 @@ var simd3FOps = map[string]simd3F{
 	"fmin":   {u: 0, a: 1, opcode: 0x1E},
 	"fmaxnm": {u: 0, a: 0, opcode: 0x18},
 	"fminnm": {u: 0, a: 1, opcode: 0x18},
+	// FP compares — per-lane all-ones / all-zeros mask
+	"fcmeq": {u: 0, a: 0, opcode: 0x1C},
+	"fcmge": {u: 1, a: 0, opcode: 0x1C},
+	"fcmgt": {u: 1, a: 1, opcode: 0x1C},
 }
 
 // encodeSIMD dispatches a vector instruction whose mnemonic/operands indicate

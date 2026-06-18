@@ -118,6 +118,8 @@ func TestARM64_RoundTrip(t *testing.T) {
 		// two-register misc
 		"abs v0.16b, v1.16b", "abs v0.2d, v1.2d", "neg v0.4s, v1.4s",
 		"not v0.16b, v1.16b", "cnt v0.8b, v1.8b",
+		// FP compares
+		"fcmeq v0.4s, v1.4s, v2.4s", "fcmge v0.2d, v1.2d, v2.2d", "fcmgt v0.4s, v1.4s, v2.4s",
 	}
 	for _, src := range cases {
 		want, ok := mcEncode(t, src)

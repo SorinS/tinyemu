@@ -523,6 +523,7 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"fdiv v0.4s, v6.4s, v1.4s"}, {"fmax v0.4s, v4.4s, v5.4s"},
 		{"fmin v0.4s, v4.4s, v5.4s"}, {"fmaxnm v0.4s, v1.4s, v4.4s"},
 		{"fminnm v0.4s, v1.4s, v4.4s"},
+		{"fcmeq v0.4s, v1.4s, v2.4s"}, {"fcmge v0.4s, v1.4s, v4.4s"}, {"fcmgt v0.4s, v4.4s, v1.4s"},
 		{"fadd v0.4s, v1.4s, v2.4s", "fmul v0.4s, v0.4s, v3.4s", "fsub v0.4s, v0.4s, v4.4s"},
 	}
 	fpDouble := [][]string{
@@ -530,6 +531,7 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"fmul v0.2d, v1.2d, v5.2d"}, {"fdiv v0.2d, v6.2d, v1.2d"},
 		{"fmax v0.2d, v4.2d, v5.2d"}, {"fmin v0.2d, v4.2d, v5.2d"},
 		{"fmaxnm v0.2d, v1.2d, v4.2d"}, {"fminnm v0.2d, v1.2d, v4.2d"},
+		{"fcmeq v0.2d, v1.2d, v2.2d"}, {"fcmge v0.2d, v1.2d, v4.2d"}, {"fcmgt v0.2d, v4.2d, v1.2d"},
 	}
 	runVec(fpSingle, vecFPInputs(false))
 	runVec(fpDouble, vecFPInputs(true))

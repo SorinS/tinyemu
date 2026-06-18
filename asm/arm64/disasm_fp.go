@@ -334,6 +334,12 @@ func fpVecMnem(u, a, opcode uint32) (string, bool) {
 		return "fmaxnm", true
 	case 0<<6 | 1<<5 | 0x18:
 		return "fminnm", true
+	case 0<<6 | 0<<5 | 0x1C:
+		return "fcmeq", true
+	case 1<<6 | 0<<5 | 0x1C:
+		return "fcmge", true
+	case 1<<6 | 1<<5 | 0x1C:
+		return "fcmgt", true
 	}
 	return "", false
 }

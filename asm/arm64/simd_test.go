@@ -114,6 +114,9 @@ func TestARM64_SIMD3F(t *testing.T) {
 		"fdiv v0.4s, v1.4s, v2.4s", "fdiv v0.2d, v1.2d, v2.2d",
 		"fmax v3.4s, v4.4s, v5.4s", "fmin v0.4s, v1.4s, v2.4s",
 		"fmaxnm v0.2d, v1.2d, v2.2d", "fminnm v0.4s, v1.4s, v2.4s",
+		// FP compares
+		"fcmeq v0.4s, v1.4s, v2.4s", "fcmge v0.4s, v1.4s, v2.4s", "fcmgt v0.4s, v1.4s, v2.4s",
+		"fcmeq v0.2d, v1.2d, v2.2d", "fcmgt v0.2d, v1.2d, v2.2d", "fcmge v0.2s, v1.2s, v2.2s",
 	}
 	runDiff(t, cases)
 }

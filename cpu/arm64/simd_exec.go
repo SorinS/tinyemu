@@ -341,6 +341,9 @@ func (c *CPU) execSIMD3F(w uint32) error {
 	sz := (w >> 22) & 1
 	opcode := (w >> 11) & 0x1F
 	rm, rn, rd := (w>>16)&0x1F, (w>>5)&0x1F, w&0x1F
+	if opcode == 0x1C { // FP compares (fcmeq/fcmge/fcmgt) -> lane mask
+		return c.execSIMD3FCmp(w)
+	}
 	scalarOp, ok := simd3FScalarOp(u, a, opcode)
 	if !ok {
 		return fmt.Errorf("arm64: unsupported FP-vector op %08x at %#x", w, c.PC)
@@ -364,6 +367,52 @@ func (c *CPU) execSIMD3F(w uint32) error {
 				bv := math.Float32frombits(uint32(vm[wi] >> off))
 				r, _ := fpArith2Apply32(scalarOp, av, bv)
 				out |= uint64(math.Float32bits(r)) << off
+			}
+			res[wi] = out
+		}
+	}
+	if q == 0 {
+		res[1] = 0
+	}
+	c.Vreg[rd] = res
+	return nil
+}
+
+// execSIMD3FCmp executes the FP vector compares (fcmeq U0a0 / fcmge U1a0 /
+// fcmgt U1a1), writing a per-lane all-ones (true) / all-zeros mask. Unordered
+// (NaN) comparisons are false — Go's float comparisons already give that.
+func (c *CPU) execSIMD3FCmp(w uint32) error {
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	a := (w >> 23) & 1
+	sz := (w >> 22) & 1
+	rm, rn, rd := (w>>16)&0x1F, (w>>5)&0x1F, w&0x1F
+	pred := func(x, y float64) bool { return x == y } // fcmeq
+	switch {
+	case u == 1 && a == 0:
+		pred = func(x, y float64) bool { return x >= y } // fcmge
+	case u == 1 && a == 1:
+		pred = func(x, y float64) bool { return x > y } // fcmgt
+	}
+	vn, vm := c.Vreg[rn], c.Vreg[rm]
+	words := 1
+	if q == 1 {
+		words = 2
+	}
+	var res [2]uint64
+	for wi := 0; wi < words; wi++ {
+		if sz == 1 { // double
+			if pred(math.Float64frombits(vn[wi]), math.Float64frombits(vm[wi])) {
+				res[wi] = ^uint64(0)
+			}
+		} else { // single: two lanes
+			var out uint64
+			for off := uint(0); off < 64; off += 32 {
+				x := float64(math.Float32frombits(uint32(vn[wi] >> off)))
+				y := float64(math.Float32frombits(uint32(vm[wi] >> off)))
+				if pred(x, y) {
+					out |= uint64(0xFFFFFFFF) << off
+				}
 			}
 			res[wi] = out
 		}
