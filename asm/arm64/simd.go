@@ -184,6 +184,9 @@ func encodeSIMD(mnem string, ops []string) (uint32, error) {
 	if op, ok := acrossOps[mnem]; ok {
 		return encodeSIMDAcross(op, ops)
 	}
+	if op, ok := twoRegMiscOps[mnem]; ok {
+		return encodeSIMD2RegMisc(op, ops)
+	}
 	switch mnem {
 	case "dup":
 		return encodeDup(ops)
@@ -283,6 +286,44 @@ func encodeIns(ops []string) (uint32, error) {
 		return 0, fmt.Errorf("bad ins source")
 	}
 	return 1<<30 | 0x0E000000 | imm5<<16 | 0b0011<<11 | 1<<10 | g.num<<5 | dst.num, nil
+}
+
+// twoRegMisc describes an Advanced SIMD two-register-miscellaneous op. byteOnly
+// marks the ops that take only the .8b/.16b arrangements (not/cnt).
+type twoRegMisc struct {
+	u        uint32
+	opcode   uint32
+	byteOnly bool
+}
+
+var twoRegMiscOps = map[string]twoRegMisc{
+	"abs": {u: 0, opcode: 0x0B},
+	"neg": {u: 1, opcode: 0x0B},
+	"cnt": {u: 0, opcode: 0x05, byteOnly: true},
+	"not": {u: 1, opcode: 0x05, byteOnly: true},
+}
+
+// encodeSIMD2RegMisc encodes a two-register-misc op "abs Vd.T, Vn.T".
+func encodeSIMD2RegMisc(op twoRegMisc, ops []string) (uint32, error) {
+	if len(ops) != 2 {
+		return 0, fmt.Errorf("expected Vd.T, Vn.T")
+	}
+	rd, ok1 := parseVecReg(ops[0])
+	rn, ok2 := parseVecReg(ops[1])
+	if !ok1 || !ok2 {
+		return 0, fmt.Errorf("bad SIMD register")
+	}
+	if rd.q != rn.q || rd.size != rn.size {
+		return 0, fmt.Errorf("arrangement mismatch")
+	}
+	if op.byteOnly && rd.size != 0 {
+		return 0, fmt.Errorf("%s takes only .8b/.16b", ops[0])
+	}
+	if rd.size == 0b11 && rd.q == 0 {
+		return 0, fmt.Errorf("invalid .1d arrangement")
+	}
+	return rd.q<<30 | op.u<<29 | 0x0E200000 | rd.size<<22 |
+		op.opcode<<12 | 0b10<<10 | rn.num<<5 | rd.num, nil
 }
 
 // acrossLanes describes an across-lanes reduction (addv/smaxv/…).

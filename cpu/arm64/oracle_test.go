@@ -481,6 +481,10 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"cmhi v0.8h, v1.8h, v2.8h"}, {"cmhs v0.2d, v3.2d, v4.2d"},
 		{"cmeq v0.4s, v1.4s, v2.4s"}, {"cmtst v0.16b, v1.16b, v2.16b"},
 		{"cmgt v0.2d, v1.2d, v2.2d"}, {"cmeq v0.8b, v3.8b, v4.8b"},
+		// two-register misc (abs/neg/not/cnt)
+		{"abs v0.16b, v1.16b"}, {"abs v0.4s, v3.4s"}, {"abs v0.2d, v1.2d"}, {"abs v0.8h, v3.8h"},
+		{"neg v0.16b, v1.16b"}, {"neg v0.4s, v3.4s"}, {"neg v0.2d, v1.2d"},
+		{"not v0.16b, v1.16b"}, {"cnt v0.16b, v1.16b"}, {"cnt v0.8b, v3.8b"},
 		// across-lanes reductions (addv/smaxv/umaxv/sminv/uminv)
 		{"addv b0, v1.16b"}, {"addv b0, v1.8b"}, {"addv h0, v1.8h"}, {"addv s0, v1.4s"},
 		{"smaxv b0, v1.16b"}, {"sminv b0, v1.16b"}, {"umaxv s0, v1.4s"}, {"uminv h0, v1.8h"},

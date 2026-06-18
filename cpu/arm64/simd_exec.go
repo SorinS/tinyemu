@@ -18,12 +18,80 @@ func (c *CPU) execSIMD(w uint32) error {
 	switch {
 	case (w>>17)&0x1F == 0x18 && (w>>10)&3 == 0b10:
 		return c.execSIMDAcross(w)
+	case (w>>17)&0x1F == 0x10 && (w>>10)&3 == 0b10:
+		return c.execSIMD2RegMisc(w)
 	case (w>>21)&1 == 1 && (w>>10)&1 == 1:
 		return c.execSIMD3(w)
 	case (w>>21)&7 == 0 && (w>>15)&1 == 0 && (w>>10)&1 == 1:
 		return c.execSIMDCopy(w)
 	}
 	return fmt.Errorf("arm64: unsupported Adv-SIMD encoding %08x at %#x", w, c.PC)
+}
+
+// execSIMD2RegMisc executes abs/neg (opcode 0x0B) and cnt/not (opcode 0x05).
+func (c *CPU) execSIMD2RegMisc(w uint32) error {
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	size := (w >> 22) & 3
+	opcode := (w >> 12) & 0x1F
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	vn := c.Vreg[rn]
+
+	switch {
+	case opcode == 0x05 && u == 1: // not — bitwise, whole register
+		res := [2]uint64{^vn[0], ^vn[1]}
+		if q == 0 {
+			res[1] = 0
+		}
+		c.Vreg[rd] = res
+		return nil
+	case opcode == 0x05 && u == 0: // cnt — per-byte popcount
+		c.Vreg[rd] = c.simd2RegLanes(vn, 0, q, func(a uint64, _ uint) uint64 {
+			return uint64(bits.OnesCount8(uint8(a)))
+		})
+		return nil
+	case opcode == 0x0B && u == 0: // abs
+		c.Vreg[rd] = c.simd2RegLanes(vn, size, q, func(a uint64, e uint) uint64 {
+			v := sextLane(a, e)
+			if v < 0 {
+				v = -v
+			}
+			return uint64(v)
+		})
+		return nil
+	case opcode == 0x0B && u == 1: // neg
+		c.Vreg[rd] = c.simd2RegLanes(vn, size, q, func(a uint64, _ uint) uint64 {
+			return uint64(0) - a
+		})
+		return nil
+	}
+	return fmt.Errorf("arm64: unsupported two-reg-misc opcode %08x at %#x", w, c.PC)
+}
+
+// simd2RegLanes applies a per-lane unary op (results masked to the element
+// width), zeroing the upper 64 bits for a half-vector.
+func (c *CPU) simd2RegLanes(vn [2]uint64, size, q uint32, op func(a uint64, ebits uint) uint64) [2]uint64 {
+	ebits := uint(8) << size
+	var mask uint64
+	if ebits >= 64 {
+		mask = ^uint64(0)
+	} else {
+		mask = (uint64(1) << ebits) - 1
+	}
+	words := 1
+	if q == 1 {
+		words = 2
+	}
+	var res [2]uint64
+	for wi := 0; wi < words; wi++ {
+		var out uint64
+		for off := uint(0); off < 64; off += ebits {
+			out |= (op((vn[wi]>>off)&mask, ebits) & mask) << off
+		}
+		res[wi] = out
+	}
+	return res
 }
 
 // execSIMDAcross executes an across-lanes reduction (addv/smaxv/umaxv/sminv/

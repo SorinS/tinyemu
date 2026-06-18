@@ -115,6 +115,9 @@ func TestARM64_RoundTrip(t *testing.T) {
 		// across-lanes reductions
 		"addv b0, v1.16b", "addv h0, v1.8h", "addv s0, v1.4s",
 		"smaxv b0, v1.16b", "umaxv s0, v1.4s", "uminv h0, v1.8h",
+		// two-register misc
+		"abs v0.16b, v1.16b", "abs v0.2d, v1.2d", "neg v0.4s, v1.4s",
+		"not v0.16b, v1.16b", "cnt v0.8b, v1.8b",
 	}
 	for _, src := range cases {
 		want, ok := mcEncode(t, src)

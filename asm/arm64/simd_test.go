@@ -48,6 +48,18 @@ func TestARM64_SIMDCopy(t *testing.T) {
 	runDiff(t, cases)
 }
 
+// TestARM64_SIMD2RegMisc holds the two-register-misc encoders byte-exact vs
+// llvm-mc (abs/neg/not/cnt).
+func TestARM64_SIMD2RegMisc(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"abs v0.16b, v1.16b", "abs v0.4s, v1.4s", "abs v0.2d, v1.2d", "abs v0.8h, v1.8h",
+		"neg v0.16b, v1.16b", "neg v0.4s, v1.4s", "neg v0.2d, v1.2d", "neg v0.4h, v1.4h",
+		"not v0.16b, v1.16b", "not v0.8b, v1.8b", "cnt v0.16b, v1.16b", "cnt v0.8b, v1.8b",
+	}
+	runDiff(t, cases)
+}
+
 // TestARM64_SIMDAcross holds the across-lanes reduction encoders byte-exact vs
 // llvm-mc (addv/smaxv/umaxv/sminv/uminv).
 func TestARM64_SIMDAcross(t *testing.T) {

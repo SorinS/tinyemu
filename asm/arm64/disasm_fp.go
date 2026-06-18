@@ -41,12 +41,37 @@ func disSIMD(w uint32) (string, error) {
 	switch {
 	case (w>>17)&0x1F == 0x18 && (w>>10)&3 == 0b10:
 		return disSIMDAcross(w)
+	case (w>>17)&0x1F == 0x10 && (w>>10)&3 == 0b10:
+		return disSIMD2RegMisc(w)
 	case (w>>21)&1 == 1 && (w>>10)&1 == 1:
 		return disSIMD3(w)
 	case (w>>21)&7 == 0 && (w>>15)&1 == 0 && (w>>10)&1 == 1:
 		return disSIMDCopy(w)
 	}
 	return "", fmt.Errorf("arm64 disasm: unsupported Adv-SIMD encoding %08x", w)
+}
+
+// disSIMD2RegMisc decodes abs/neg/cnt/not.
+func disSIMD2RegMisc(w uint32) (string, error) {
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	size := (w >> 22) & 3
+	opcode := (w >> 12) & 0x1F
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	var mnem string
+	switch {
+	case opcode == 0x0B && u == 0:
+		mnem = "abs"
+	case opcode == 0x0B && u == 1:
+		mnem = "neg"
+	case opcode == 0x05 && u == 0:
+		mnem = "cnt"
+	case opcode == 0x05 && u == 1:
+		mnem = "not"
+	default:
+		return "", fmt.Errorf("arm64 disasm: unsupported two-reg-misc opcode %08x", w)
+	}
+	return fmt.Sprintf("%s %s, %s", mnem, vecName(rd, q, size), vecName(rn, q, size)), nil
 }
 
 // acrossName names an across-lanes reduction from (U, opcode).
