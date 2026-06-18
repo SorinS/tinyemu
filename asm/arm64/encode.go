@@ -232,16 +232,17 @@ func parseLine(src string) (mnem string, ops []string) {
 	return mnem, ops
 }
 
-// splitOperands splits on commas that are not inside [ ] brackets, so a memory
-// operand like "[x1, #8]" stays one piece.
+// splitOperands splits on commas that are not inside [ ] or { } brackets, so a
+// memory operand like "[x1, #8]" or a SIMD register list "{v0.16b, v1.16b}"
+// stays one piece.
 func splitOperands(s string) []string {
 	var out []string
 	depth, start := 0, 0
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
-		case '[':
+		case '[', '{':
 			depth++
-		case ']':
+		case ']', '}':
 			depth--
 		case ',':
 			if depth == 0 {

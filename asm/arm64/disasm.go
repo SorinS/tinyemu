@@ -48,6 +48,8 @@ func Disassemble(w uint32) (string, error) {
 		return disFPDataProc(w)
 	case (w>>24)&0x9F == 0x0E: // Advanced SIMD (vector)
 		return disSIMD(w)
+	case (w>>24)&0xBF == 0x0C: // Advanced SIMD load/store multiple structures
+		return disSIMDLdSt1(w)
 	case (w>>25)&0x1F == 0x14: // load/store pair
 		return disPair(w)
 	case (w>>26)&0x1F == 0x05: // unconditional branch immediate (b/bl)

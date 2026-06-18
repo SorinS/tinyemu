@@ -1,6 +1,9 @@
 package arm64
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // arrangementName reverses parseVecReg's arrangement: (Q, size) -> suffix.
 func arrangementName(q, size uint32) string {
@@ -85,6 +88,55 @@ func disSIMDCopy(w uint32) (string, error) {
 		return fmt.Sprintf("smov %s, %s", rname(rd, q == 1, false), vecElemName(rn, szLog, index)), nil
 	}
 	return "", fmt.Errorf("arm64 disasm: unsupported SIMD copy imm4=%d %08x", imm4, w)
+}
+
+// ld1RegCount maps the LD1/ST1 multiple-structures opcode to a register count.
+func ld1RegCount(opcode uint32) (int, bool) {
+	switch opcode {
+	case 0x7:
+		return 1, true
+	case 0xA:
+		return 2, true
+	case 0x6:
+		return 3, true
+	case 0x2:
+		return 4, true
+	}
+	return 0, false
+}
+
+// disSIMDLdSt1 decodes LD1/ST1 (multiple structures).
+func disSIMDLdSt1(w uint32) (string, error) {
+	q := (w >> 30) & 1
+	load := (w>>22)&1 == 1
+	post := (w>>23)&1 == 1
+	rm := (w >> 16) & 0x1F
+	opcode := (w >> 12) & 0xF
+	size := (w >> 10) & 3
+	rn := (w >> 5) & 0x1F
+	rt := w & 0x1F
+	count, ok := ld1RegCount(opcode)
+	if !ok {
+		return "", fmt.Errorf("arm64 disasm: unsupported LD1/ST1 opcode %08x", w)
+	}
+	mnem := "st1"
+	if load {
+		mnem = "ld1"
+	}
+	var list []string
+	for i := 0; i < count; i++ {
+		list = append(list, vecName((rt+uint32(i))%32, q, size))
+	}
+	base := rname(rn, true, true)
+	out := fmt.Sprintf("%s {%s}, [%s]", mnem, strings.Join(list, ", "), base)
+	if !post {
+		return out, nil
+	}
+	if rm == 0x1F { // immediate post-index = the transfer size
+		total := (int64(8) << q) * int64(count)
+		return fmt.Sprintf("%s {%s}, [%s], #%d", mnem, strings.Join(list, ", "), base, total), nil
+	}
+	return fmt.Sprintf("%s {%s}, [%s], %s", mnem, strings.Join(list, ", "), base, rname(rm, true, false)), nil
 }
 
 // disSIMD3 decodes the Advanced SIMD three-same group (add/sub/mul + logicals).

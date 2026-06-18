@@ -104,6 +104,11 @@ func TestARM64_RoundTrip(t *testing.T) {
 		// integer compares
 		"cmgt v0.4s, v1.4s, v2.4s", "cmge v0.16b, v1.16b, v2.16b", "cmhi v0.8h, v1.8h, v2.8h",
 		"cmhs v0.2d, v1.2d, v2.2d", "cmeq v0.4s, v1.4s, v2.4s", "cmtst v0.8b, v1.8b, v2.8b",
+		// vector load/store (LD1/ST1 multiple structures)
+		"ld1 {v0.16b}, [x0]", "st1 {v0.4s}, [x1]", "ld1 {v0.8b}, [x2]",
+		"ld1 {v0.16b, v1.16b}, [x0]", "ld1 {v0.4s, v1.4s, v2.4s}, [x0]",
+		"ld1 {v0.2d, v1.2d, v2.2d, v3.2d}, [x0]",
+		"ld1 {v0.16b}, [x1], #16", "st1 {v0.4s}, [x1], #16", "ld1 {v0.16b}, [x1], x2",
 	}
 	for _, src := range cases {
 		want, ok := mcEncode(t, src)

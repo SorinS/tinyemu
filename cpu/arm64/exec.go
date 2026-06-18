@@ -77,6 +77,8 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 		return c.execFPDataProc(w)
 	case (w>>24)&0x9F == 0x0E: // Advanced SIMD (vector)
 		return c.execSIMD(w)
+	case (w>>24)&0xBF == 0x0C: // Advanced SIMD load/store multiple structures
+		return c.execSIMDLdSt1(w)
 	case (w>>25)&0x1F == 0x14:
 		return c.execPair(w)
 	case (w>>26)&0x1F == 0x05:

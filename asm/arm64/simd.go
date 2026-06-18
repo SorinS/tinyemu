@@ -57,9 +57,11 @@ func isVecOperand(s string) bool {
 }
 
 // simdOnlyMnemonics are vector instructions whose first operand may be a GPR
-// (umov/smov), so they must route to the SIMD encoder by name.
+// (umov/smov) or a register list (ld1/st1), so they must route to the SIMD
+// encoder by name.
 var simdOnlyMnemonics = map[string]bool{
 	"dup": true, "umov": true, "smov": true, "ins": true,
+	"ld1": true, "st1": true,
 }
 
 // isSIMDLine reports whether a parsed line is an Advanced SIMD instruction.
@@ -182,6 +184,8 @@ func encodeSIMD(mnem string, ops []string) (uint32, error) {
 		return encodeMov2GPR(mnem, ops)
 	case "ins":
 		return encodeIns(ops)
+	case "ld1", "st1":
+		return encodeLdSt1(mnem, ops)
 	}
 	return 0, fmt.Errorf("unsupported SIMD op %q", mnem)
 }
@@ -272,6 +276,81 @@ func encodeIns(ops []string) (uint32, error) {
 		return 0, fmt.Errorf("bad ins source")
 	}
 	return 1<<30 | 0x0E000000 | imm5<<16 | 0b0011<<11 | 1<<10 | g.num<<5 | dst.num, nil
+}
+
+// parseRegList parses a SIMD register list "{v0.16b, v1.16b, ...}". The members
+// must share one arrangement and be consecutive (modulo 32); 1..4 registers.
+func parseRegList(s string) (regs []vecReg, ok bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "{") || !strings.HasSuffix(s, "}") {
+		return nil, false
+	}
+	for _, part := range strings.Split(s[1:len(s)-1], ",") {
+		r, rok := parseVecReg(part)
+		if !rok {
+			return nil, false
+		}
+		regs = append(regs, r)
+	}
+	if len(regs) < 1 || len(regs) > 4 {
+		return nil, false
+	}
+	for i := 1; i < len(regs); i++ {
+		if regs[i].q != regs[0].q || regs[i].size != regs[0].size {
+			return nil, false
+		}
+		if regs[i].num != (regs[0].num+uint32(i))%32 {
+			return nil, false
+		}
+	}
+	return regs, true
+}
+
+// ld1Opcode maps a register count (1..4) to the LD1/ST1 multiple-structures
+// opcode field (bits[15:12]).
+var ld1Opcode = map[int]uint32{1: 0x7, 2: 0xA, 3: 0x6, 4: 0x2}
+
+// encodeLdSt1 encodes LD1/ST1 (multiple structures, 1..4 consecutive registers)
+// in the no-offset, post-index-immediate and post-index-register forms.
+func encodeLdSt1(mnem string, ops []string) (uint32, error) {
+	if len(ops) < 2 || len(ops) > 3 {
+		return 0, fmt.Errorf("%s expects {list}, [Xn]{, #imm|Xm}", mnem)
+	}
+	regs, ok := parseRegList(ops[0])
+	if !ok {
+		return 0, fmt.Errorf("bad register list %q", ops[0])
+	}
+	opcode := ld1Opcode[len(regs)]
+	first := regs[0]
+	base, ok := bareBase(ops[1])
+	if !ok {
+		return 0, fmt.Errorf("%s needs a [Xn] base, got %q", mnem, ops[1])
+	}
+	var l uint32 = 0
+	if mnem == "ld1" {
+		l = 1
+	}
+	w := first.q<<30 | 0x0C000000 | l<<22 | opcode<<12 | first.size<<10 | base.num<<5 | first.num
+
+	if len(ops) == 2 { // no offset
+		return w, nil
+	}
+	// Post-index: bit23 set, Rm = 0x1F for the immediate form (#imm must equal
+	// the transfer size), else the index register.
+	w |= 1 << 23
+	bytesPerReg := int64(8) << first.q // 8 (Q=0) or 16 (Q=1)
+	total := bytesPerReg * int64(len(regs))
+	if imm, ok := parseImm(ops[2]); ok {
+		if imm != total {
+			return 0, fmt.Errorf("%s post-index immediate must be %d, got %d", mnem, total, imm)
+		}
+		return w | 0x1F<<16, nil
+	}
+	rm, ok := parseReg(ops[2])
+	if !ok || !rm.is64 {
+		return 0, fmt.Errorf("bad %s post-index operand %q", mnem, ops[2])
+	}
+	return w | rm.num<<16, nil
 }
 
 // encodeSIMD3F encodes a float three-same vector instruction (fadd/fmul/…) over

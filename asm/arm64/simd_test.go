@@ -48,6 +48,22 @@ func TestARM64_SIMDCopy(t *testing.T) {
 	runDiff(t, cases)
 }
 
+// TestARM64_LdSt1 holds the LD1/ST1 multiple-structures encoders byte-exact vs
+// llvm-mc (1..4 registers; no-offset, post-index imm and post-index reg).
+func TestARM64_LdSt1(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"ld1 {v0.16b}, [x0]", "st1 {v0.16b}, [x0]", "ld1 {v0.8b}, [x0]",
+		"ld1 {v0.4s}, [x1]", "ld1 {v0.2d}, [x1]", "ld1 {v0.4h}, [x2]",
+		"ld1 {v0.16b, v1.16b}, [x0]", "ld1 {v0.4s, v1.4s, v2.4s}, [x0]",
+		"ld1 {v0.2d, v1.2d, v2.2d, v3.2d}, [x0]",
+		"ld1 {v0.16b}, [x1], #16", "st1 {v0.4s}, [x1], #16", "ld1 {v0.16b, v1.16b}, [x0], #32",
+		"ld1 {v0.16b}, [x1], x2", "ld1 {v0.8b}, [x1], #8",
+		"st1 {v5.8h, v6.8h}, [sp]", "ld1 {v30.4s, v31.4s}, [x0]",
+	}
+	runDiff(t, cases)
+}
+
 // TestARM64_SIMD3F holds the float three-same vector encoders byte-exact vs
 // llvm-mc (fadd/fsub/fmul/fdiv/fmax/fmin/fmaxnm/fminnm over .2s/.4s/.2d).
 func TestARM64_SIMD3F(t *testing.T) {

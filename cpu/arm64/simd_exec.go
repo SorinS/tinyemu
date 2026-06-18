@@ -233,6 +233,78 @@ func (c *CPU) execSIMD3F(w uint32) error {
 	return nil
 }
 
+// ld1RegCount maps the LD1/ST1 multiple-structures opcode to the register count.
+func ld1RegCount(opcode uint32) (int, bool) {
+	switch opcode {
+	case 0x7:
+		return 1, true
+	case 0xA:
+		return 2, true
+	case 0x6:
+		return 3, true
+	case 0x2:
+		return 4, true
+	}
+	return 0, false
+}
+
+// execSIMDLdSt1 executes LD1/ST1 (multiple structures, 1..4 consecutive
+// registers) in the no-offset and post-index forms. Each register is a full
+// 64-bit (Q=0) or 128-bit (Q=1) contiguous chunk of memory.
+func (c *CPU) execSIMDLdSt1(w uint32) error {
+	q := (w >> 30) & 1
+	load := (w>>22)&1 == 1
+	post := (w>>23)&1 == 1
+	rm := (w >> 16) & 0x1F
+	opcode := (w >> 12) & 0xF
+	rn := (w >> 5) & 0x1F
+	rt := w & 0x1F
+	count, ok := ld1RegCount(opcode)
+	if !ok {
+		return fmt.Errorf("arm64: unsupported LD1/ST1 opcode %08x at %#x", w, c.PC)
+	}
+	bytesPerReg := uint64(8) << q
+	addr := c.readX(rn, true, true) // base is SP-capable
+
+	for i := 0; i < count; i++ {
+		reg := (rt + uint32(i)) % 32
+		if load {
+			lo, err := c.readMem(addr, 8)
+			if err != nil {
+				return err
+			}
+			var hi uint64
+			if q == 1 {
+				if hi, err = c.readMem(addr+8, 8); err != nil {
+					return err
+				}
+			}
+			c.Vreg[reg] = [2]uint64{lo, hi}
+		} else {
+			if err := c.writeMem(addr, c.Vreg[reg][0], 8); err != nil {
+				return err
+			}
+			if q == 1 {
+				if err := c.writeMem(addr+8, c.Vreg[reg][1], 8); err != nil {
+					return err
+				}
+			}
+		}
+		addr += bytesPerReg
+	}
+
+	if post {
+		var incr uint64
+		if rm == 0x1F { // immediate: the whole transfer size
+			incr = bytesPerReg * uint64(count)
+		} else {
+			incr = c.readX(rm, true, false)
+		}
+		c.writeX(rn, true, true, c.readX(rn, true, true)+incr)
+	}
+	return nil
+}
+
 // sextLane sign-extends the low ebits of v to a signed 64-bit value.
 func sextLane(v uint64, ebits uint) int64 {
 	if ebits >= 64 {
