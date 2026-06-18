@@ -191,6 +191,9 @@ func encodeSIMD(mnem string, ops []string) (uint32, error) {
 	if op, ok := twoRegMiscOps[mnem]; ok {
 		return encodeSIMD2RegMisc(op, ops)
 	}
+	if opcode, ok := permuteOps[mnem]; ok {
+		return encodeSIMDPermute(opcode, ops)
+	}
 	switch mnem {
 	case "movi", "mvni":
 		return encodeMoviMvni(mnem, ops)
@@ -292,6 +295,33 @@ func encodeIns(ops []string) (uint32, error) {
 		return 0, fmt.Errorf("bad ins source")
 	}
 	return 1<<30 | 0x0E000000 | imm5<<16 | 0b0011<<11 | 1<<10 | g.num<<5 | dst.num, nil
+}
+
+// permuteOps maps a permute mnemonic to its 3-bit opcode (bits[14:12]).
+var permuteOps = map[string]uint32{
+	"uzp1": 0b001, "trn1": 0b010, "zip1": 0b011,
+	"uzp2": 0b101, "trn2": 0b110, "zip2": 0b111,
+}
+
+// encodeSIMDPermute encodes a permute "zip1 Vd.T, Vn.T, Vm.T".
+func encodeSIMDPermute(opcode uint32, ops []string) (uint32, error) {
+	if len(ops) != 3 {
+		return 0, fmt.Errorf("expected Vd, Vn, Vm")
+	}
+	rd, ok1 := parseVecReg(ops[0])
+	rn, ok2 := parseVecReg(ops[1])
+	rm, ok3 := parseVecReg(ops[2])
+	if !ok1 || !ok2 || !ok3 {
+		return 0, fmt.Errorf("bad SIMD register")
+	}
+	if rd.q != rn.q || rd.q != rm.q || rd.size != rn.size || rd.size != rm.size {
+		return 0, fmt.Errorf("arrangement mismatch")
+	}
+	if rd.size == 0b11 && rd.q == 0 {
+		return 0, fmt.Errorf("invalid .1d arrangement")
+	}
+	return rd.q<<30 | 0x0E000000 | rd.size<<22 | rm.num<<16 |
+		opcode<<12 | 0b10<<10 | rn.num<<5 | rd.num, nil
 }
 
 // twoRegMisc describes an Advanced SIMD two-register-miscellaneous op. byteOnly

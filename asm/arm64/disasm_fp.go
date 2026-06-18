@@ -43,12 +43,34 @@ func disSIMD(w uint32) (string, error) {
 		return disSIMDAcross(w)
 	case (w>>17)&0x1F == 0x10 && (w>>10)&3 == 0b10:
 		return disSIMD2RegMisc(w)
+	case (w>>29)&1 == 0 && (w>>21)&1 == 0 && (w>>15)&1 == 0 && (w>>10)&3 == 0b10:
+		return disSIMDPermute(w)
 	case (w>>21)&1 == 1 && (w>>10)&1 == 1:
 		return disSIMD3(w)
 	case (w>>21)&7 == 0 && (w>>15)&1 == 0 && (w>>10)&1 == 1:
 		return disSIMDCopy(w)
 	}
 	return "", fmt.Errorf("arm64 disasm: unsupported Adv-SIMD encoding %08x", w)
+}
+
+// permuteName names a permute op from its 3-bit opcode.
+var permuteName = map[uint32]string{
+	0b001: "uzp1", 0b010: "trn1", 0b011: "zip1",
+	0b101: "uzp2", 0b110: "trn2", 0b111: "zip2",
+}
+
+// disSIMDPermute decodes zip1/zip2/uzp1/uzp2/trn1/trn2.
+func disSIMDPermute(w uint32) (string, error) {
+	q := (w >> 30) & 1
+	size := (w >> 22) & 3
+	opcode := (w >> 12) & 7
+	rm, rn, rd := (w>>16)&0x1F, (w>>5)&0x1F, w&0x1F
+	mnem, ok := permuteName[opcode]
+	if !ok {
+		return "", fmt.Errorf("arm64 disasm: unsupported permute opcode %08x", w)
+	}
+	return fmt.Sprintf("%s %s, %s, %s", mnem,
+		vecName(rd, q, size), vecName(rn, q, size), vecName(rm, q, size)), nil
 }
 
 // disSIMD2RegMisc decodes abs/neg/cnt/not.

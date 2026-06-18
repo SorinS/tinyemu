@@ -481,6 +481,10 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"cmhi v0.8h, v1.8h, v2.8h"}, {"cmhs v0.2d, v3.2d, v4.2d"},
 		{"cmeq v0.4s, v1.4s, v2.4s"}, {"cmtst v0.16b, v1.16b, v2.16b"},
 		{"cmgt v0.2d, v1.2d, v2.2d"}, {"cmeq v0.8b, v3.8b, v4.8b"},
+		// permutes (zip/uzp/trn)
+		{"zip1 v0.4s, v1.4s, v2.4s"}, {"zip2 v0.16b, v3.16b, v4.16b"}, {"uzp1 v0.8h, v1.8h, v2.8h"},
+		{"uzp2 v0.4s, v3.4s, v4.4s"}, {"trn1 v0.16b, v1.16b, v2.16b"}, {"trn2 v0.2d, v3.2d, v4.2d"},
+		{"zip1 v0.8b, v1.8b, v2.8b"}, {"uzp1 v0.4s, v1.4s, v2.4s", "trn1 v3.4s, v0.4s, v5.4s"},
 		// modified immediate (movi/mvni)
 		{"movi v0.16b, #0xff"}, {"movi v0.4s, #0x12, lsl #8"}, {"movi v0.8h, #0x34"},
 		{"movi v0.2d, #0xff00ff00ff00ff00"}, {"mvni v0.4s, #0x12, lsl #16"}, {"mvni v0.8h, #0xab"},

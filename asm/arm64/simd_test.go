@@ -48,6 +48,19 @@ func TestARM64_SIMDCopy(t *testing.T) {
 	runDiff(t, cases)
 }
 
+// TestARM64_SIMDPermute holds the permute encoders byte-exact vs llvm-mc.
+func TestARM64_SIMDPermute(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"zip1 v0.4s, v1.4s, v2.4s", "zip2 v0.4s, v1.4s, v2.4s",
+		"uzp1 v0.4s, v1.4s, v2.4s", "uzp2 v0.4s, v1.4s, v2.4s",
+		"trn1 v0.4s, v1.4s, v2.4s", "trn2 v0.4s, v1.4s, v2.4s",
+		"zip1 v0.16b, v1.16b, v2.16b", "zip1 v0.2d, v1.2d, v2.2d",
+		"trn1 v0.8h, v1.8h, v2.8h", "uzp2 v0.8b, v1.8b, v2.8b",
+	}
+	runDiff(t, cases)
+}
+
 // TestARM64_SIMDModImm holds the MOVI/MVNI modified-immediate encoders
 // byte-exact vs llvm-mc.
 func TestARM64_SIMDModImm(t *testing.T) {

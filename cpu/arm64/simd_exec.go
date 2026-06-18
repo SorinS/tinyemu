@@ -20,12 +20,94 @@ func (c *CPU) execSIMD(w uint32) error {
 		return c.execSIMDAcross(w)
 	case (w>>17)&0x1F == 0x10 && (w>>10)&3 == 0b10:
 		return c.execSIMD2RegMisc(w)
+	case (w>>29)&1 == 0 && (w>>21)&1 == 0 && (w>>15)&1 == 0 && (w>>10)&3 == 0b10:
+		return c.execSIMDPermute(w)
 	case (w>>21)&1 == 1 && (w>>10)&1 == 1:
 		return c.execSIMD3(w)
 	case (w>>21)&7 == 0 && (w>>15)&1 == 0 && (w>>10)&1 == 1:
 		return c.execSIMDCopy(w)
 	}
 	return fmt.Errorf("arm64: unsupported Adv-SIMD encoding %08x at %#x", w, c.PC)
+}
+
+// getElem/setElem index a 128-bit value as an array of esize-bit elements
+// (esize divides 64, so an element never crosses a word boundary).
+func getElem(v [2]uint64, esize uint, j int) uint64 {
+	bit := uint(j) * esize
+	var mask uint64
+	if esize >= 64 {
+		mask = ^uint64(0)
+	} else {
+		mask = (uint64(1) << esize) - 1
+	}
+	return (v[bit/64] >> (bit % 64)) & mask
+}
+
+func setElem(v *[2]uint64, esize uint, j int, val uint64) {
+	bit := uint(j) * esize
+	var mask uint64
+	if esize >= 64 {
+		mask = ^uint64(0)
+	} else {
+		mask = (uint64(1) << esize) - 1
+	}
+	word, off := bit/64, bit%64
+	v[word] = (v[word] &^ (mask << off)) | ((val & mask) << off)
+}
+
+// execSIMDPermute executes zip1/zip2/uzp1/uzp2/trn1/trn2: rearrange the elements
+// of Vn and Vm into Vd.
+func (c *CPU) execSIMDPermute(w uint32) error {
+	q := (w >> 30) & 1
+	size := (w >> 22) & 3
+	opcode := (w >> 12) & 7
+	rm := (w >> 16) & 0x1F
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	esize := uint(8) << size
+	n := int((64 << q) / esize) // element count
+	vn, vm := c.Vreg[rn], c.Vreg[rm]
+	var res [2]uint64
+
+	switch opcode {
+	case 0b011: // zip1 — interleave lower halves
+		for i := 0; i < n/2; i++ {
+			setElem(&res, esize, 2*i, getElem(vn, esize, i))
+			setElem(&res, esize, 2*i+1, getElem(vm, esize, i))
+		}
+	case 0b111: // zip2 — interleave upper halves
+		for i := 0; i < n/2; i++ {
+			setElem(&res, esize, 2*i, getElem(vn, esize, n/2+i))
+			setElem(&res, esize, 2*i+1, getElem(vm, esize, n/2+i))
+		}
+	case 0b001: // uzp1 — even-indexed elements of Vn:Vm
+		for i := 0; i < n/2; i++ {
+			setElem(&res, esize, i, getElem(vn, esize, 2*i))
+			setElem(&res, esize, n/2+i, getElem(vm, esize, 2*i))
+		}
+	case 0b101: // uzp2 — odd-indexed elements of Vn:Vm
+		for i := 0; i < n/2; i++ {
+			setElem(&res, esize, i, getElem(vn, esize, 2*i+1))
+			setElem(&res, esize, n/2+i, getElem(vm, esize, 2*i+1))
+		}
+	case 0b010: // trn1 — even positions
+		for i := 0; i < n/2; i++ {
+			setElem(&res, esize, 2*i, getElem(vn, esize, 2*i))
+			setElem(&res, esize, 2*i+1, getElem(vm, esize, 2*i))
+		}
+	case 0b110: // trn2 — odd positions
+		for i := 0; i < n/2; i++ {
+			setElem(&res, esize, 2*i, getElem(vn, esize, 2*i+1))
+			setElem(&res, esize, 2*i+1, getElem(vm, esize, 2*i+1))
+		}
+	default:
+		return fmt.Errorf("arm64: unsupported permute opcode %08x at %#x", w, c.PC)
+	}
+	if q == 0 {
+		res[1] = 0
+	}
+	c.Vreg[rd] = res
+	return nil
 }
 
 // execSIMD2RegMisc executes abs/neg (opcode 0x0B) and cnt/not (opcode 0x05).

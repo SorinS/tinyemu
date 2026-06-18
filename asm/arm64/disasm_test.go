@@ -123,6 +123,9 @@ func TestARM64_RoundTrip(t *testing.T) {
 		// modified immediate (movi/mvni)
 		"movi v0.16b, #0xff", "movi v0.4s, #0x12, lsl #8", "movi v0.8h, #0x34, lsl #8",
 		"movi v0.2d, #0xff00ff00ff00ff00", "mvni v0.4s, #0x12, lsl #16", "mvni v0.8h, #0xab",
+		// permutes
+		"zip1 v0.4s, v1.4s, v2.4s", "zip2 v0.16b, v1.16b, v2.16b", "uzp1 v0.8h, v1.8h, v2.8h",
+		"trn2 v0.2d, v1.2d, v2.2d",
 	}
 	for _, src := range cases {
 		want, ok := mcEncode(t, src)
