@@ -305,6 +305,74 @@ func (c *CPU) execSIMDLdSt1(w uint32) error {
 	return nil
 }
 
+// execSIMDShiftImm executes a vector shift-by-immediate (shl/sshr/ushr/ssra/
+// usra). The element size and shift amount are folded into immh:immb. (immh==0
+// is the modified-immediate group — movi/etc — which is not yet implemented.)
+func (c *CPU) execSIMDShiftImm(w uint32) error {
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	immh := (w >> 19) & 0xF
+	immb := (w >> 16) & 7
+	opcode := (w >> 11) & 0x1F
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	if immh == 0 {
+		return fmt.Errorf("arm64: SIMD modified-immediate not implemented %08x at %#x", w, c.PC)
+	}
+	sizeLog := uint(bits.Len32(immh) - 1) // 0..3 -> B/H/S/D
+	ebits := uint(8) << sizeLog
+	immhb := int(immh<<3 | immb)
+	esize := int(ebits)
+
+	var shift int
+	left := opcode == 0x0A
+	if left {
+		shift = immhb - esize
+	} else {
+		shift = 2*esize - immhb
+	}
+	signed := u == 0
+	accumulate := opcode == 0x02
+
+	var mask uint64
+	if ebits >= 64 {
+		mask = ^uint64(0)
+	} else {
+		mask = (uint64(1) << ebits) - 1
+	}
+	words := 1
+	if q == 1 {
+		words = 2
+	}
+	vn := c.Vreg[rn]
+	var res [2]uint64
+	for wi := 0; wi < words; wi++ {
+		var out uint64
+		for off := uint(0); off < 64; off += ebits {
+			a := (vn[wi] >> off) & mask
+			var r uint64
+			switch {
+			case left:
+				r = (a << uint(shift)) & mask
+			case signed:
+				r = uint64(sextLane(a, ebits)>>uint(shift)) & mask
+			default:
+				r = (a >> uint(shift)) & mask
+			}
+			if accumulate {
+				r = (r + ((c.Vreg[rd][wi] >> off) & mask)) & mask
+			}
+			out |= r << off
+		}
+		res[wi] = out
+	}
+	if q == 0 {
+		res[1] = 0
+	}
+	c.Vreg[rd] = res
+	return nil
+}
+
 // sextLane sign-extends the low ebits of v to a signed 64-bit value.
 func sextLane(v uint64, ebits uint) int64 {
 	if ebits >= 64 {

@@ -48,6 +48,20 @@ func TestARM64_SIMDCopy(t *testing.T) {
 	runDiff(t, cases)
 }
 
+// TestARM64_SIMDShiftImm holds the vector shift-by-immediate encoders byte-exact
+// vs llvm-mc (shl/sshr/ushr/ssra/usra over every arrangement).
+func TestARM64_SIMDShiftImm(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"shl v0.4s, v1.4s, #3", "shl v0.16b, v1.16b, #1", "shl v0.2d, v1.2d, #40",
+		"shl v0.8h, v1.8h, #15",
+		"sshr v0.4s, v1.4s, #3", "ushr v0.4s, v1.4s, #3", "sshr v0.16b, v1.16b, #1",
+		"ushr v0.2d, v1.2d, #40", "sshr v0.8h, v1.8h, #16", "sshr v0.2d, v1.2d, #64",
+		"ssra v0.4s, v1.4s, #3", "usra v0.4s, v1.4s, #3", "ssra v0.8b, v1.8b, #8",
+	}
+	runDiff(t, cases)
+}
+
 // TestARM64_LdSt1 holds the LD1/ST1 multiple-structures encoders byte-exact vs
 // llvm-mc (1..4 registers; no-offset, post-index imm and post-index reg).
 func TestARM64_LdSt1(t *testing.T) {

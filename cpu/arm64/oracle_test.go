@@ -481,10 +481,16 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"cmhi v0.8h, v1.8h, v2.8h"}, {"cmhs v0.2d, v3.2d, v4.2d"},
 		{"cmeq v0.4s, v1.4s, v2.4s"}, {"cmtst v0.16b, v1.16b, v2.16b"},
 		{"cmgt v0.2d, v1.2d, v2.2d"}, {"cmeq v0.8b, v3.8b, v4.8b"},
+		// shift by immediate (shl/sshr/ushr/ssra/usra)
+		{"shl v0.4s, v1.4s, #3"}, {"shl v0.16b, v3.16b, #5"}, {"shl v0.2d, v1.2d, #40"},
+		{"sshr v0.4s, v1.4s, #3"}, {"ushr v0.4s, v1.4s, #3"}, {"sshr v0.16b, v3.16b, #2"},
+		{"ushr v0.2d, v1.2d, #40"}, {"sshr v0.8h, v3.8h, #16"}, {"sshr v0.2d, v1.2d, #64"},
+		{"ssra v6.4s, v1.4s, #3"}, {"usra v6.4s, v1.4s, #3"}, // accumulate into v6
 		// chained
 		{"add v0.4s, v1.4s, v2.4s", "mul v0.4s, v0.4s, v3.4s", "eor v0.16b, v0.16b, v4.16b"},
 		{"dup v0.4s, w1", "ins v0.s[0], w2", "umov w3, v0.s[3]"},
 		{"cmgt v0.4s, v1.4s, v2.4s", "and v3.16b, v0.16b, v5.16b"}, // mask then select bits
+		{"shl v0.4s, v1.4s, #4", "sshr v0.4s, v0.4s, #2"},         // shift left then arithmetic right
 	}
 	runVec := func(progs [][]string, inputs []oracleRegs) {
 		for _, prog := range progs {

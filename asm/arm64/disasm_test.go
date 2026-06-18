@@ -109,6 +109,9 @@ func TestARM64_RoundTrip(t *testing.T) {
 		"ld1 {v0.16b, v1.16b}, [x0]", "ld1 {v0.4s, v1.4s, v2.4s}, [x0]",
 		"ld1 {v0.2d, v1.2d, v2.2d, v3.2d}, [x0]",
 		"ld1 {v0.16b}, [x1], #16", "st1 {v0.4s}, [x1], #16", "ld1 {v0.16b}, [x1], x2",
+		// shift by immediate
+		"shl v0.4s, v1.4s, #3", "shl v0.2d, v1.2d, #40", "sshr v0.16b, v1.16b, #1",
+		"ushr v0.4s, v1.4s, #3", "ssra v0.8h, v1.8h, #4", "usra v0.2d, v1.2d, #64",
 	}
 	for _, src := range cases {
 		want, ok := mcEncode(t, src)

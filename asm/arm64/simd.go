@@ -177,6 +177,9 @@ func encodeSIMD(mnem string, ops []string) (uint32, error) {
 	if op, ok := simd3FOps[mnem]; ok {
 		return encodeSIMD3F(op, ops)
 	}
+	if op, ok := shiftImmOps[mnem]; ok {
+		return encodeSIMDShiftImm(op, ops)
+	}
 	switch mnem {
 	case "dup":
 		return encodeDup(ops)
@@ -276,6 +279,59 @@ func encodeIns(ops []string) (uint32, error) {
 		return 0, fmt.Errorf("bad ins source")
 	}
 	return 1<<30 | 0x0E000000 | imm5<<16 | 0b0011<<11 | 1<<10 | g.num<<5 | dst.num, nil
+}
+
+// shiftImm describes a vector shift-by-immediate op. left selects the
+// left-shift immediate encoding (immh:immb = esize + shift) vs the right-shift
+// one (immh:immb = 2*esize - shift).
+type shiftImm struct {
+	u      uint32
+	opcode uint32
+	left   bool
+}
+
+var shiftImmOps = map[string]shiftImm{
+	"shl":  {u: 0, opcode: 0x0A, left: true},  // left
+	"sshr": {u: 0, opcode: 0x00, left: false}, // signed right
+	"ushr": {u: 1, opcode: 0x00, left: false}, // unsigned right
+	"ssra": {u: 0, opcode: 0x02, left: false}, // signed right, accumulate
+	"usra": {u: 1, opcode: 0x02, left: false}, // unsigned right, accumulate
+}
+
+// encodeSIMDShiftImm encodes a vector shift-by-immediate (shl/sshr/ushr/…). The
+// element size comes from the arrangement; immh:immb folds in both the size and
+// the shift amount.
+func encodeSIMDShiftImm(op shiftImm, ops []string) (uint32, error) {
+	if len(ops) != 3 {
+		return 0, fmt.Errorf("expected Vd, Vn, #shift")
+	}
+	rd, ok1 := parseVecReg(ops[0])
+	rn, ok2 := parseVecReg(ops[1])
+	shift, ok3 := parseImm(ops[2])
+	if !ok1 || !ok2 || !ok3 {
+		return 0, fmt.Errorf("bad shift operands")
+	}
+	if rd.q != rn.q || rd.size != rn.size {
+		return 0, fmt.Errorf("shift arrangement mismatch")
+	}
+	if rd.size == 0b11 && rd.q == 0 {
+		return 0, fmt.Errorf("invalid .1d arrangement")
+	}
+	esize := int64(8) << rd.size
+	var immhb int64
+	if op.left {
+		if shift < 0 || shift >= esize {
+			return 0, fmt.Errorf("left shift %d out of range [0,%d)", shift, esize)
+		}
+		immhb = esize + shift
+	} else {
+		if shift < 1 || shift > esize {
+			return 0, fmt.Errorf("right shift %d out of range [1,%d]", shift, esize)
+		}
+		immhb = 2*esize - shift
+	}
+	return rd.q<<30 | op.u<<29 | 0x0F000000 | uint32(immhb)<<16 |
+		op.opcode<<11 | 1<<10 | rn.num<<5 | rd.num, nil
 }
 
 // parseRegList parses a SIMD register list "{v0.16b, v1.16b, ...}". The members

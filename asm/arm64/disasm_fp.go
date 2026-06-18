@@ -139,6 +139,56 @@ func disSIMDLdSt1(w uint32) (string, error) {
 	return fmt.Sprintf("%s {%s}, [%s], %s", mnem, strings.Join(list, ", "), base, rname(rm, true, false)), nil
 }
 
+// shiftImmName names a vector shift-by-immediate op from (U, opcode).
+func shiftImmName(u, opcode uint32) (string, bool) {
+	switch opcode {
+	case 0x0A:
+		return "shl", true
+	case 0x00:
+		if u == 0 {
+			return "sshr", true
+		}
+		return "ushr", true
+	case 0x02:
+		if u == 0 {
+			return "ssra", true
+		}
+		return "usra", true
+	}
+	return "", false
+}
+
+// disSIMDShiftImm decodes a vector shift-by-immediate (shl/sshr/ushr/ssra/usra).
+func disSIMDShiftImm(w uint32) (string, error) {
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	immh := (w >> 19) & 0xF
+	immb := (w >> 16) & 7
+	opcode := (w >> 11) & 0x1F
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	if immh == 0 {
+		return "", fmt.Errorf("arm64 disasm: SIMD modified-immediate %08x", w)
+	}
+	mnem, ok := shiftImmName(u, opcode)
+	if !ok {
+		return "", fmt.Errorf("arm64 disasm: unsupported shift-imm opcode %08x", w)
+	}
+	sizeLog := uint32(0)
+	for b := immh; b > 1; b >>= 1 {
+		sizeLog++
+	}
+	esize := int(8) << sizeLog
+	immhb := int(immh<<3 | immb)
+	var shift int
+	if opcode == 0x0A {
+		shift = immhb - esize
+	} else {
+		shift = 2*esize - immhb
+	}
+	v := func(n uint32) string { return vecName(n, q, sizeLog) }
+	return fmt.Sprintf("%s %s, %s, #%d", mnem, v(rd), v(rn), shift), nil
+}
+
 // disSIMD3 decodes the Advanced SIMD three-same group (add/sub/mul + logicals).
 func disSIMD3(w uint32) (string, error) {
 	if (w>>21)&1 != 1 || (w>>10)&1 != 1 {
