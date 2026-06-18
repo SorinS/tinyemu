@@ -12,15 +12,89 @@ import (
 // V0–V31).
 
 // execSIMD dispatches the Advanced SIMD data group (bits[28:24]=0b01110):
-// three-same (bit21=1) vs the copy group (bits[23:21]=000).
+// three-same (bit21=1, bit10=1), the copy group (bits[23:21]=000) and the
+// across-lanes reductions (bits[21:17]=11000, bits[11:10]=10).
 func (c *CPU) execSIMD(w uint32) error {
 	switch {
+	case (w>>17)&0x1F == 0x18 && (w>>10)&3 == 0b10:
+		return c.execSIMDAcross(w)
 	case (w>>21)&1 == 1 && (w>>10)&1 == 1:
 		return c.execSIMD3(w)
 	case (w>>21)&7 == 0 && (w>>15)&1 == 0 && (w>>10)&1 == 1:
 		return c.execSIMDCopy(w)
 	}
 	return fmt.Errorf("arm64: unsupported Adv-SIMD encoding %08x at %#x", w, c.PC)
+}
+
+// execSIMDAcross executes an across-lanes reduction (addv/smaxv/umaxv/sminv/
+// uminv): fold every lane of Vn into a single scalar in Vd (rest zeroed).
+func (c *CPU) execSIMDAcross(w uint32) error {
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	size := (w >> 22) & 3
+	opcode := (w >> 12) & 0x1F
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	ebits := uint(8) << size
+	var mask uint64
+	if ebits >= 64 {
+		mask = ^uint64(0)
+	} else {
+		mask = (uint64(1) << ebits) - 1
+	}
+	words := 1
+	if q == 1 {
+		words = 2
+	}
+	vn := c.Vreg[rn]
+
+	// Collect the lanes, then reduce.
+	first := true
+	var acc uint64    // for addv (wraps at the element width)
+	var sMax, sMin int64
+	var uMax, uMin uint64
+	for wi := 0; wi < words; wi++ {
+		for off := uint(0); off < 64; off += ebits {
+			v := (vn[wi] >> off) & mask
+			sv := sextLane(v, ebits)
+			if first {
+				acc, sMax, sMin, uMax, uMin = v, sv, sv, v, v
+				first = false
+				continue
+			}
+			acc = (acc + v) & mask
+			if sv > sMax {
+				sMax = sv
+			}
+			if sv < sMin {
+				sMin = sv
+			}
+			if v > uMax {
+				uMax = v
+			}
+			if v < uMin {
+				uMin = v
+			}
+		}
+	}
+
+	var res uint64
+	switch {
+	case opcode == 0x1B: // addv
+		res = acc
+	case opcode == 0x0A && u == 0: // smaxv
+		res = uint64(sMax) & mask
+	case opcode == 0x0A && u == 1: // umaxv
+		res = uMax
+	case opcode == 0x1A && u == 0: // sminv
+		res = uint64(sMin) & mask
+	case opcode == 0x1A && u == 1: // uminv
+		res = uMin
+	default:
+		return fmt.Errorf("arm64: unsupported across-lanes opcode %08x at %#x", w, c.PC)
+	}
+	c.Vreg[rd] = [2]uint64{res & mask, 0}
+	return nil
 }
 
 // lane geometry helpers: an element of width (8<<szLog) bits never crosses a

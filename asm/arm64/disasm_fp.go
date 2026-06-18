@@ -35,16 +35,50 @@ func vecName(n, q, size uint32) string {
 	return fmt.Sprintf("v%d.%s", n, arrangementName(q, size))
 }
 
-// disSIMD dispatches the Advanced SIMD data group: three-same (bit21=1) vs the
-// copy group (bits[23:21]=000).
+// disSIMD dispatches the Advanced SIMD data group: across-lanes reductions,
+// three-same and the copy group.
 func disSIMD(w uint32) (string, error) {
 	switch {
+	case (w>>17)&0x1F == 0x18 && (w>>10)&3 == 0b10:
+		return disSIMDAcross(w)
 	case (w>>21)&1 == 1 && (w>>10)&1 == 1:
 		return disSIMD3(w)
 	case (w>>21)&7 == 0 && (w>>15)&1 == 0 && (w>>10)&1 == 1:
 		return disSIMDCopy(w)
 	}
 	return "", fmt.Errorf("arm64 disasm: unsupported Adv-SIMD encoding %08x", w)
+}
+
+// acrossName names an across-lanes reduction from (U, opcode).
+func acrossName(u, opcode uint32) (string, bool) {
+	switch {
+	case opcode == 0x1B && u == 0:
+		return "addv", true
+	case opcode == 0x0A && u == 0:
+		return "smaxv", true
+	case opcode == 0x0A && u == 1:
+		return "umaxv", true
+	case opcode == 0x1A && u == 0:
+		return "sminv", true
+	case opcode == 0x1A && u == 1:
+		return "uminv", true
+	}
+	return "", false
+}
+
+// disSIMDAcross decodes an across-lanes reduction "addv Bd, Vn.T".
+func disSIMDAcross(w uint32) (string, error) {
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	size := (w >> 22) & 3
+	opcode := (w >> 12) & 0x1F
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	mnem, ok := acrossName(u, opcode)
+	if !ok {
+		return "", fmt.Errorf("arm64 disasm: unsupported across-lanes opcode %08x", w)
+	}
+	dst := fpRegName(rd, 8<<size) // scalar of the element width
+	return fmt.Sprintf("%s %s, %s", mnem, dst, vecName(rn, q, size)), nil
 }
 
 // elemLetter maps an element-size log2 to its lane-suffix letter.

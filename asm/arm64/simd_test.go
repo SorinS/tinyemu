@@ -48,6 +48,19 @@ func TestARM64_SIMDCopy(t *testing.T) {
 	runDiff(t, cases)
 }
 
+// TestARM64_SIMDAcross holds the across-lanes reduction encoders byte-exact vs
+// llvm-mc (addv/smaxv/umaxv/sminv/uminv).
+func TestARM64_SIMDAcross(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"addv b0, v1.8b", "addv b0, v1.16b", "addv h0, v1.8h", "addv s0, v1.4s",
+		"addv h0, v1.4h",
+		"smaxv b0, v1.16b", "sminv b0, v1.16b", "umaxv s0, v1.4s", "uminv h0, v1.8h",
+		"umaxv b0, v1.8b", "smaxv h3, v4.8h",
+	}
+	runDiff(t, cases)
+}
+
 // TestARM64_SIMDShiftImm holds the vector shift-by-immediate encoders byte-exact
 // vs llvm-mc (shl/sshr/ushr/ssra/usra over every arrangement).
 func TestARM64_SIMDShiftImm(t *testing.T) {

@@ -62,6 +62,7 @@ func isVecOperand(s string) bool {
 var simdOnlyMnemonics = map[string]bool{
 	"dup": true, "umov": true, "smov": true, "ins": true,
 	"ld1": true, "st1": true,
+	"addv": true, "smaxv": true, "umaxv": true, "sminv": true, "uminv": true,
 }
 
 // isSIMDLine reports whether a parsed line is an Advanced SIMD instruction.
@@ -180,6 +181,9 @@ func encodeSIMD(mnem string, ops []string) (uint32, error) {
 	if op, ok := shiftImmOps[mnem]; ok {
 		return encodeSIMDShiftImm(op, ops)
 	}
+	if op, ok := acrossOps[mnem]; ok {
+		return encodeSIMDAcross(op, ops)
+	}
 	switch mnem {
 	case "dup":
 		return encodeDup(ops)
@@ -279,6 +283,42 @@ func encodeIns(ops []string) (uint32, error) {
 		return 0, fmt.Errorf("bad ins source")
 	}
 	return 1<<30 | 0x0E000000 | imm5<<16 | 0b0011<<11 | 1<<10 | g.num<<5 | dst.num, nil
+}
+
+// acrossLanes describes an across-lanes reduction (addv/smaxv/…).
+type acrossLanes struct {
+	u      uint32
+	opcode uint32
+}
+
+var acrossOps = map[string]acrossLanes{
+	"addv":  {u: 0, opcode: 0x1B},
+	"smaxv": {u: 0, opcode: 0x0A},
+	"umaxv": {u: 1, opcode: 0x0A},
+	"sminv": {u: 0, opcode: 0x1A},
+	"uminv": {u: 1, opcode: 0x1A},
+}
+
+// encodeSIMDAcross encodes an across-lanes reduction "addv Bd, Vn.T". The scalar
+// destination width must equal the source element size; valid arrangements are
+// .8b/.16b/.4h/.8h/.4s (size 2 needs Q=1; .2d and .2s are not allowed).
+func encodeSIMDAcross(op acrossLanes, ops []string) (uint32, error) {
+	if len(ops) != 2 {
+		return 0, fmt.Errorf("expected Vd, Vn.T")
+	}
+	dst, ok1 := parseFPReg(ops[0])
+	src, ok2 := parseVecReg(ops[1])
+	if !ok1 || !ok2 {
+		return 0, fmt.Errorf("bad reduction operands")
+	}
+	if src.size == 0b11 || (src.size == 0b10 && src.q == 0) {
+		return 0, fmt.Errorf("invalid arrangement for reduction")
+	}
+	if dst.size != 8<<src.size {
+		return 0, fmt.Errorf("reduction destination width must match the element size")
+	}
+	return src.q<<30 | op.u<<29 | 0x0E300000 | src.size<<22 |
+		op.opcode<<12 | 0b10<<10 | src.num<<5 | dst.num, nil
 }
 
 // shiftImm describes a vector shift-by-immediate op. left selects the
