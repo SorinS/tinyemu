@@ -147,6 +147,10 @@ tinycore64: ## Build the TinyCore64 serial initramfs (needs bin/tinycore64/{vmli
 tinycore: ## Extract TinyCore (32-bit) boot files (needs iso/TinyCore.iso)
 	sh scripts/extract_tinycore.sh
 
+.PHONY: tamago
+tamago: ## Build a TamaGo UEFI Go app image into bin/tamago/ (TAMAGO_SRC=file.go)
+	sh scripts/build_tamago.sh $(TAMAGO_SRC)
+
 .PHONY: baremetal
 baremetal: ## Build Pure64 + BareMetal kernel into bin/baremetal/
 	@command -v nasm >/dev/null 2>&1 || { echo "need nasm (brew install nasm)" >&2; exit 1; }
