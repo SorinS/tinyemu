@@ -192,6 +192,8 @@ func encodeSIMD(mnem string, ops []string) (uint32, error) {
 		return encodeSIMD2RegMisc(op, ops)
 	}
 	switch mnem {
+	case "movi", "mvni":
+		return encodeMoviMvni(mnem, ops)
 	case "dup":
 		return encodeDup(ops)
 	case "umov", "smov":
@@ -364,6 +366,95 @@ func encodeSIMDAcross(op acrossLanes, ops []string) (uint32, error) {
 	}
 	return src.q<<30 | op.u<<29 | 0x0E300000 | src.size<<22 |
 		op.opcode<<12 | 0b10<<10 | src.num<<5 | dst.num, nil
+}
+
+// encode2dImm packs a 64-bit .2d movi immediate into the 8-bit field: each byte
+// must be all-zero or all-ones, and bit i of the field marks byte i == 0xFF.
+func encode2dImm(v uint64) (uint32, bool) {
+	var imm8 uint32
+	for i := 0; i < 8; i++ {
+		switch (v >> (8 * i)) & 0xFF {
+		case 0xFF:
+			imm8 |= 1 << i
+		case 0x00:
+		default:
+			return 0, false
+		}
+	}
+	return imm8, true
+}
+
+// parseLslShift parses an optional "lsl #N" third operand (returns 0 when
+// absent).
+func parseLslShift(ops []string) (int64, bool) {
+	if len(ops) < 3 {
+		return 0, true
+	}
+	f := strings.Fields(strings.ToLower(strings.TrimSpace(ops[2])))
+	if len(f) != 2 || f[0] != "lsl" {
+		return 0, false
+	}
+	return parseImm(f[1])
+}
+
+// encodeMoviMvni encodes the vector MOVI/MVNI modified-immediate forms: byte
+// (.8b/.16b), 16-bit (.4h/.8h, lsl #0/8), 32-bit (.2s/.4s, lsl #0/8/16/24) and
+// the 64-bit movi .2d. (MSL and the fmov-vector-immediate forms are later.)
+func encodeMoviMvni(mnem string, ops []string) (uint32, error) {
+	if len(ops) < 2 || len(ops) > 3 {
+		return 0, fmt.Errorf("%s expects Vd.T, #imm{, lsl #s}", mnem)
+	}
+	rd, ok := parseVecReg(ops[0])
+	if !ok {
+		return 0, fmt.Errorf("bad %s destination", mnem)
+	}
+	imm, ok := parseImm(ops[1])
+	if !ok {
+		return 0, fmt.Errorf("bad %s immediate", mnem)
+	}
+	shift, ok := parseLslShift(ops)
+	if !ok {
+		return 0, fmt.Errorf("bad %s shift", mnem)
+	}
+	mvni := mnem == "mvni"
+
+	var op, cmode, imm8 uint32
+	switch rd.size {
+	case 0b00: // byte .8b/.16b — movi only, no shift
+		if mvni || shift != 0 || imm < 0 || imm > 0xFF {
+			return 0, fmt.Errorf("invalid %s %s, #%d", mnem, ops[0], imm)
+		}
+		op, cmode, imm8 = 0, 0b1110, uint32(imm)
+	case 0b01: // 16-bit .4h/.8h — lsl #0/8
+		if (shift != 0 && shift != 8) || imm < 0 || imm > 0xFF {
+			return 0, fmt.Errorf("invalid %s %s, #%d, lsl #%d", mnem, ops[0], imm, shift)
+		}
+		cmode = 0b1000 | uint32(shift/8)<<1
+		imm8 = uint32(imm)
+		if mvni {
+			op = 1
+		}
+	case 0b10: // 32-bit .2s/.4s — lsl #0/8/16/24
+		if shift%8 != 0 || shift > 24 || imm < 0 || imm > 0xFF {
+			return 0, fmt.Errorf("invalid %s %s, #%d, lsl #%d", mnem, ops[0], imm, shift)
+		}
+		cmode = uint32(shift/8) << 1
+		imm8 = uint32(imm)
+		if mvni {
+			op = 1
+		}
+	default: // 0b11: 64-bit movi .2d only
+		if mvni || rd.q == 0 || shift != 0 {
+			return 0, fmt.Errorf("invalid %s %s", mnem, ops[0])
+		}
+		imm8, ok = encode2dImm(uint64(imm))
+		if !ok {
+			return 0, fmt.Errorf("movi .2d immediate %#x: each byte must be 0x00 or 0xff", uint64(imm))
+		}
+		op, cmode = 1, 0b1110
+	}
+	abc, defgh := imm8>>5, imm8&0x1F
+	return rd.q<<30 | op<<29 | 0x0F000000 | abc<<16 | cmode<<12 | 1<<10 | defgh<<5 | rd.num, nil
 }
 
 // shiftImm describes a vector shift-by-immediate op. left selects the

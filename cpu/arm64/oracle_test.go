@@ -481,6 +481,11 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"cmhi v0.8h, v1.8h, v2.8h"}, {"cmhs v0.2d, v3.2d, v4.2d"},
 		{"cmeq v0.4s, v1.4s, v2.4s"}, {"cmtst v0.16b, v1.16b, v2.16b"},
 		{"cmgt v0.2d, v1.2d, v2.2d"}, {"cmeq v0.8b, v3.8b, v4.8b"},
+		// modified immediate (movi/mvni)
+		{"movi v0.16b, #0xff"}, {"movi v0.4s, #0x12, lsl #8"}, {"movi v0.8h, #0x34"},
+		{"movi v0.2d, #0xff00ff00ff00ff00"}, {"mvni v0.4s, #0x12, lsl #16"}, {"mvni v0.8h, #0xab"},
+		{"movi v0.4s, #0x7f, lsl #24"}, {"movi v0.2s, #0x80, lsl #8"},
+		{"movi v0.4s, #0xff", "shl v0.4s, v0.4s, #1"}, // materialize then shift
 		// two-register misc (abs/neg/not/cnt)
 		{"abs v0.16b, v1.16b"}, {"abs v0.4s, v3.4s"}, {"abs v0.2d, v1.2d"}, {"abs v0.8h, v3.8h"},
 		{"neg v0.16b, v1.16b"}, {"neg v0.4s, v3.4s"}, {"neg v0.2d, v1.2d"},

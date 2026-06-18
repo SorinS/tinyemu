@@ -198,6 +198,51 @@ func disSIMDLdSt1(w uint32) (string, error) {
 	return fmt.Sprintf("%s {%s}, [%s], %s", mnem, strings.Join(list, ", "), base, rname(rm, true, false)), nil
 }
 
+// disSIMDModImm decodes the vector MOVI/MVNI modified-immediate forms.
+func disSIMDModImm(w uint32) (string, error) {
+	q := (w >> 30) & 1
+	op := (w >> 29) & 1
+	cmode := (w >> 12) & 0xF
+	imm8 := (w>>16)&7<<5 | (w>>5)&0x1F
+	rd := w & 0x1F
+
+	switch {
+	case cmode == 0b1110 && op == 1: // movi .2d
+		var v uint64
+		for i := 0; i < 8; i++ {
+			if imm8&(1<<i) != 0 {
+				v |= uint64(0xFF) << (8 * i)
+			}
+		}
+		return fmt.Sprintf("movi %s, #%#016x", vecName(rd, q, 0b11), v), nil
+	case cmode == 0b1110: // movi byte
+		return fmt.Sprintf("movi %s, #%#x", vecName(rd, q, 0b00), imm8), nil
+	case cmode&0b1101 == 0b1000: // 16-bit (10x0)
+		mnem := movMnem(op)
+		shift := (cmode >> 1 & 1) * 8
+		return movImmText(mnem, vecName(rd, q, 0b01), imm8, shift), nil
+	case cmode&0b1001 == 0b0000: // 32-bit (0xx0)
+		mnem := movMnem(op)
+		shift := (cmode >> 1 & 3) * 8
+		return movImmText(mnem, vecName(rd, q, 0b10), imm8, shift), nil
+	}
+	return "", fmt.Errorf("arm64 disasm: unsupported modified-immediate %08x", w)
+}
+
+func movMnem(op uint32) string {
+	if op == 1 {
+		return "mvni"
+	}
+	return "movi"
+}
+
+func movImmText(mnem, reg string, imm8, shift uint32) string {
+	if shift == 0 {
+		return fmt.Sprintf("%s %s, #%#x", mnem, reg, imm8)
+	}
+	return fmt.Sprintf("%s %s, #%#x, lsl #%d", mnem, reg, imm8, shift)
+}
+
 // shiftImmName names a vector shift-by-immediate op from (U, opcode).
 func shiftImmName(u, opcode uint32) (string, bool) {
 	switch opcode {
@@ -226,7 +271,7 @@ func disSIMDShiftImm(w uint32) (string, error) {
 	opcode := (w >> 11) & 0x1F
 	rn, rd := (w>>5)&0x1F, w&0x1F
 	if immh == 0 {
-		return "", fmt.Errorf("arm64 disasm: SIMD modified-immediate %08x", w)
+		return disSIMDModImm(w) // movi/mvni
 	}
 	mnem, ok := shiftImmName(u, opcode)
 	if !ok {

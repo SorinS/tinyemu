@@ -508,7 +508,7 @@ func (c *CPU) execSIMDShiftImm(w uint32) error {
 	rn := (w >> 5) & 0x1F
 	rd := w & 0x1F
 	if immh == 0 {
-		return fmt.Errorf("arm64: SIMD modified-immediate not implemented %08x at %#x", w, c.PC)
+		return c.execSIMDModImm(w) // movi/mvni
 	}
 	sizeLog := uint(bits.Len32(immh) - 1) // 0..3 -> B/H/S/D
 	ebits := uint(8) << sizeLog
@@ -557,6 +557,67 @@ func (c *CPU) execSIMDShiftImm(w uint32) error {
 		}
 		res[wi] = out
 	}
+	if q == 0 {
+		res[1] = 0
+	}
+	c.Vreg[rd] = res
+	return nil
+}
+
+// moviExpand2D expands a .2d movi 8-bit field to a 64-bit value: bit i selects
+// byte i = 0xFF (set) or 0x00 (clear).
+func moviExpand2D(imm8 uint32) uint64 {
+	var v uint64
+	for i := 0; i < 8; i++ {
+		if imm8&(1<<i) != 0 {
+			v |= uint64(0xFF) << (8 * i)
+		}
+	}
+	return v
+}
+
+// execSIMDModImm executes the vector MOVI/MVNI modified-immediate forms (the
+// immh==0 case of the shift-by-immediate group): byte/16-bit/32-bit element
+// replicate, and the 64-bit movi .2d. MVNI inverts the per-element value.
+func (c *CPU) execSIMDModImm(w uint32) error {
+	q := (w >> 30) & 1
+	op := (w >> 29) & 1
+	cmode := (w >> 12) & 0xF
+	imm8 := (w>>16)&7<<5 | (w>>5)&0x1F // abc:defgh
+	rd := w & 0x1F
+
+	var esize uint
+	var elem uint64
+	switch {
+	case cmode == 0b1110 && op == 1: // movi .2d
+		esize, elem = 64, moviExpand2D(imm8)
+	case cmode == 0b1110: // movi byte
+		esize, elem = 8, uint64(imm8)
+	case cmode&0b1101 == 0b1000: // 16-bit (10x0)
+		esize = 16
+		elem = uint64(imm8) << (uint(cmode>>1&1) * 8)
+	case cmode&0b1001 == 0b0000: // 32-bit (0xx0)
+		esize = 32
+		elem = uint64(imm8) << (uint(cmode>>1&3) * 8)
+	default:
+		return fmt.Errorf("arm64: unsupported modified-immediate cmode %08x at %#x", w, c.PC)
+	}
+
+	var emask uint64
+	if esize >= 64 {
+		emask = ^uint64(0)
+	} else {
+		emask = (uint64(1) << esize) - 1
+	}
+	if op == 1 && cmode != 0b1110 { // MVNI inverts the element (not the .2d form)
+		elem = ^elem & emask
+	}
+
+	var word uint64
+	for off := uint(0); off < 64; off += esize {
+		word |= (elem & emask) << off
+	}
+	res := [2]uint64{word, word}
 	if q == 0 {
 		res[1] = 0
 	}

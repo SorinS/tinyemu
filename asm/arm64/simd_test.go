@@ -48,6 +48,22 @@ func TestARM64_SIMDCopy(t *testing.T) {
 	runDiff(t, cases)
 }
 
+// TestARM64_SIMDModImm holds the MOVI/MVNI modified-immediate encoders
+// byte-exact vs llvm-mc.
+func TestARM64_SIMDModImm(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"movi v0.16b, #0xff", "movi v0.8b, #0x55",
+		"movi v0.4s, #0x12", "movi v0.4s, #0x12, lsl #8", "movi v0.4s, #0x12, lsl #16",
+		"movi v0.4s, #0x12, lsl #24", "movi v0.2s, #0x12, lsl #8",
+		"movi v0.8h, #0x12", "movi v0.8h, #0x12, lsl #8", "movi v0.4h, #0x34",
+		"movi v0.2d, #0xff00ff00ff00ff00", "movi v0.2d, #0xffffffffffffffff",
+		"mvni v0.4s, #0x12", "mvni v0.4s, #0x12, lsl #16", "mvni v0.8h, #0x12, lsl #8",
+		"mvni v0.2s, #0xab",
+	}
+	runDiff(t, cases)
+}
+
 // TestARM64_SIMD2RegMisc holds the two-register-misc encoders byte-exact vs
 // llvm-mc (abs/neg/not/cnt).
 func TestARM64_SIMD2RegMisc(t *testing.T) {
