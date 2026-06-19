@@ -340,8 +340,86 @@ func (c *CPU) execSIMD2RegMisc(w uint32) error {
 			return uint64(0) - a
 		})
 		return nil
+	case opcode == 0x1D: // scvtf (U=0) / ucvtf (U=1) — int -> FP
+		return c.execSIMDCvtToFP(w, u == 0)
+	case opcode == 0x1B: // fcvtzs (U=0) / fcvtzu (U=1) — FP -> int, toward zero
+		return c.execSIMDCvtToInt(w, u == 0)
 	}
 	return fmt.Errorf("arm64: unsupported two-reg-misc opcode %08x at %#x", w, c.PC)
+}
+
+// execSIMDCvtToFP converts each integer lane to FP (scvtf/ucvtf); bit22 selects
+// single (32) or double (64).
+func (c *CPU) execSIMDCvtToFP(w uint32, signed bool) error {
+	q := (w >> 30) & 1
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	double := (w>>22)&1 == 1
+	vn := c.Vreg[rn]
+	var res [2]uint64
+	words := 1
+	if q == 1 {
+		words = 2
+	}
+	for wi := 0; wi < words; wi++ {
+		if double {
+			var f float64
+			if signed {
+				f = float64(int64(vn[wi]))
+			} else {
+				f = float64(vn[wi])
+			}
+			res[wi] = math.Float64bits(f)
+		} else {
+			var out uint64
+			for off := uint(0); off < 64; off += 32 {
+				bits32 := uint32(vn[wi] >> off)
+				var f float32
+				if signed {
+					f = float32(int32(bits32))
+				} else {
+					f = float32(bits32)
+				}
+				out |= uint64(math.Float32bits(f)) << off
+			}
+			res[wi] = out
+		}
+	}
+	if q == 0 {
+		res[1] = 0
+	}
+	c.Vreg[rd] = res
+	return nil
+}
+
+// execSIMDCvtToInt converts each FP lane to an integer toward zero, saturating
+// (fcvtzs/fcvtzu); bit22 selects single/double.
+func (c *CPU) execSIMDCvtToInt(w uint32, signed bool) error {
+	q := (w >> 30) & 1
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	double := (w>>22)&1 == 1
+	vn := c.Vreg[rn]
+	var res [2]uint64
+	words := 1
+	if q == 1 {
+		words = 2
+	}
+	for wi := 0; wi < words; wi++ {
+		if double {
+			res[wi] = fpToIntSat(math.Float64frombits(vn[wi]), true, signed)
+		} else {
+			var out uint64
+			for off := uint(0); off < 64; off += 32 {
+				f := float64(math.Float32frombits(uint32(vn[wi] >> off)))
+				out |= (fpToIntSat(f, false, signed) & 0xFFFFFFFF) << off
+			}
+			res[wi] = out
+		}
+	}
+	if q == 0 {
+		res[1] = 0
+	}
+	c.Vreg[rd] = res
+	return nil
 }
 
 // simd2RegLanes applies a per-lane unary op (results masked to the element

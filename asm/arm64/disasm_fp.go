@@ -138,6 +138,22 @@ func disSIMD2RegMisc(w uint32) (string, error) {
 	size := (w >> 22) & 3
 	opcode := (w >> 12) & 0x1F
 	rn, rd := (w>>5)&0x1F, w&0x1F
+	// The int↔FP conversions use bit22 alone as the element size (single/double).
+	if opcode == 0x1D || opcode == 0x1B {
+		var mnem string
+		switch {
+		case opcode == 0x1D && u == 0:
+			mnem = "scvtf"
+		case opcode == 0x1D && u == 1:
+			mnem = "ucvtf"
+		case opcode == 0x1B && u == 0:
+			mnem = "fcvtzs"
+		default:
+			mnem = "fcvtzu"
+		}
+		fsize := 0b10 | (w >> 22 & 1) // .2s/.4s -> size 10, .2d -> 11
+		return fmt.Sprintf("%s %s, %s", mnem, vecName(rd, q, fsize), vecName(rn, q, fsize)), nil
+	}
 	var mnem string
 	switch {
 	case opcode == 0x0B && u == 0:

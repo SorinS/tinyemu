@@ -203,6 +203,9 @@ func encodeSIMD(mnem string, ops []string) (uint32, error) {
 	if op, ok := twoRegMiscOps[mnem]; ok {
 		return encodeSIMD2RegMisc(op, ops)
 	}
+	if op, ok := cvtOps[mnem]; ok {
+		return encodeSIMDCvt(op, ops)
+	}
 	if opcode, ok := permuteOps[mnem]; ok {
 		return encodeSIMDPermute(opcode, ops)
 	}
@@ -359,6 +362,45 @@ func encodeSIMDPermute(opcode uint32, ops []string) (uint32, error) {
 	}
 	return rd.q<<30 | 0x0E000000 | rd.size<<22 | rm.num<<16 |
 		opcode<<12 | 0b10<<10 | rn.num<<5 | rd.num, nil
+}
+
+// cvtOp describes a vector int↔FP conversion (a two-register-misc FP form).
+type cvtOp struct {
+	u      uint32
+	opcode uint32
+	bit23  uint32
+}
+
+var cvtOps = map[string]cvtOp{
+	"scvtf":  {u: 0, opcode: 0x1D, bit23: 0}, // signed int -> FP
+	"ucvtf":  {u: 1, opcode: 0x1D, bit23: 0}, // unsigned int -> FP
+	"fcvtzs": {u: 0, opcode: 0x1B, bit23: 1}, // FP -> signed int, toward zero
+	"fcvtzu": {u: 1, opcode: 0x1B, bit23: 1}, // FP -> unsigned int, toward zero
+}
+
+// encodeSIMDCvt encodes a vector int↔FP conversion "scvtf Vd.T, Vn.T" over the
+// .2s/.4s/.2d arrangements (bit22 is the single/double size bit).
+func encodeSIMDCvt(op cvtOp, ops []string) (uint32, error) {
+	if len(ops) != 2 {
+		return 0, fmt.Errorf("expected Vd.T, Vn.T")
+	}
+	rd, ok1 := parseVecReg(ops[0])
+	rn, ok2 := parseVecReg(ops[1])
+	if !ok1 || !ok2 {
+		return 0, fmt.Errorf("bad SIMD register")
+	}
+	if rd.q != rn.q || rd.size != rn.size {
+		return 0, fmt.Errorf("arrangement mismatch")
+	}
+	if rd.size != 0b10 && rd.size != 0b11 { // .2s/.4s or .2d
+		return 0, fmt.Errorf("conversion needs .2s/.4s/.2d")
+	}
+	if rd.size == 0b11 && rd.q == 0 {
+		return 0, fmt.Errorf("invalid .1d arrangement")
+	}
+	sz := rd.size & 1 // 0=single, 1=double
+	return rd.q<<30 | op.u<<29 | 0x0E200000 | op.bit23<<23 | sz<<22 |
+		op.opcode<<12 | 0b10<<10 | rn.num<<5 | rd.num, nil
 }
 
 // twoRegMisc describes an Advanced SIMD two-register-miscellaneous op. byteOnly

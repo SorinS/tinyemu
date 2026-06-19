@@ -104,6 +104,9 @@ func TestARM64_SIMD2RegMisc(t *testing.T) {
 		"abs v0.16b, v1.16b", "abs v0.4s, v1.4s", "abs v0.2d, v1.2d", "abs v0.8h, v1.8h",
 		"neg v0.16b, v1.16b", "neg v0.4s, v1.4s", "neg v0.2d, v1.2d", "neg v0.4h, v1.4h",
 		"not v0.16b, v1.16b", "not v0.8b, v1.8b", "cnt v0.16b, v1.16b", "cnt v0.8b, v1.8b",
+		// int <-> FP conversions
+		"scvtf v0.4s, v1.4s", "ucvtf v0.4s, v1.4s", "scvtf v0.2d, v1.2d", "scvtf v0.2s, v1.2s",
+		"fcvtzs v0.4s, v1.4s", "fcvtzu v0.4s, v1.4s", "fcvtzs v0.2d, v1.2d", "ucvtf v0.2d, v1.2d",
 	}
 	runDiff(t, cases)
 }

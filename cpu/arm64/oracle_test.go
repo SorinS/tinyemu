@@ -494,6 +494,9 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		// pairwise add
 		{"addp v0.4s, v1.4s, v2.4s"}, {"addp v0.16b, v3.16b, v4.16b"}, {"addp v0.2d, v1.2d, v2.2d"},
 		{"addp v0.8h, v3.8h, v4.8h"},
+		// int -> FP (integer seeds are fine)
+		{"scvtf v0.4s, v1.4s"}, {"ucvtf v0.4s, v3.4s"}, {"scvtf v0.2d, v1.2d"}, {"ucvtf v0.2d, v3.2d"},
+		{"scvtf v0.2s, v1.2s"},
 		// modified immediate (movi/mvni)
 		{"movi v0.16b, #0xff"}, {"movi v0.4s, #0x12, lsl #8"}, {"movi v0.8h, #0x34"},
 		{"movi v0.2d, #0xff00ff00ff00ff00"}, {"mvni v0.4s, #0x12, lsl #16"}, {"mvni v0.8h, #0xab"},
@@ -545,6 +548,7 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"fmul v0.4s, v1.4s, v2.s[0]"}, {"fmul v0.4s, v1.4s, v2.s[3]"},
 		{"fmla v0.4s, v1.4s, v2.s[1]"}, {"fmls v0.4s, v3.4s, v4.s[2]"},
 		{"faddp v0.4s, v1.4s, v2.4s"}, {"fmaxp v0.4s, v3.4s, v4.4s"}, {"fminp v0.4s, v1.4s, v4.4s"},
+		{"fcvtzs v0.4s, v1.4s"}, {"fcvtzu v0.4s, v4.4s"}, // FP -> int (float seeds)
 		{"fadd v0.4s, v1.4s, v2.4s", "fmul v0.4s, v0.4s, v3.4s", "fsub v0.4s, v0.4s, v4.4s"},
 	}
 	fpDouble := [][]string{
@@ -555,6 +559,7 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"fcmeq v0.2d, v1.2d, v2.2d"}, {"fcmge v0.2d, v1.2d, v4.2d"}, {"fcmgt v0.2d, v4.2d, v1.2d"},
 		{"fmul v0.2d, v1.2d, v2.d[1]"}, {"fmla v0.2d, v1.2d, v2.d[0]"}, {"fmls v0.2d, v3.2d, v4.d[1]"},
 		{"faddp v0.2d, v1.2d, v2.2d"}, {"fmaxp v0.2d, v3.2d, v4.2d"},
+		{"fcvtzs v0.2d, v1.2d"}, {"fcvtzu v0.2d, v4.2d"},
 	}
 	runVec(fpSingle, vecFPInputs(false))
 	runVec(fpDouble, vecFPInputs(true))
