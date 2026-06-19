@@ -79,7 +79,10 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 		return c.execSIMD(w)
 	case (w>>24)&0xBF == 0x0C: // Advanced SIMD load/store multiple structures
 		return c.execSIMDLdSt1(w)
-	case (w>>24)&0x9F == 0x0F: // Advanced SIMD shift by immediate
+	case (w>>24)&0x9F == 0x0F: // Advanced SIMD: by-element (bit10=0) or shift/movi (bit10=1)
+		if (w>>10)&1 == 0 {
+			return c.execSIMDByElem(w)
+		}
 		return c.execSIMDShiftImm(w)
 	case (w>>25)&0x1F == 0x14:
 		return c.execPair(w)

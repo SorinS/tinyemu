@@ -32,6 +32,114 @@ func (c *CPU) execSIMD(w uint32) error {
 	return fmt.Errorf("arm64: unsupported Adv-SIMD encoding %08x at %#x", w, c.PC)
 }
 
+// execSIMDByElem executes the vector-by-element ops: integer mul/mla/mls and FP
+// fmul/fmla/fmls, multiplying each lane of Vn by a single lane (the index) of Vm.
+func (c *CPU) execSIMDByElem(w uint32) error {
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	size := (w >> 22) & 3
+	l := (w >> 21) & 1
+	m := (w >> 20) & 1
+	rm4 := (w >> 16) & 0xF
+	opcode := (w >> 12) & 0xF
+	h := (w >> 11) & 1
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+
+	// Recover the index and the Vm register number per element size.
+	var index, rm uint32
+	switch size {
+	case 0b01: // H
+		index, rm = h<<2|l<<1|m, rm4
+	case 0b10: // S
+		index, rm = h<<1|l, m<<4|rm4
+	default: // 0b11: D
+		index, rm = h, m<<4|rm4
+	}
+	esize := uint(8) << size
+	vn := c.Vreg[rn]
+	vm := c.Vreg[rm]
+	vdOld := c.Vreg[rd]
+	elem := getElem(vm, esize, int(index))
+
+	fp := opcode == 0x9 || opcode == 0x1 || opcode == 0x5
+	var res [2]uint64
+	words := 1
+	if q == 1 {
+		words = 2
+	}
+	var mask uint64
+	if esize >= 64 {
+		mask = ^uint64(0)
+	} else {
+		mask = (uint64(1) << esize) - 1
+	}
+	for wi := 0; wi < words; wi++ {
+		var out uint64
+		for off := uint(0); off < 64; off += esize {
+			a := (vn[wi] >> off) & mask
+			d := (vdOld[wi] >> off) & mask
+			var r uint64
+			if fp {
+				r = byElemFP(opcode, size, a, elem, d)
+			} else {
+				switch {
+				case u == 0 && opcode == 0x8: // mul
+					r = (a * elem) & mask
+				case u == 1 && opcode == 0x0: // mla
+					r = (d + a*elem) & mask
+				case u == 1 && opcode == 0x4: // mls
+					r = (d - a*elem) & mask
+				default:
+					return fmt.Errorf("arm64: unsupported by-element op %08x at %#x", w, c.PC)
+				}
+			}
+			out |= (r & mask) << off
+		}
+		res[wi] = out
+	}
+	if q == 0 {
+		res[1] = 0
+	}
+	c.Vreg[rd] = res
+	return nil
+}
+
+// byElemFP applies an FP by-element op to one lane (a*elem combined with the old
+// destination d for fmla/fmls). Double uses a fused multiply-add (math.FMA);
+// single is exact via float64 for the seeds in use.
+func byElemFP(opcode, size uint32, aBits, elemBits, dBits uint64) uint64 {
+	if size == 0b11 { // double
+		a := math.Float64frombits(aBits)
+		b := math.Float64frombits(elemBits)
+		d := math.Float64frombits(dBits)
+		var r float64
+		switch opcode {
+		case 0x9: // fmul
+			r = a * b
+		case 0x1: // fmla
+			r = math.FMA(a, b, d)
+		case 0x5: // fmls
+			r = math.FMA(-a, b, d)
+		}
+		return math.Float64bits(r)
+	}
+	// single
+	a := float64(math.Float32frombits(uint32(aBits)))
+	b := float64(math.Float32frombits(uint32(elemBits)))
+	d := float64(math.Float32frombits(uint32(dBits)))
+	var r float32
+	switch opcode {
+	case 0x9: // fmul
+		r = float32(math.Float32frombits(uint32(aBits)) * math.Float32frombits(uint32(elemBits)))
+	case 0x1: // fmla
+		r = float32(math.FMA(a, b, d))
+	case 0x5: // fmls
+		r = float32(math.FMA(-a, b, d))
+	}
+	return uint64(math.Float32bits(r))
+}
+
 // execSIMDExt executes EXT: byte j of Vd = byte (index+j) of the concatenation
 // Vn:Vm (Vn low), over an 8- or 16-byte vector.
 func (c *CPU) execSIMDExt(w uint32) error {

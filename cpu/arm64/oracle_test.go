@@ -488,6 +488,9 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		// ext (byte extract from concatenated pair)
 		{"ext v0.16b, v1.16b, v2.16b, #4"}, {"ext v0.8b, v3.8b, v4.8b, #3"},
 		{"ext v0.16b, v1.16b, v2.16b, #1"}, {"ext v0.16b, v3.16b, v4.16b, #15"},
+		// by-element integer (mul/mla/mls)
+		{"mul v0.4s, v1.4s, v2.s[2]"}, {"mul v0.8h, v3.8h, v4.h[5]"}, {"mul v0.2s, v1.2s, v2.s[1]"},
+		{"mla v0.4s, v1.4s, v2.s[1]"}, {"mls v0.4s, v3.4s, v4.s[3]"},
 		// modified immediate (movi/mvni)
 		{"movi v0.16b, #0xff"}, {"movi v0.4s, #0x12, lsl #8"}, {"movi v0.8h, #0x34"},
 		{"movi v0.2d, #0xff00ff00ff00ff00"}, {"mvni v0.4s, #0x12, lsl #16"}, {"mvni v0.8h, #0xab"},
@@ -536,6 +539,8 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"fmin v0.4s, v4.4s, v5.4s"}, {"fmaxnm v0.4s, v1.4s, v4.4s"},
 		{"fminnm v0.4s, v1.4s, v4.4s"},
 		{"fcmeq v0.4s, v1.4s, v2.4s"}, {"fcmge v0.4s, v1.4s, v4.4s"}, {"fcmgt v0.4s, v4.4s, v1.4s"},
+		{"fmul v0.4s, v1.4s, v2.s[0]"}, {"fmul v0.4s, v1.4s, v2.s[3]"},
+		{"fmla v0.4s, v1.4s, v2.s[1]"}, {"fmls v0.4s, v3.4s, v4.s[2]"},
 		{"fadd v0.4s, v1.4s, v2.4s", "fmul v0.4s, v0.4s, v3.4s", "fsub v0.4s, v0.4s, v4.4s"},
 	}
 	fpDouble := [][]string{
@@ -544,6 +549,7 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"fmax v0.2d, v4.2d, v5.2d"}, {"fmin v0.2d, v4.2d, v5.2d"},
 		{"fmaxnm v0.2d, v1.2d, v4.2d"}, {"fminnm v0.2d, v1.2d, v4.2d"},
 		{"fcmeq v0.2d, v1.2d, v2.2d"}, {"fcmge v0.2d, v1.2d, v4.2d"}, {"fcmgt v0.2d, v4.2d, v1.2d"},
+		{"fmul v0.2d, v1.2d, v2.d[1]"}, {"fmla v0.2d, v1.2d, v2.d[0]"}, {"fmls v0.2d, v3.2d, v4.d[1]"},
 	}
 	runVec(fpSingle, vecFPInputs(false))
 	runVec(fpDouble, vecFPInputs(true))

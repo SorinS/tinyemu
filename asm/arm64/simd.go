@@ -176,6 +176,13 @@ var simd3FOps = map[string]simd3F{
 // encodeSIMD dispatches a vector instruction whose mnemonic/operands indicate
 // the Advanced SIMD encoding.
 func encodeSIMD(mnem string, ops []string) (uint32, error) {
+	// By-element forms (mul/fmla/… Vd.T, Vn.T, Vm.Ts[index]) share mnemonics with
+	// the three-same ops; the indexed third operand selects them.
+	if op, ok := byElemOps[mnem]; ok && len(ops) == 3 {
+		if _, isElem := parseVecElem(ops[2]); isElem {
+			return encodeSIMDByElem(op, ops)
+		}
+	}
 	if op, ok := simd3Ops[mnem]; ok {
 		return encodeSIMD3(op, ops)
 	}
@@ -421,6 +428,59 @@ func encodeSIMDAcross(op acrossLanes, ops []string) (uint32, error) {
 	}
 	return src.q<<30 | op.u<<29 | 0x0E300000 | src.size<<22 |
 		op.opcode<<12 | 0b10<<10 | src.num<<5 | dst.num, nil
+}
+
+// byElem describes a by-element op (mul/mla/mls + fmul/fmla/fmls).
+type byElem struct {
+	u      uint32
+	opcode uint32
+	fp     bool
+}
+
+var byElemOps = map[string]byElem{
+	"mul":  {u: 0, opcode: 0x8},
+	"mla":  {u: 1, opcode: 0x0},
+	"mls":  {u: 1, opcode: 0x4},
+	"fmul": {u: 0, opcode: 0x9, fp: true},
+	"fmla": {u: 0, opcode: 0x1, fp: true},
+	"fmls": {u: 0, opcode: 0x5, fp: true},
+}
+
+// encodeSIMDByElem encodes a vector-by-element op "mul Vd.T, Vn.T, Vm.Ts[index]".
+// The index folds into H:L:M and Rm per the element size (H is 4-bit-Rm/3-bit
+// index; S/D use the M:Rm 5-bit register and a 2-/1-bit index).
+func encodeSIMDByElem(op byElem, ops []string) (uint32, error) {
+	rd, ok1 := parseVecReg(ops[0])
+	rn, ok2 := parseVecReg(ops[1])
+	elem, ok3 := parseVecElem(ops[2])
+	if !ok1 || !ok2 || !ok3 {
+		return 0, fmt.Errorf("bad by-element operands")
+	}
+	if rd.q != rn.q || rd.size != rn.size || int(rd.size) != elem.szLog {
+		return 0, fmt.Errorf("by-element arrangement mismatch")
+	}
+	if op.fp {
+		if rd.size != 0b10 && rd.size != 0b11 {
+			return 0, fmt.Errorf("FP by-element needs .2s/.4s/.2d")
+		}
+	} else if rd.size != 0b01 && rd.size != 0b10 {
+		return 0, fmt.Errorf("integer by-element needs .4h/.8h/.2s/.4s")
+	}
+
+	var l, m, h, rm uint32
+	switch rd.size {
+	case 0b01: // H — index 3 bits (H:L:M), Rm 0..15
+		if elem.num > 15 {
+			return 0, fmt.Errorf("by-element H index register must be v0..v15")
+		}
+		h, l, m, rm = elem.index>>2&1, elem.index>>1&1, elem.index&1, elem.num
+	case 0b10: // S — index 2 bits (H:L), Rm 0..31 (M:Rm4)
+		h, l, m, rm = elem.index>>1&1, elem.index&1, elem.num>>4&1, elem.num&0xF
+	default: // 0b11: D — index 1 bit (H), Rm 0..31
+		h, l, m, rm = elem.index&1, 0, elem.num>>4&1, elem.num&0xF
+	}
+	return rd.q<<30 | op.u<<29 | 0x0F000000 | rd.size<<22 | l<<21 | m<<20 |
+		rm<<16 | op.opcode<<12 | h<<11 | rn.num<<5 | rd.num, nil
 }
 
 // encode2dImm packs a 64-bit .2d movi immediate into the 8-bit field: each byte

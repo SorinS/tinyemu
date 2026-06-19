@@ -55,6 +55,53 @@ func disSIMD(w uint32) (string, error) {
 	return "", fmt.Errorf("arm64 disasm: unsupported Adv-SIMD encoding %08x", w)
 }
 
+// byElemName names a by-element op from (U, opcode).
+func byElemName(u, opcode uint32) (string, bool) {
+	switch {
+	case u == 0 && opcode == 0x8:
+		return "mul", true
+	case u == 1 && opcode == 0x0:
+		return "mla", true
+	case u == 1 && opcode == 0x4:
+		return "mls", true
+	case u == 0 && opcode == 0x9:
+		return "fmul", true
+	case u == 0 && opcode == 0x1:
+		return "fmla", true
+	case u == 0 && opcode == 0x5:
+		return "fmls", true
+	}
+	return "", false
+}
+
+// disSIMDByElem decodes a vector-by-element op (mul/fmla/… Vd.T, Vn.T, Vm.Ts[i]).
+func disSIMDByElem(w uint32) (string, error) {
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	size := (w >> 22) & 3
+	l := (w >> 21) & 1
+	m := (w >> 20) & 1
+	rm4 := (w >> 16) & 0xF
+	opcode := (w >> 12) & 0xF
+	h := (w >> 11) & 1
+	rn, rd := (w>>5)&0x1F, w&0x1F
+	mnem, ok := byElemName(u, opcode)
+	if !ok {
+		return "", fmt.Errorf("arm64 disasm: unsupported by-element op %08x", w)
+	}
+	var index, rm uint32
+	switch size {
+	case 0b01:
+		index, rm = h<<2|l<<1|m, rm4
+	case 0b10:
+		index, rm = h<<1|l, m<<4|rm4
+	default:
+		index, rm = h, m<<4|rm4
+	}
+	return fmt.Sprintf("%s %s, %s, %s", mnem,
+		vecName(rd, q, size), vecName(rn, q, size), vecElemName(rm, size, index)), nil
+}
+
 // disSIMDExt decodes EXT.
 func disSIMDExt(w uint32) (string, error) {
 	q := (w >> 30) & 1

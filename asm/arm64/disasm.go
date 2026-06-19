@@ -50,7 +50,10 @@ func Disassemble(w uint32) (string, error) {
 		return disSIMD(w)
 	case (w>>24)&0xBF == 0x0C: // Advanced SIMD load/store multiple structures
 		return disSIMDLdSt1(w)
-	case (w>>24)&0x9F == 0x0F: // Advanced SIMD shift by immediate
+	case (w>>24)&0x9F == 0x0F: // Advanced SIMD: by-element (bit10=0) or shift/movi (bit10=1)
+		if (w>>10)&1 == 0 {
+			return disSIMDByElem(w)
+		}
 		return disSIMDShiftImm(w)
 	case (w>>25)&0x1F == 0x14: // load/store pair
 		return disPair(w)

@@ -128,6 +128,9 @@ func TestARM64_RoundTrip(t *testing.T) {
 		"trn2 v0.2d, v1.2d, v2.2d",
 		// ext
 		"ext v0.16b, v1.16b, v2.16b, #4", "ext v0.8b, v1.8b, v2.8b, #3",
+		// by-element
+		"mul v0.4s, v1.4s, v2.s[3]", "mul v0.8h, v1.8h, v2.h[7]", "mla v0.4s, v1.4s, v2.s[1]",
+		"fmul v0.2d, v1.2d, v2.d[1]", "fmla v0.4s, v1.4s, v2.s[2]", "fmls v0.4s, v1.4s, v2.s[0]",
 	}
 	for _, src := range cases {
 		want, ok := mcEncode(t, src)

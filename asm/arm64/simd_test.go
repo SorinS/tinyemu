@@ -48,6 +48,20 @@ func TestARM64_SIMDCopy(t *testing.T) {
 	runDiff(t, cases)
 }
 
+// TestARM64_SIMDByElem holds the by-element encoders byte-exact vs llvm-mc.
+func TestARM64_SIMDByElem(t *testing.T) {
+	requireLLVMMC(t)
+	cases := []string{
+		"mul v0.4s, v1.4s, v2.s[0]", "mul v0.4s, v1.4s, v2.s[3]", "mul v0.8h, v1.8h, v2.h[7]",
+		"mla v0.4s, v1.4s, v2.s[1]", "mls v0.4s, v1.4s, v2.s[2]", "mul v0.2s, v1.2s, v2.s[1]",
+		"mul v0.8h, v1.8h, v15.h[3]",
+		"fmul v0.4s, v1.4s, v2.s[0]", "fmul v0.2d, v1.2d, v2.d[1]", "fmul v0.4s, v1.4s, v2.s[3]",
+		"fmla v0.4s, v1.4s, v2.s[1]", "fmls v0.4s, v1.4s, v2.s[2]", "fmla v0.2d, v1.2d, v2.d[0]",
+		"fmul v0.2d, v1.2d, v20.d[1]",
+	}
+	runDiff(t, cases)
+}
+
 // TestARM64_SIMDPermute holds the permute encoders byte-exact vs llvm-mc.
 func TestARM64_SIMDPermute(t *testing.T) {
 	requireLLVMMC(t)
