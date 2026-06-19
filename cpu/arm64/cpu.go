@@ -140,6 +140,7 @@ const (
 	a64ESRField    uint32 = 1<<19 | 5<<12 | 2<<8        // ESR_EL1   S3_0_C5_C2_0
 	a64FARField    uint32 = 1<<19 | 6<<12               // FAR_EL1   S3_0_C6_C0_0
 	a64VBARField   uint32 = 1<<19 | 12<<12              // VBAR_EL1  S3_0_C12_C0_0
+	a64DCZIDField  uint32 = 1<<19 | 3<<16 | 7<<5        // DCZID_EL0 S3_3_C0_C0_7
 )
 
 // readSysreg returns a system register's value. NZCV comes from the flags; the
@@ -177,6 +178,8 @@ func (c *CPU) readSysreg(field uint32) uint64 {
 		return uint64(c.SPSel)
 	case a64CurELField:
 		return uint64(c.EL) << 2
+	case a64DCZIDField:
+		return 4 // BS=4 (DC ZVA block = 64 bytes), DZP=0 (ZVA permitted)
 	}
 	if v, ok := c.readTimerReg(field); ok {
 		return v

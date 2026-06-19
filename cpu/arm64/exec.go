@@ -102,6 +102,8 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 		return c.execSIMDShiftImm(w)
 	case (w>>25)&0x1F == 0x14:
 		return c.execPair(w)
+	case (w>>25)&0x1F == 0x16: // load/store pair of FP/SIMD registers (V=1)
+		return c.execFPPair(w)
 	case (w>>26)&0x1F == 0x05:
 		return c.execBranchImm(w, next)
 	case (w>>24)&0xFF == 0x54:
@@ -489,15 +491,31 @@ func (c *CPU) execSystem(w uint32) error {
 	case w>>12 == 0xD5033:
 		// barriers (dmb/dsb/isb): no-ops for flat, in-order memory.
 	case w>>19 == 0x1AA1: // SYS (tlbi/dc/ic/at)
-		if (w>>12)&0xF == 8 { // CRn==8 → TLBI: conservative full flush
+		crn := (w >> 12) & 0xF
+		switch {
+		case crn == 8: // TLBI: conservative full flush
 			c.flushTLB()
+		case crn == 7 && (w>>8)&0xF == 4 && (w>>5)&7 == 1: // DC ZVA: zero a block
+			c.dcZeroVA(c.readX(w&0x1F, true, false))
 		}
-		// dc/ic/at (CRn 7) are no-ops here (no caches modelled).
+		// other dc/ic/at ops are no-ops here (no caches modelled).
 	default:
 		return fmt.Errorf("arm64: unimplemented system instruction %08x at %#x", w, c.PC)
 	}
 	return nil
 }
+
+// dcZeroVA implements DC ZVA: zero the dczBlock-byte naturally-aligned block
+// containing addr. arm64 clear_page uses this; treating it as a no-op left
+// "zeroed" page tables full of garbage.
+func (c *CPU) dcZeroVA(addr uint64) {
+	base := addr &^ uint64(dczBlock-1)
+	for i := 0; i < dczBlock; i += 8 {
+		_ = c.writeMem(base+uint64(i), 0, 8)
+	}
+}
+
+const dczBlock = 64 // DC ZVA block size (matches DCZID_EL0 = log2(64/4) = 4)
 
 func (c *CPU) execException(w uint32, next *uint64) error {
 	imm := uint16((w >> 5) & 0xFFFF)

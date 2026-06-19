@@ -39,6 +39,9 @@ func (c *CPU) execLoadStore(w uint32) error {
 		switch (w >> 10) & 3 {
 		case 0b00: // unscaled (STUR)
 			addr = base + uint64(imm9)
+		case 0b10: // unprivileged (STTR/LDTR) — EL0-permission access; we model
+			// it as a plain unscaled access (the kernel uses it on user pointers).
+			addr = base + uint64(imm9)
 		case 0b01: // post-index
 			addr = base
 			wback, wbVal = true, base+uint64(imm9)
@@ -73,6 +76,86 @@ func (c *CPU) execLoadStore(w uint32) error {
 		c.writeX(rn, true, true, wbVal)
 	}
 	return nil
+}
+
+// execFPPair executes LDP/STP of FP/SIMD register pairs (opc 00=S, 01=D, 10=Q),
+// used for FP context save/restore and memcpy.
+func (c *CPU) execFPPair(w uint32) error {
+	opc := (w >> 30) & 3
+	load := (w>>22)&1 == 1
+	imm7 := signExtend(uint64((w>>15)&0x7F), 7)
+	rt2 := (w >> 10) & 0x1F
+	rn := (w >> 5) & 0x1F
+	rt := w & 0x1F
+	var nbytes int64
+	switch opc {
+	case 0:
+		nbytes = 4 // S
+	case 1:
+		nbytes = 8 // D
+	case 2:
+		nbytes = 16 // Q
+	default:
+		return fmt.Errorf("arm64: bad FP pair opc %08x", w)
+	}
+	base := c.readX(rn, true, true)
+	off := imm7 * nbytes
+	var addr, wbVal uint64
+	wback := false
+	switch (w >> 23) & 3 {
+	case 0b01: // post-index
+		addr, wback, wbVal = base, true, base+uint64(off)
+	case 0b11: // pre-index
+		addr = base + uint64(off)
+		wback, wbVal = true, addr
+	default: // 0b10 signed offset / 0b00 non-temporal
+		addr = base + uint64(off)
+	}
+
+	ldOne := func(reg uint32, a uint64) error {
+		lo, err := c.readMem(a, int(min64(nbytes, 8)))
+		if err != nil {
+			return err
+		}
+		var hi uint64
+		if nbytes == 16 {
+			if hi, err = c.readMem(a+8, 8); err != nil {
+				return err
+			}
+		}
+		c.Vreg[reg] = [2]uint64{lo, hi}
+		return nil
+	}
+	stOne := func(reg uint32, a uint64) error {
+		if err := c.writeMem(a, c.Vreg[reg][0], int(min64(nbytes, 8))); err != nil {
+			return err
+		}
+		if nbytes == 16 {
+			return c.writeMem(a+8, c.Vreg[reg][1], 8)
+		}
+		return nil
+	}
+	op := stOne
+	if load {
+		op = ldOne
+	}
+	if err := op(rt, addr); err != nil {
+		return err
+	}
+	if err := op(rt2, addr+uint64(nbytes)); err != nil {
+		return err
+	}
+	if wback {
+		c.writeX(rn, true, true, wbVal)
+	}
+	return nil
+}
+
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // execLoadLiteral executes LDR (literal): load a register from PC + a signed
@@ -163,6 +246,8 @@ func (c *CPU) execPair(w uint32) error {
 	wback := false
 	var wbVal uint64
 	switch (w >> 23) & 3 {
+	case 0b000: // non-temporal (LDNP/STNP) — offset form, no cache hint modelled
+		addr = base + uint64(off)
 	case 0b010: // signed offset
 		addr = base + uint64(off)
 	case 0b011: // pre-index
