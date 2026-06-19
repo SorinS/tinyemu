@@ -89,6 +89,12 @@ type CPU struct {
 	// vectoring to EL1: it reads x0=function-id/args and writes the result to x0,
 	// returning true when it handled the call.
 	HVCHandler func(c *CPU) bool
+
+	// Local exclusive monitor (ldxr/stxr). Single-core: a stxr succeeds while
+	// the monitor is set for its address; an exception clears it so a preempted
+	// ldxr/stxr sequence retries.
+	exclMonitor bool
+	exclAddr    uint64
 }
 
 // New creates a CPU over the given physical memory, in the EL1h reset state.

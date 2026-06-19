@@ -484,7 +484,8 @@ func run() int {
 func buildConfigFromCLI() (*VMConfig, error) {
 	// Validate machine type
 	if *machineType != "riscv64" && *machineType != "riscv32" &&
-		*machineType != "x86" && *machineType != "x86_64" {
+		*machineType != "x86" && *machineType != "x86_64" &&
+		*machineType != "virt" && *machineType != "arm64" {
 		return nil, fmt.Errorf("unsupported machine type: %s", *machineType)
 	}
 

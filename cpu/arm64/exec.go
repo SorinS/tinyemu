@@ -69,6 +69,10 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 		return c.execAddSubReg(w)
 	case (w>>24)&0x1F == 0x0A:
 		return c.execLogicalReg(w)
+	case (w>>24)&0x3F == 0x08: // load/store exclusive + ldar/stlr
+		return c.execLoadStoreExclusive(w)
+	case (w>>24)&0x3F == 0x18 || (w>>24)&0x3F == 0x1C: // LDR (literal), PC-relative
+		return c.execLoadLiteral(w)
 	case (w>>24)&0x3F == 0x38 || (w>>24)&0x3F == 0x39:
 		return c.execLoadStore(w)
 	case (w>>24)&0x3F == 0x3C || (w>>24)&0x3F == 0x3D: // FP load/store (V bit set)
@@ -92,6 +96,8 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 		return c.execBranchCond(w, next)
 	case (w>>25)&0x3F == 0x1A:
 		return c.execCompareBranch(w, next)
+	case (w>>25)&0x3F == 0x1B:
+		return c.execTestBranch(w, next)
 	case (w>>24)&0xFF == 0xD4:
 		return c.execException(w, next)
 	case (w>>24)&0xFF == 0xD5:
@@ -450,6 +456,17 @@ func (c *CPU) execSystem(w uint32) error {
 		c.writeX(w&0x1F, true, false, c.readSysreg(w&0x000FFFE0))
 	case w>>20 == 0xD51: // msr sysreg, Xt
 		c.writeSysreg(w&0x000FFFE0, c.readX(w&0x1F, true, false))
+	case w&0xFFF8F01F == 0xD500401F: // msr (immediate) — PSTATE field
+		op1, crm, op2 := (w>>16)&7, (w>>8)&0xF, (w>>5)&7
+		switch op1<<3 | op2 {
+		case 0<<3 | 5: // SPSel
+			c.switchEL(c.EL, uint8(crm&1))
+		case 3<<3 | 6: // DAIFSet — mask interrupts (D/A/I/F per crm bits)
+			c.DAIF |= uint8(crm)
+		case 3<<3 | 7: // DAIFClr — unmask
+			c.DAIF &^= uint8(crm)
+		}
+		// Other PSTATE fields (PAN/UAO/DIT/SSBS/TCO) are not modelled: no-op.
 	case w>>12 == 0xD5032:
 		// hints. WFE/WFI park the core until an interrupt; the rest (nop/yield/
 		// sev/sevl) are no-ops for this single-core, in-order model.
@@ -617,6 +634,21 @@ func (c *CPU) execBranchImm(w uint32, next *uint64) error {
 func (c *CPU) execBranchCond(w uint32, next *uint64) error {
 	if c.condHolds(w & 0xF) {
 		off := signExtend(uint64((w>>5)&0x7FFFF), 19) << 2
+		*next = c.PC + uint64(off)
+	}
+	return nil
+}
+
+// execTestBranch executes TBZ/TBNZ: branch if a single bit of Rt is zero (TBZ,
+// op=0) or non-zero (TBNZ, op=1). The bit position is b5:b40 (0..63).
+func (c *CPU) execTestBranch(w uint32, next *uint64) error {
+	op := (w >> 24) & 1
+	bitpos := (w>>31)&1<<5 | (w>>19)&0x1F
+	rt := w & 0x1F
+	v := c.readX(rt, true, false)
+	bitSet := (v>>bitpos)&1 == 1
+	if bitSet == (op == 1) { // TBNZ branches when set; TBZ when clear
+		off := signExtend(uint64((w>>5)&0x3FFF), 14) << 2
 		*next = c.PC + uint64(off)
 	}
 	return nil

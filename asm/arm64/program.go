@@ -149,7 +149,7 @@ func assembleAt(src string, addr int64, labels map[string]int64) ([]byte, error)
 // branches (br/blr/ret) are excluded.
 func isLabelBranch(mnem string) bool {
 	switch mnem {
-	case "b", "bl", "cbz", "cbnz":
+	case "b", "bl", "cbz", "cbnz", "tbz", "tbnz":
 		return true
 	}
 	return strings.HasPrefix(mnem, "b.")

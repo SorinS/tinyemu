@@ -17,6 +17,7 @@ const (
 	clsBranch                  // b/bl (imm26)
 	clsBranchCond              // b.<cond> (imm19)
 	clsCompareBranch           // cbz/cbnz (imm19)
+	clsTestBranch              // tbz/tbnz (bit + imm14)
 	clsBranchReg               // ret/br/blr
 	clsPair                    // ldp/stp/ldpsw
 	clsMul                     // madd/msub/smaddl/.../smulh/umulh (3-source)
@@ -135,6 +136,9 @@ var table = []insn{
 	// --- Compare and branch ---
 	{name: "cbz", class: clsCompareBranch, op: 0},
 	{name: "cbnz", class: clsCompareBranch, op: 1},
+
+	{name: "tbz", class: clsTestBranch, op: 0},
+	{name: "tbnz", class: clsTestBranch, op: 1},
 	// --- Unconditional register branch ---
 	{name: "br", class: clsBranchReg, base: 0xD61F0000},
 	{name: "blr", class: clsBranchReg, base: 0xD63F0000},
@@ -294,6 +298,8 @@ func encode(in *insn, ops []string) (uint32, error) {
 		return encodeBranch(in, ops)
 	case clsCompareBranch:
 		return encodeCompareBranch(in, ops)
+	case clsTestBranch:
+		return encodeTestBranch(in, ops)
 	case clsBranchReg:
 		return encodeBranchReg(in, ops)
 	}
@@ -518,6 +524,34 @@ func encodeCompareBranch(in *insn, ops []string) (uint32, error) {
 	}
 	imm19 := uint32((off >> 2) & 0x7FFFF)
 	return 0x34000000 | sfBit(rt) | in.op<<24 | imm19<<5 | rt.num, nil
+}
+
+// encodeTestBranch encodes tbz/tbnz Rt, #bit, #offset. The bit position 0..63
+// splits into b5 (bit 31) and b40 (bits 23:19); the 14-bit branch offset is in
+// units of 4 bytes.
+func encodeTestBranch(in *insn, ops []string) (uint32, error) {
+	if len(ops) != 3 {
+		return 0, fmt.Errorf("expected Rt, #bit, target")
+	}
+	rt, ok := parseReg(ops[0])
+	if !ok {
+		return 0, fmt.Errorf("bad register operand")
+	}
+	bit, ok := parseImm(ops[1])
+	if !ok || bit < 0 || bit > 63 {
+		return 0, fmt.Errorf("bit position must be 0..63")
+	}
+	off, ok := parseImm(ops[2])
+	if !ok {
+		return 0, fmt.Errorf("branch target must be a numeric offset here")
+	}
+	if off%4 != 0 || off < -(1<<15) || off >= (1<<15) {
+		return 0, fmt.Errorf("branch offset out of range or unaligned")
+	}
+	b5 := uint32(bit>>5) & 1
+	b40 := uint32(bit) & 0x1F
+	imm14 := uint32((off >> 2) & 0x3FFF)
+	return 0x36000000 | b5<<31 | in.op<<24 | b40<<19 | imm14<<5 | rt.num, nil
 }
 
 func encodeBranchReg(in *insn, ops []string) (uint32, error) {

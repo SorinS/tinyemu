@@ -82,8 +82,9 @@ func (c *CPU) takeException(typeOffset uint64, esr, far, elr uint64, useFar bool
 	default:
 		base = 0x000
 	}
-	c.switchEL(1, 1) // enter EL1h
-	c.DAIF = 0xF     // mask D,A,I,F
+	c.switchEL(1, 1)        // enter EL1h
+	c.DAIF = 0xF            // mask D,A,I,F
+	c.exclMonitor = false   // taking an exception clears the local monitor
 	c.PC = c.VBAR + base + typeOffset
 }
 

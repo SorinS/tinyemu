@@ -63,6 +63,8 @@ func Disassemble(w uint32) (string, error) {
 		return disBranchCond(w), nil
 	case (w>>25)&0x3F == 0x1A: // compare and branch (cbz/cbnz)
 		return disCompareBranch(w), nil
+	case (w>>25)&0x3F == 0x1B: // test and branch (tbz/tbnz)
+		return disTestBranch(w), nil
 	case (w>>24)&0xFF == 0xD4: // exception generation
 		return disException(w)
 	case (w>>24)&0xFF == 0xD5: // system (hint/barrier/mrs/msr)
@@ -636,6 +638,18 @@ func disCompareBranch(w uint32) string {
 	rt := w & 0x1F
 	off := signExtend((w>>5)&0x7FFFF, 19) << 2
 	return fmt.Sprintf("%s %s, #%d", mnem, rname(rt, sf, false), off)
+}
+
+func disTestBranch(w uint32) string {
+	mnem := "tbz"
+	if (w>>24)&1 == 1 {
+		mnem = "tbnz"
+	}
+	b5 := (w >> 31) & 1
+	bit := b5<<5 | (w>>19)&0x1F
+	rt := w & 0x1F
+	off := signExtend((w>>5)&0x3FFF, 14) << 2
+	return fmt.Sprintf("%s %s, #%d, #%d", mnem, rname(rt, b5 == 1, false), bit, off)
 }
 
 func disBranchReg(w uint32) (string, error) {

@@ -70,6 +70,66 @@ func (c *CPU) execLoadStore(w uint32) error {
 	return nil
 }
 
+// execLoadLiteral executes LDR (literal): load a register from PC + a signed
+// 19-bit word offset. opc picks the width/sign; V selects the FP register file.
+func (c *CPU) execLoadLiteral(w uint32) error {
+	opc := (w >> 30) & 3
+	v := (w >> 26) & 1
+	rt := w & 0x1F
+	off := signExtend(uint64((w>>5)&0x7FFFF), 19) << 2
+	addr := c.PC + uint64(off)
+
+	if v == 1 { // FP/SIMD literal: S (opc 00), D (01), Q (10)
+		switch opc {
+		case 0:
+			val, err := c.readMem(addr, 4)
+			if err != nil {
+				return err
+			}
+			c.writeVS(rt, uint32(val))
+		case 1:
+			val, err := c.readMem(addr, 8)
+			if err != nil {
+				return err
+			}
+			c.writeVD(rt, val)
+		case 2:
+			lo, err := c.readMem(addr, 8)
+			if err != nil {
+				return err
+			}
+			hi, err := c.readMem(addr+8, 8)
+			if err != nil {
+				return err
+			}
+			c.Vreg[rt] = [2]uint64{lo, hi}
+		}
+		return nil
+	}
+	switch opc {
+	case 0: // LDR Wt
+		val, err := c.readMem(addr, 4)
+		if err != nil {
+			return err
+		}
+		c.writeX(rt, false, false, val)
+	case 1: // LDR Xt
+		val, err := c.readMem(addr, 8)
+		if err != nil {
+			return err
+		}
+		c.writeX(rt, true, false, val)
+	case 2: // LDRSW Xt
+		val, err := c.readMem(addr, 4)
+		if err != nil {
+			return err
+		}
+		c.writeX(rt, true, false, uint64(signExtend(val, 32)))
+	case 3: // PRFM (literal prefetch): no-op
+	}
+	return nil
+}
+
 // execPair executes ldp/stp/ldpsw.
 func (c *CPU) execPair(w uint32) error {
 	opc := (w >> 30) & 3
