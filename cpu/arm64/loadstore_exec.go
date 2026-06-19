@@ -7,6 +7,11 @@ import "fmt"
 func (c *CPU) execLoadStore(w uint32) error {
 	size := (w >> 30) & 3
 	opc := (w >> 22) & 3
+	// size=3, opc=2 is PRFM (prefetch), not a load: a hint with no memory
+	// access and no fault. Address computation is side-effect-free, so skip it.
+	if size == 3 && opc == 2 {
+		return nil
+	}
 	rn := (w >> 5) & 0x1F
 	rt := w & 0x1F
 	scale := int64(1) << size

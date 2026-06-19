@@ -3,6 +3,7 @@ package arm64
 import (
 	"fmt"
 	"math/bits"
+	"os"
 )
 
 // Step fetches, decodes, and executes one instruction.
@@ -32,6 +33,17 @@ func (c *CPU) Step() error {
 func (c *CPU) handleAbort(ab *abort, data bool) error {
 	if c.VBAR == 0 {
 		return ab
+	}
+	if faultDebug && ab.far < 0x10000 {
+		w, _ := c.fetch()
+		fmt.Fprintf(os.Stderr, "[arm64-fault] far=%#x pc=%#x insn=%08x kind=%s\n", ab.far, c.PC, w, ab.kind)
+		for j := 0; j < 31; j++ {
+			fmt.Fprintf(os.Stderr, " x%-2d=%016x", j, c.X[j])
+			if j%4 == 3 {
+				fmt.Fprintln(os.Stderr)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "\n sp=%016x\n", c.SP)
 	}
 	c.takeException(excSync, esrAbort(ab, data, c.EL), ab.far, c.PC, true)
 	return nil

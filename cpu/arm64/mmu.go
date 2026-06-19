@@ -169,7 +169,10 @@ func (c *CPU) readMem(vaddr uint64, size int) (uint64, error) {
 		if ab != nil {
 			return 0, ab
 		}
-		n := pageRemaining(vaddr+uint64(got), size-got)
+		// The chunk must fit before the page boundary AND be a size the memory
+		// layer accepts (1/2/4/8) — an unaligned page-crossing access otherwise
+		// produces a 3/5/6/7-byte chunk.
+		n := validChunk(pageRemaining(vaddr+uint64(got), size-got))
 		v, err := c.Mem.Read(pa, n)
 		if err != nil {
 			return 0, err
@@ -188,13 +191,28 @@ func (c *CPU) writeMem(vaddr, val uint64, size int) error {
 		if ab != nil {
 			return ab
 		}
-		n := pageRemaining(vaddr+uint64(done), size-done)
+		n := validChunk(pageRemaining(vaddr+uint64(done), size-done))
 		if err := c.Mem.Write(pa, val>>(8*done), n); err != nil {
 			return err
 		}
 		done += n
 	}
 	return nil
+}
+
+// validChunk reduces a byte count to the largest memory-access size (1/2/4/8)
+// not exceeding it, so each piece of a split access is individually valid.
+func validChunk(n int) int {
+	switch {
+	case n >= 8:
+		return 8
+	case n >= 4:
+		return 4
+	case n >= 2:
+		return 2
+	default:
+		return 1
+	}
 }
 
 // pageRemaining returns how many of the wanted bytes fit before the next 4 KiB
