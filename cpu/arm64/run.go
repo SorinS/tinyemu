@@ -1,5 +1,10 @@
 package arm64
 
+import (
+	"fmt"
+	"os"
+)
+
 // Machine-mode driving of the core: the run loop, external interrupt injection
 // (from a GIC), WFI power-down, and the cpu.Core interface a board uses.
 
@@ -34,6 +39,12 @@ func (c *CPU) deliverInterrupts() bool {
 		return false
 	}
 	if c.irqLine && c.DAIF&daifI == 0 {
+		if irqDebug {
+			c.irqCount++
+			if c.irqCount <= 20 || c.irqCount%1000 == 0 {
+				fmt.Fprintf(os.Stderr, "[arm64-irq] #%d taken at cycle=%d pc=%#x\n", c.irqCount, c.cycles, c.PC)
+			}
+		}
 		c.takeException(excIRQ, 0, 0, c.PC, false)
 		return true
 	}

@@ -95,6 +95,7 @@ type CPU struct {
 	// ldxr/stxr sequence retries.
 	exclMonitor bool
 	exclAddr    uint64
+	irqCount    uint64
 }
 
 // New creates a CPU over the given physical memory, in the EL1h reset state.
@@ -123,7 +124,8 @@ func (c *CPU) Reset() {
 
 // Encoded sysreg fields (bits 19:5) for the registers given dedicated state.
 const (
-	a64NZCVField  uint32 = 1<<19 | 3<<16 | 4<<12 | 2<<8 // NZCV   S3_3_C4_C2_0
+	a64NZCVField  uint32 = 1<<19 | 3<<16 | 4<<12 | 2<<8        // NZCV   S3_3_C4_C2_0
+	a64DAIFField  uint32 = 1<<19 | 3<<16 | 4<<12 | 2<<8 | 1<<5 // DAIF   S3_3_C4_C2_1
 	a64SCTLRField uint32 = 1<<19 | 1<<12                // SCTLR_EL1 S3_0_C1_C0_0
 	a64TTBR0Field uint32 = 1<<19 | 2<<12                // TTBR0_EL1 S3_0_C2_C0_0
 	a64TTBR1Field uint32 = 1<<19 | 2<<12 | 1<<5         // TTBR1_EL1 S3_0_C2_C0_1
@@ -147,6 +149,8 @@ func (c *CPU) readSysreg(field uint32) uint64 {
 	switch field {
 	case a64NZCVField:
 		return c.nzcv()
+	case a64DAIFField:
+		return uint64(c.DAIF) << 6 // PSTATE.DAIF lives in bits 9:6
 	case a64SCTLRField:
 		return c.SCTLR
 	case a64TTBR0Field:
@@ -186,6 +190,8 @@ func (c *CPU) writeSysreg(field uint32, v uint64) {
 	switch field {
 	case a64NZCVField:
 		c.setFlags(v>>31&1 == 1, v>>30&1 == 1, v>>29&1 == 1, v>>28&1 == 1)
+	case a64DAIFField:
+		c.DAIF = uint8(v>>6) & 0xF // msr daif, Xt (local_irq_restore)
 	case a64SCTLRField:
 		c.SCTLR = v
 		c.flushTLB() // enabling/disabling translation invalidates cached entries
