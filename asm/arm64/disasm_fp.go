@@ -45,12 +45,23 @@ func disSIMD(w uint32) (string, error) {
 		return disSIMD2RegMisc(w)
 	case (w>>29)&1 == 0 && (w>>21)&1 == 0 && (w>>15)&1 == 0 && (w>>10)&3 == 0b10:
 		return disSIMDPermute(w)
+	case (w>>29)&1 == 1 && (w>>21)&7 == 0 && (w>>15)&1 == 0 && (w>>10)&1 == 0:
+		return disSIMDExt(w)
 	case (w>>21)&1 == 1 && (w>>10)&1 == 1:
 		return disSIMD3(w)
 	case (w>>21)&7 == 0 && (w>>15)&1 == 0 && (w>>10)&1 == 1:
 		return disSIMDCopy(w)
 	}
 	return "", fmt.Errorf("arm64 disasm: unsupported Adv-SIMD encoding %08x", w)
+}
+
+// disSIMDExt decodes EXT.
+func disSIMDExt(w uint32) (string, error) {
+	q := (w >> 30) & 1
+	index := (w >> 11) & 0xF
+	rm, rn, rd := (w>>16)&0x1F, (w>>5)&0x1F, w&0x1F
+	v := func(n uint32) string { return vecName(n, q, 0) } // .8b / .16b
+	return fmt.Sprintf("ext %s, %s, %s, #%d", v(rd), v(rn), v(rm), index), nil
 }
 
 // permuteName names a permute op from its 3-bit opcode.

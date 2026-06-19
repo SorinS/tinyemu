@@ -195,6 +195,8 @@ func encodeSIMD(mnem string, ops []string) (uint32, error) {
 		return encodeSIMDPermute(opcode, ops)
 	}
 	switch mnem {
+	case "ext":
+		return encodeExt(ops)
 	case "movi", "mvni":
 		return encodeMoviMvni(mnem, ops)
 	case "dup":
@@ -295,6 +297,29 @@ func encodeIns(ops []string) (uint32, error) {
 		return 0, fmt.Errorf("bad ins source")
 	}
 	return 1<<30 | 0x0E000000 | imm5<<16 | 0b0011<<11 | 1<<10 | g.num<<5 | dst.num, nil
+}
+
+// encodeExt encodes EXT "ext Vd.T, Vn.T, Vm.T, #index" — extract a vector from
+// the byte concatenation of Vn:Vm. Only .8b (index 0..7) and .16b (0..15).
+func encodeExt(ops []string) (uint32, error) {
+	if len(ops) != 4 {
+		return 0, fmt.Errorf("ext expects Vd, Vn, Vm, #index")
+	}
+	rd, ok1 := parseVecReg(ops[0])
+	rn, ok2 := parseVecReg(ops[1])
+	rm, ok3 := parseVecReg(ops[2])
+	idx, ok4 := parseImm(ops[3])
+	if !ok1 || !ok2 || !ok3 || !ok4 {
+		return 0, fmt.Errorf("bad ext operands")
+	}
+	if rd.size != 0 || rn.size != 0 || rm.size != 0 || rd.q != rn.q || rd.q != rm.q {
+		return 0, fmt.Errorf("ext requires a common .8b/.16b arrangement")
+	}
+	width := int64(8) << rd.q // 8 or 16 bytes
+	if idx < 0 || idx >= width {
+		return 0, fmt.Errorf("ext index %d out of range [0,%d)", idx, width)
+	}
+	return rd.q<<30 | 1<<29 | 0x0E000000 | rm.num<<16 | uint32(idx)<<11 | rn.num<<5 | rd.num, nil
 }
 
 // permuteOps maps a permute mnemonic to its 3-bit opcode (bits[14:12]).

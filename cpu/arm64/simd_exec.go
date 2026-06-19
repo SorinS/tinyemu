@@ -22,12 +22,44 @@ func (c *CPU) execSIMD(w uint32) error {
 		return c.execSIMD2RegMisc(w)
 	case (w>>29)&1 == 0 && (w>>21)&1 == 0 && (w>>15)&1 == 0 && (w>>10)&3 == 0b10:
 		return c.execSIMDPermute(w)
+	case (w>>29)&1 == 1 && (w>>21)&7 == 0 && (w>>15)&1 == 0 && (w>>10)&1 == 0:
+		return c.execSIMDExt(w)
 	case (w>>21)&1 == 1 && (w>>10)&1 == 1:
 		return c.execSIMD3(w)
 	case (w>>21)&7 == 0 && (w>>15)&1 == 0 && (w>>10)&1 == 1:
 		return c.execSIMDCopy(w)
 	}
 	return fmt.Errorf("arm64: unsupported Adv-SIMD encoding %08x at %#x", w, c.PC)
+}
+
+// execSIMDExt executes EXT: byte j of Vd = byte (index+j) of the concatenation
+// Vn:Vm (Vn low), over an 8- or 16-byte vector.
+func (c *CPU) execSIMDExt(w uint32) error {
+	q := (w >> 30) & 1
+	index := int((w >> 11) & 0xF)
+	rm := (w >> 16) & 0x1F
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	width := int(8) << q
+	vn, vm := c.Vreg[rn], c.Vreg[rm]
+	byteAt := func(v [2]uint64, b int) uint64 { return (v[b/8] >> (uint(b%8) * 8)) & 0xFF }
+
+	var res [2]uint64
+	for j := 0; j < width; j++ {
+		src := index + j
+		var b uint64
+		if src < width {
+			b = byteAt(vn, src)
+		} else {
+			b = byteAt(vm, src-width)
+		}
+		res[j/8] |= b << (uint(j%8) * 8)
+	}
+	if q == 0 {
+		res[1] = 0
+	}
+	c.Vreg[rd] = res
+	return nil
 }
 
 // getElem/setElem index a 128-bit value as an array of esize-bit elements

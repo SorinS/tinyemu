@@ -57,6 +57,9 @@ func TestARM64_SIMDPermute(t *testing.T) {
 		"trn1 v0.4s, v1.4s, v2.4s", "trn2 v0.4s, v1.4s, v2.4s",
 		"zip1 v0.16b, v1.16b, v2.16b", "zip1 v0.2d, v1.2d, v2.2d",
 		"trn1 v0.8h, v1.8h, v2.8h", "uzp2 v0.8b, v1.8b, v2.8b",
+		// ext
+		"ext v0.16b, v1.16b, v2.16b, #4", "ext v0.8b, v1.8b, v2.8b, #3",
+		"ext v0.16b, v1.16b, v2.16b, #0", "ext v0.16b, v1.16b, v2.16b, #15",
 	}
 	runDiff(t, cases)
 }
