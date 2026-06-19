@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86_64"
+	"github.com/sorins/tinyemu-go/cpu/x86_64"
 )
 
 // loadVMLinux64 loads a decompressed x86_64 vmlinux ELF directly,

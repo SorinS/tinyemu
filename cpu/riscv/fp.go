@@ -4,7 +4,7 @@
 package riscv
 
 import (
-	"github.com/jtolio/tinyemu-go/softfp"
+	"github.com/sorins/tinyemu-go/softfp"
 )
 
 // F32High is the NaN-boxing mask for F32 values in 64-bit FP registers.

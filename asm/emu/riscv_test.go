@@ -3,7 +3,7 @@ package emu_test
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/asm/emu"
+	"github.com/sorins/tinyemu-go/asm/emu"
 )
 
 func TestDetectArch(t *testing.T) {

@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86"
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/cpu/x86"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 func TestTest386TraceLong(t *testing.T) {

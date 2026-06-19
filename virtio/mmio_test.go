@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // testIRQState tracks IRQ state for testing

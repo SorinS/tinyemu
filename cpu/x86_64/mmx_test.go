@@ -9,7 +9,7 @@ package x86_64
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // runMMXCode writes `code` at codeAddr=0x1000, sets RIP, and steps

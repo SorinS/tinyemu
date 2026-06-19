@@ -5,7 +5,7 @@ package x86_64
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // installIDTGate writes a 16-byte interrupt gate into the IDT for the

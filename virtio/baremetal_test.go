@@ -15,10 +15,10 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/riscv"
-	"github.com/jtolio/tinyemu-go/devices"
-	"github.com/jtolio/tinyemu-go/mem"
-	"github.com/jtolio/tinyemu-go/test/isatest/elfloader"
+	"github.com/sorins/tinyemu-go/cpu/riscv"
+	"github.com/sorins/tinyemu-go/devices"
+	"github.com/sorins/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/test/isatest/elfloader"
 )
 
 // bareMetalTestDir returns the path to the bare-metal test binaries.

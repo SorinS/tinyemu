@@ -3,8 +3,8 @@ package arm64
 import (
 	"testing"
 
-	asmarm64 "github.com/jtolio/tinyemu-go/asm/arm64"
-	"github.com/jtolio/tinyemu-go/mem"
+	asmarm64 "github.com/sorins/tinyemu-go/asm/arm64"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // place assembles instrs and writes them at the physical address.

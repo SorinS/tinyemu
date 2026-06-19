@@ -6,8 +6,8 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/jtolio/tinyemu-go/images"
-	"github.com/jtolio/tinyemu-go/temubox"
+	"github.com/sorins/tinyemu-go/images"
+	"github.com/sorins/tinyemu-go/temubox"
 )
 
 func main() {

@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
-	"github.com/jtolio/tinyemu-go/p9"
+	"github.com/sorins/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/p9"
 )
 
 // mockFSDevice implements p9.FSDevice for testing

@@ -4,7 +4,7 @@ package devices
 import (
 	"sync"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // CLINT memory-mapped register offsets per RISC-V spec

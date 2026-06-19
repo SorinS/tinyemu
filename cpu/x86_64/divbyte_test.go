@@ -3,7 +3,7 @@ package x86_64
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // Byte-form DIV/IDIV (Group 3, F6 /6 and /7) are special: the dividend is

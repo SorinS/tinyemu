@@ -3,7 +3,7 @@ package x86_64
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // TestMMIO32AtomicAccess guards the property that a single 32-bit guest

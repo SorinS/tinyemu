@@ -3,8 +3,8 @@
 package temubox
 
 import (
-	"github.com/jtolio/tinyemu-go/slirp"
-	"github.com/jtolio/tinyemu-go/virtio"
+	"github.com/sorins/tinyemu-go/slirp"
+	"github.com/sorins/tinyemu-go/virtio"
 )
 
 func newNetDevice() *virtio.EthernetDevice {

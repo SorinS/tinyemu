@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/jtolio/tinyemu-go/machine"
+	"github.com/sorins/tinyemu-go/machine"
 )
 
 // setupResizeHandler sets up a SIGWINCH handler to resize the console on terminal resize.

@@ -25,7 +25,7 @@ Verify and implement all TCP sequence number comparison functions (seqLT, seqLEQ
 
 - [ ] Pass `go test ./...`
 - [ ] Pass `go vet ./...`
-- [ ] Have `gofmt -s` and `goimports -local github.com/jtolio/tinyemu-go` run.
+- [ ] Have `gofmt -s` and `goimports -local github.com/sorins/tinyemu-go` run.
 - [ ] Maintain/improve test coverage (`go test -cover ./...`)
 - [ ] Reference corresponding C code in comments (for each logic step within each function)
 - [ ] Include regression tests for any bug fixes

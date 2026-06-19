@@ -3,7 +3,7 @@ package pc
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 func TestStdVGA_DispiAndBARRelocation(t *testing.T) {

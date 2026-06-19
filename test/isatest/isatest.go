@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/riscv"
+	"github.com/sorins/tinyemu-go/cpu/riscv"
 )
 
 // TestCase represents a single ISA compliance test.

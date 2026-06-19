@@ -4,7 +4,7 @@
 
 **tinyemu-go** is a Go reimplementation of Fabrice Bellard's TinyEMU. It started as a RISC-V-only emulator and is being extended to multi-arch support (RISC-V + x86-32 PC emulation).
 
-- **Module**: `github.com/jtolio/tinyemu-go`
+- **Module**: `github.com/sorins/tinyemu-go`
 - **Root**: `/Users/sorins/Dev/Go.Code/tinyemu-go.git`
 - **Reference emulator**: `halfix.git` at `/Users/sorins/Dev/Go.Code/halfix.git` (C-based x86-32 PC emulator)
 

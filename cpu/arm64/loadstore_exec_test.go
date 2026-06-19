@@ -3,8 +3,8 @@ package arm64
 import (
 	"testing"
 
-	asmarm64 "github.com/jtolio/tinyemu-go/asm/arm64"
-	"github.com/jtolio/tinyemu-go/mem"
+	asmarm64 "github.com/sorins/tinyemu-go/asm/arm64"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // newCPU builds a CPU over 1 MiB of flat RAM with the program assembled at

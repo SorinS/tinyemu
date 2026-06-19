@@ -8,7 +8,7 @@ package x86_64
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 func runCPUID(t *testing.T, eax uint32) (a, b, cx, d uint32) {

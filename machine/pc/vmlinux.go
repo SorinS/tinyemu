@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86"
+	"github.com/sorins/tinyemu-go/cpu/x86"
 )
 
 // loadVMLinux loads a decompressed 32-bit x86 vmlinux ELF directly into memory.

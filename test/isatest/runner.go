@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jtolio/tinyemu-go/cpu/riscv"
-	"github.com/jtolio/tinyemu-go/mem"
-	"github.com/jtolio/tinyemu-go/test/isatest/elfloader"
+	"github.com/sorins/tinyemu-go/cpu/riscv"
+	"github.com/sorins/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/test/isatest/elfloader"
 )
 
 // RunConfig specifies options for running an ISA test.

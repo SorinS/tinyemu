@@ -9,7 +9,7 @@ package x86_64
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 func TestPUSHFQ_POPFQ_RoundTrip(t *testing.T) {

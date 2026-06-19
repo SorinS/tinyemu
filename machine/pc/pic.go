@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jtolio/tinyemu-go/cpu"
+	"github.com/sorins/tinyemu-go/cpu"
 )
 
 // PIC8259 implements a single 8259 Programmable Interrupt Controller.

@@ -3,7 +3,7 @@ package slirp
 import (
 	"net"
 
-	"github.com/jtolio/tinyemu-go/virtio"
+	"github.com/sorins/tinyemu-go/virtio"
 )
 
 // slirpDeviceState holds state for a Slirp-backed network device.

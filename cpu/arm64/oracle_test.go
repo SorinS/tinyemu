@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	asmarm64 "github.com/jtolio/tinyemu-go/asm/arm64"
-	"github.com/jtolio/tinyemu-go/mem"
+	asmarm64 "github.com/sorins/tinyemu-go/asm/arm64"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // The native oracle: assemble a straight-line block, splice its bytes into a

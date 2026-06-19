@@ -1,10 +1,10 @@
 package machine
 
 import (
-	"github.com/jtolio/tinyemu-go/cpu"
-	"github.com/jtolio/tinyemu-go/devices"
-	"github.com/jtolio/tinyemu-go/mem"
-	"github.com/jtolio/tinyemu-go/virtio"
+	"github.com/sorins/tinyemu-go/cpu"
+	"github.com/sorins/tinyemu-go/devices"
+	"github.com/sorins/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/virtio"
 )
 
 // BlockDeviceAttacher is the optional capability implemented by boards that

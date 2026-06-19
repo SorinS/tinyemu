@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jtolio/tinyemu-go/mem"
-	"github.com/jtolio/tinyemu-go/test/isatest/elfloader"
+	"github.com/sorins/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/test/isatest/elfloader"
 )
 
 // Spike differential harness: build a bare-metal test ELF with the GNU

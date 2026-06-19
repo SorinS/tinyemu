@@ -1,7 +1,15 @@
+// Package riscv is the RISC-V CPU core — the original heart of tinyemu-go.
+//
+// Heritage: this package (and the surrounding RISC-V machine/device stack) began
+// as a Claude-generated transliteration of Fabrice Bellard's TinyEMU from C to
+// Go, directed by JT Olio (github.com/jtolio). The module was later forked to
+// github.com/sorins/tinyemu-go, which added the x86, x86_64 and ARM64 cores; the
+// RISC-V core here is inherited from that original jtolio work. See the README
+// for the project's genesis.
 package riscv
 
 import (
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // XLEN represents the register width

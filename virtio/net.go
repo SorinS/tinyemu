@@ -9,7 +9,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // debugNetWriter is where DebugNetRX-gated traces are written.

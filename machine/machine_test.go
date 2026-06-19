@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jtolio/tinyemu-go/virtio"
+	"github.com/sorins/tinyemu-go/virtio"
 )
 
 // TestNewMachineRV64 tests creating a 64-bit RISC-V machine.

@@ -16,8 +16,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86"
-	"github.com/jtolio/tinyemu-go/machine/pc"
+	"github.com/sorins/tinyemu-go/cpu/x86"
+	"github.com/sorins/tinyemu-go/machine/pc"
 )
 
 func main() {

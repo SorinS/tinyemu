@@ -6,7 +6,7 @@ package x86_64_test
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86_64"
+	"github.com/sorins/tinyemu-go/cpu/x86_64"
 )
 
 // TestAsm_Not — bitwise NOT, no flag changes.

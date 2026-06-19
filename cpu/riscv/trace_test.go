@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // TestDefaultTracerException tests that the tracer outputs exception information.

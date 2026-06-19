@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // Tests for the 0xEA JMP FAR PTR16:16/32 mode gate.

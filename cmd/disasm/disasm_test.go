@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	a64 "github.com/jtolio/tinyemu-go/asm/arm64"
+	a64 "github.com/sorins/tinyemu-go/asm/arm64"
 )
 
 const (

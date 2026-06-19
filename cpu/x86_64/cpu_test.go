@@ -3,8 +3,8 @@ package x86_64
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu"
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/cpu"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 func newTestCPU(t *testing.T) *CPU {

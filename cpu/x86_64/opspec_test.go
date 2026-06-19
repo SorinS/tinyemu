@@ -36,7 +36,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 type sweepResult int

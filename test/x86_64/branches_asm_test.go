@@ -11,7 +11,7 @@ package x86_64_test
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86_64"
+	"github.com/sorins/tinyemu-go/cpu/x86_64"
 )
 
 // TestAsm_LoopSum — the classic "sum 1..10" pattern using dec+jnz.

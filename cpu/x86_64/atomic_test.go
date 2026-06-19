@@ -7,7 +7,7 @@ package x86_64
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 func runAtomicProg(t *testing.T, prep func(c *CPU, mm *mem.PhysMemoryMap), prog []byte) *CPU {

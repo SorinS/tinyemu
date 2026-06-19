@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // VGA models a minimal IBM VGA adapter sufficient to:

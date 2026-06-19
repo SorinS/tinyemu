@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // floppyDebug traces FDC/DMA activity when TINYEMU_FDC_DEBUG=1.

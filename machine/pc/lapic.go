@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jtolio/tinyemu-go/cpu"
+	"github.com/sorins/tinyemu-go/cpu"
 )
 
 var lapicDebug = os.Getenv("TINYEMU_LAPIC_DEBUG") == "1"

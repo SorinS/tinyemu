@@ -8,8 +8,8 @@ package virtio
 import (
 	"encoding/binary"
 
-	"github.com/jtolio/tinyemu-go/devices"
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/devices"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // VirtIO block request types

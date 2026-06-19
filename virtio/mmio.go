@@ -10,7 +10,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // MMIO register offsets - from the Linux kernel / VirtIO spec

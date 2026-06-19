@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86"
+	"github.com/sorins/tinyemu-go/cpu/x86"
 )
 
 func TestPCResetVector(t *testing.T) {

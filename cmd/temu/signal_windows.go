@@ -2,7 +2,7 @@
 
 package main
 
-import "github.com/jtolio/tinyemu-go/machine"
+import "github.com/sorins/tinyemu-go/machine"
 
 // setupResizeHandler is a no-op on Windows as SIGWINCH is not available.
 func setupResizeHandler(term *Terminal, m machine.Board) {

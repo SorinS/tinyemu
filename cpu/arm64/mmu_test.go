@@ -4,8 +4,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	asmarm64 "github.com/jtolio/tinyemu-go/asm/arm64"
-	"github.com/jtolio/tinyemu-go/mem"
+	asmarm64 "github.com/sorins/tinyemu-go/asm/arm64"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // MMU test fixture: a 4 KiB-granule, 48-bit (T0SZ=16, start L0) translation that

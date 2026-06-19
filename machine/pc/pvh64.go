@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86_64"
+	"github.com/sorins/tinyemu-go/cpu/x86_64"
 )
 
 // PVH boot protocol — Xen's clean alternative to multiboot. Used by OSv,

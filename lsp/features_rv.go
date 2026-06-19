@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	riscv "github.com/jtolio/tinyemu-go/asm/riscv"
+	riscv "github.com/sorins/tinyemu-go/asm/riscv"
 )
 
 // RISC-V mnemonic set + sorted list, for diagnostics and completion.

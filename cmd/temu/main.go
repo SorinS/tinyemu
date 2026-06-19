@@ -21,12 +21,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jtolio/tinyemu-go/asm/emu"
-	"github.com/jtolio/tinyemu-go/devices"
-	"github.com/jtolio/tinyemu-go/machine"
-	"github.com/jtolio/tinyemu-go/machine/pc"
-	"github.com/jtolio/tinyemu-go/p9"
-	"github.com/jtolio/tinyemu-go/virtio"
+	"github.com/sorins/tinyemu-go/asm/emu"
+	"github.com/sorins/tinyemu-go/devices"
+	"github.com/sorins/tinyemu-go/machine"
+	"github.com/sorins/tinyemu-go/machine/pc"
+	"github.com/sorins/tinyemu-go/p9"
+	"github.com/sorins/tinyemu-go/virtio"
 	"github.com/ulikunitz/xz"
 )
 

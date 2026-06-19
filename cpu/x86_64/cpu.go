@@ -15,7 +15,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // Register indices for 64-bit access. Indices 0..7 match the i386

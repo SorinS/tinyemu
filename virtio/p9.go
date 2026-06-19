@@ -9,8 +9,8 @@ import (
 	"encoding/binary"
 	"sync"
 
-	"github.com/jtolio/tinyemu-go/mem"
-	"github.com/jtolio/tinyemu-go/p9"
+	"github.com/sorins/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/p9"
 )
 
 // VirtIO 9P feature bits

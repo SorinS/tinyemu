@@ -4,7 +4,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/virtio"
+	"github.com/sorins/tinyemu-go/virtio"
 )
 
 // TestNewEthernetDevice tests creating a Slirp-backed EthernetDevice.

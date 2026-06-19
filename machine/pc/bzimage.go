@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86"
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/cpu/x86"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // Boot protocol constants from Linux Documentation/x86/boot.rst.

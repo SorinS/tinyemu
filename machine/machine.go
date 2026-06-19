@@ -10,11 +10,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jtolio/tinyemu-go/cpu"
-	"github.com/jtolio/tinyemu-go/cpu/riscv"
-	"github.com/jtolio/tinyemu-go/devices"
-	"github.com/jtolio/tinyemu-go/mem"
-	"github.com/jtolio/tinyemu-go/virtio"
+	"github.com/sorins/tinyemu-go/cpu"
+	"github.com/sorins/tinyemu-go/cpu/riscv"
+	"github.com/sorins/tinyemu-go/devices"
+	"github.com/sorins/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/virtio"
 )
 
 // Memory map constants matching TinyEMU's riscv_machine.c

@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86"
+	"github.com/sorins/tinyemu-go/cpu/x86"
 )
 
 // TestVMLinuxBootIntegration loads a real decompressed vmlinux ELF (if available)

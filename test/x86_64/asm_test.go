@@ -16,8 +16,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86_64"
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/cpu/x86_64"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // codeBase is the physical+linear address where every assembled

@@ -7,7 +7,7 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // espTraceMode selects what changes get logged:

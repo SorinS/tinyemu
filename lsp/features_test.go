@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/asm"
-	"github.com/jtolio/tinyemu-go/asm/emu"
+	"github.com/sorins/tinyemu-go/asm"
+	"github.com/sorins/tinyemu-go/asm/emu"
 )
 
 func TestLineDiagnostic(t *testing.T) {

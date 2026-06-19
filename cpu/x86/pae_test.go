@@ -3,7 +3,7 @@ package x86
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // newPAETestCPU builds a CPU with enough physical RAM to hold paging

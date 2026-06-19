@@ -3,7 +3,7 @@ package riscv
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // TestExpandCompressedQuadrant tests that quadrant detection works correctly

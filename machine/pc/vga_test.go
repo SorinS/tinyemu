@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // newVGATestRig builds a minimal rig: a memory map with the bottom

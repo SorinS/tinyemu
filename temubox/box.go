@@ -1,5 +1,5 @@
 // Package temubox implements a friendly human Go wrapper around
-// the AI-generated transliterated github.com/jtolio/tinyemu-go.
+// the AI-generated transliterated github.com/sorins/tinyemu-go.
 package temubox
 
 import (
@@ -9,9 +9,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/jtolio/tinyemu-go/devices"
-	"github.com/jtolio/tinyemu-go/machine"
-	"github.com/jtolio/tinyemu-go/virtio"
+	"github.com/sorins/tinyemu-go/devices"
+	"github.com/sorins/tinyemu-go/machine"
+	"github.com/sorins/tinyemu-go/virtio"
 )
 
 type Config struct {

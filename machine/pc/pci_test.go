@@ -3,8 +3,8 @@ package pc
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86"
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/cpu/x86"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // newPCITestRig builds the minimum harness for talking to a PCIHost:

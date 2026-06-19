@@ -8,7 +8,7 @@ package arm64
 import (
 	"math/bits"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // CPU is the AArch64 machine state.

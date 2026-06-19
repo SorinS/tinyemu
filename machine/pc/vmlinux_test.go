@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86"
+	"github.com/sorins/tinyemu-go/cpu/x86"
 )
 
 // buildMinimalELF32 creates a minimal 32-bit ELF executable with one PT_LOAD segment.

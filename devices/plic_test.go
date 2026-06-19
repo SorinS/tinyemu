@@ -3,7 +3,7 @@ package devices
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 func TestPLICNew(t *testing.T) {

@@ -1,4 +1,4 @@
-module github.com/jtolio/tinyemu-go
+module github.com/sorins/tinyemu-go
 
 go 1.26.2
 

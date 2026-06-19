@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86_64"
+	"github.com/sorins/tinyemu-go/cpu/x86_64"
 )
 
 // loadBZImage64 loads a 64-bit Linux bzImage and sets the CPU up to

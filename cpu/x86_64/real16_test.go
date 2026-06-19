@@ -3,7 +3,7 @@ package x86_64
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // Tests for real-mode 16-bit code execution in cpu/x86_64. These pin

@@ -9,7 +9,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // Console queue indices

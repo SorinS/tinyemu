@@ -3,7 +3,7 @@ package pc
 import (
 	"os"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // stdVGAEnabled gates the QEMU "std-VGA" graphics device (Bochs VBE).

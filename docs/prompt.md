@@ -42,7 +42,7 @@ tk help
 
 - [ ] Pass `go test ./...`
 - [ ] Pass `go vet ./...`
-- [ ] Have `gofmt -s` and `goimports -local github.com/jtolio/tinyemu-go` run.
+- [ ] Have `gofmt -s` and `goimports -local github.com/sorins/tinyemu-go` run.
 - [ ] Maintain/improve test coverage (`go test -cover ./...`)
 - [ ] Reference corresponding C code in comments
 - [ ] Include regression tests for any bug fixes

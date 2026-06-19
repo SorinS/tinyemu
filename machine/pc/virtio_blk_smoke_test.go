@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/devices"
+	"github.com/sorins/tinyemu-go/devices"
 )
 
 // This test exercises the full virtio-blk-pci data path end-to-end at

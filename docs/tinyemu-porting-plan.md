@@ -338,9 +338,9 @@ func (c *CPU) RaiseException(cause ExceptionCause, tval uint64) {
 
 ## Go Package Architecture
 
-**Module:** `github.com/jtolio/tinyemu-go`
+**Module:** `github.com/sorins/tinyemu-go`
 
-The module is structured as a library with packages at the root level. This allows importing as `github.com/jtolio/tinyemu-go/cpu`, `github.com/jtolio/tinyemu-go/mem`, etc.
+The module is structured as a library with packages at the root level. This allows importing as `github.com/sorins/tinyemu-go/cpu`, `github.com/sorins/tinyemu-go/mem`, etc.
 
 ```
 tinyemu-go/

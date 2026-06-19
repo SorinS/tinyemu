@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	asmarm64 "github.com/jtolio/tinyemu-go/asm/arm64"
-	"github.com/jtolio/tinyemu-go/mem"
+	asmarm64 "github.com/sorins/tinyemu-go/asm/arm64"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // newTestCPU builds a CPU with 1 MiB of RAM and the assembled program loaded at

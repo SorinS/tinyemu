@@ -5,7 +5,7 @@ import (
 
 	"lukechampine.com/uint128"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // testCPU creates a CPU with RAM for testing

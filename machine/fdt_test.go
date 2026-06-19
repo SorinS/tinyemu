@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/virtio"
+	"github.com/sorins/tinyemu-go/virtio"
 )
 
 // TestFDTStateBasic tests basic FDT state operations.

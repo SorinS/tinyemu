@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	a64 "github.com/jtolio/tinyemu-go/asm/arm64"
+	a64 "github.com/sorins/tinyemu-go/asm/arm64"
 )
 
 // AArch64 mnemonic set + sorted list, for diagnostics and completion.

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jtolio/tinyemu-go/devices"
+	"github.com/sorins/tinyemu-go/devices"
 )
 
 // ATAController implements a minimal IDE primary-channel controller in PIO

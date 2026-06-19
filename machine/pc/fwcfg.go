@@ -6,7 +6,7 @@ import (
 	"math/bits"
 	"os"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 var fwCfgDebug = os.Getenv("TINYEMU_FWCFG_DEBUG") == "1"

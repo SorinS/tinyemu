@@ -20,10 +20,10 @@ import (
 
 	"github.com/ulikunitz/xz"
 
-	"github.com/jtolio/tinyemu-go/devices"
-	"github.com/jtolio/tinyemu-go/p9"
-	"github.com/jtolio/tinyemu-go/slirp"
-	"github.com/jtolio/tinyemu-go/virtio"
+	"github.com/sorins/tinyemu-go/devices"
+	"github.com/sorins/tinyemu-go/p9"
+	"github.com/sorins/tinyemu-go/slirp"
+	"github.com/sorins/tinyemu-go/virtio"
 )
 
 // chanReader implements io.Reader for a byte channel.

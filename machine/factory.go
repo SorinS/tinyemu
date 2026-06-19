@@ -3,7 +3,7 @@ package machine
 import (
 	"fmt"
 
-	"github.com/jtolio/tinyemu-go/machine/pc"
+	"github.com/sorins/tinyemu-go/machine/pc"
 )
 
 // NewBoard creates a new machine board of the given architecture type.

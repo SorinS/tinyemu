@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jtolio/tinyemu-go/cpu"
+	"github.com/sorins/tinyemu-go/cpu"
 )
 
 // Compile-time assertion: *CPU implements cpu.X86Core. Catches signature

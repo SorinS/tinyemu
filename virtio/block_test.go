@@ -4,8 +4,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/devices"
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/devices"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // newTestBlockDevice creates a VirtIO block device for testing

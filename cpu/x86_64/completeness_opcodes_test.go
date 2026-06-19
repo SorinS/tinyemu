@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // These cover the "for completeness" opcode batch: POPCNT, CMPXCHG8B/16B,

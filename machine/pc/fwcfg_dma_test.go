@@ -5,7 +5,7 @@ import (
 	"math/bits"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // dmaFWCfg builds a DMA-enabled fw_cfg backed by a fresh 1 MiB RAM map.

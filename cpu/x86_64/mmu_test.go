@@ -3,7 +3,7 @@ package x86_64
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // ptBuilder lays out long-mode page tables in a guest-physical arena

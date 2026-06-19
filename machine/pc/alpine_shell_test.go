@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86"
+	"github.com/sorins/tinyemu-go/cpu/x86"
 )
 
 // TestAlpineKernelShell tries to boot the real Alpine vmlinuz and capture

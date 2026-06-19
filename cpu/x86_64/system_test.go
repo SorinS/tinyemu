@@ -7,7 +7,7 @@ package x86_64
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // stepCPU is a small helper that builds a long-mode CPU, drops bytes

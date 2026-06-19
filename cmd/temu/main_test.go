@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/devices"
+	"github.com/sorins/tinyemu-go/devices"
 	"github.com/ulikunitz/xz"
 )
 

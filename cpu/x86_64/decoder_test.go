@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // longModeFlat builds a CPU positioned in 64-bit long mode with paging

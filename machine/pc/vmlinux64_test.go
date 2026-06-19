@@ -14,7 +14,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86_64"
+	"github.com/sorins/tinyemu-go/cpu/x86_64"
 )
 
 // minimalELF64 builds a stripped ELF64 with N PT_LOAD entries.

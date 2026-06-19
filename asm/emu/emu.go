@@ -23,14 +23,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jtolio/tinyemu-go/asm"
-	a64asm "github.com/jtolio/tinyemu-go/asm/arm64"
-	rvasm "github.com/jtolio/tinyemu-go/asm/riscv"
-	a64cpu "github.com/jtolio/tinyemu-go/cpu/arm64"
-	rvcpu "github.com/jtolio/tinyemu-go/cpu/riscv"
-	"github.com/jtolio/tinyemu-go/cpu/x86"
-	"github.com/jtolio/tinyemu-go/cpu/x86_64"
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/asm"
+	a64asm "github.com/sorins/tinyemu-go/asm/arm64"
+	rvasm "github.com/sorins/tinyemu-go/asm/riscv"
+	a64cpu "github.com/sorins/tinyemu-go/cpu/arm64"
+	rvcpu "github.com/sorins/tinyemu-go/cpu/riscv"
+	"github.com/sorins/tinyemu-go/cpu/x86"
+	"github.com/sorins/tinyemu-go/cpu/x86_64"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 const (

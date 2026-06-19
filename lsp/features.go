@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jtolio/tinyemu-go/asm"
-	"github.com/jtolio/tinyemu-go/asm/emu"
+	"github.com/sorins/tinyemu-go/asm"
+	"github.com/sorins/tinyemu-go/asm/emu"
 )
 
 // mnemonics is the set + sorted list of instruction mnemonics from the table,

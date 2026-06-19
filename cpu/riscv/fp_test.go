@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // Helper to convert float32 to its bit representation

@@ -3,7 +3,7 @@ package x86_64
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // TestCompat32_0x48IsDecNotREX pins the SDM-mandated behaviour that in

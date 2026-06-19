@@ -3,8 +3,8 @@ package pc
 import (
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/x86_64"
-	"github.com/jtolio/tinyemu-go/mem"
+	"github.com/sorins/tinyemu-go/cpu/x86_64"
+	"github.com/sorins/tinyemu-go/mem"
 )
 
 // newTestLAPIC builds a LocalAPIC backed by a real x86_64 CPU and a

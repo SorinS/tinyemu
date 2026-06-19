@@ -13,10 +13,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jtolio/tinyemu-go/asm"
-	a64 "github.com/jtolio/tinyemu-go/asm/arm64"
-	"github.com/jtolio/tinyemu-go/asm/emu"
-	riscv "github.com/jtolio/tinyemu-go/asm/riscv"
+	"github.com/sorins/tinyemu-go/asm"
+	a64 "github.com/sorins/tinyemu-go/asm/arm64"
+	"github.com/sorins/tinyemu-go/asm/emu"
+	riscv "github.com/sorins/tinyemu-go/asm/riscv"
 )
 
 // labelsFor collects the label→address map for a buffer in its ISA's scheme.

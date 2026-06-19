@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jtolio/tinyemu-go/cpu/riscv"
-	"github.com/jtolio/tinyemu-go/test/isatest/elfloader"
+	"github.com/sorins/tinyemu-go/cpu/riscv"
+	"github.com/sorins/tinyemu-go/test/isatest/elfloader"
 )
 
 // TestFormatSignature tests the signature formatting function.
