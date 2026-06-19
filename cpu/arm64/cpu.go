@@ -67,6 +67,28 @@ type CPU struct {
 	ExcType  string // "svc"/"hvc"/"smc"/"brk"/"hlt" when Halted by an exception
 	ExcImm   uint16 // the exception's immediate
 	Sentinel uint64
+
+	// Machine-mode plumbing (driven by a board: GIC, generic timer, PSCI).
+	cycles    uint64 // retired-instruction count; also the generic-timer counter
+	irqLine   bool   // external IRQ asserted (by the GIC)
+	fiqLine   bool   // external FIQ asserted
+	powerDown bool   // parked in WFI/WFE until an interrupt
+
+	// Generic timer (EL1 physical + virtual). The counter is `cycles`; a timer
+	// fires when enabled, unmasked, and counter >= CVAL. CNTFRQ is advertised to
+	// the guest. TimerIRQ is invoked (by the board's CheckTimer) to drive the
+	// timer PPI level into the GIC.
+	cntfrq   uint64
+	cntpCtl  uint64 // CNTP_CTL_EL0: bit0 ENABLE, bit1 IMASK, bit2 ISTATUS
+	cntpCval uint64
+	cntvCtl  uint64 // CNTV_CTL_EL0
+	cntvCval uint64
+	cntvOff  uint64 // CNTVOFF (0 here; virtual==physical)
+
+	// HVCHandler, if set, services an `hvc` as a hypercall (PSCI) instead of
+	// vectoring to EL1: it reads x0=function-id/args and writes the result to x0,
+	// returning true when it handled the call.
+	HVCHandler func(c *CPU) bool
 }
 
 // New creates a CPU over the given physical memory, in the EL1h reset state.
@@ -89,6 +111,8 @@ func (c *CPU) Reset() {
 	c.EL, c.SPSel, c.DAIF = 1, 1, 0xF
 	c.SPEL0, c.SPEL1 = 0, 0
 	c.SPSR, c.ELR, c.ESR, c.VBAR = 0, 0, 0, 0
+	c.cycles, c.irqLine, c.fiqLine, c.powerDown = 0, false, false, false
+	c.cntpCtl, c.cntpCval, c.cntvCtl, c.cntvCval, c.cntvOff = 0, 0, 0, 0, 0
 }
 
 // Encoded sysreg fields (bits 19:5) for the registers given dedicated state.
@@ -144,6 +168,9 @@ func (c *CPU) readSysreg(field uint32) uint64 {
 	case a64CurELField:
 		return uint64(c.EL) << 2
 	}
+	if v, ok := c.readTimerReg(field); ok {
+		return v
+	}
 	return c.Sys[field]
 }
 
@@ -182,6 +209,9 @@ func (c *CPU) writeSysreg(field uint32, v uint64) {
 	case a64SPSelField:
 		c.switchEL(c.EL, uint8(v&1)) // banking: re-select the active SP
 	default:
+		if c.writeTimerReg(field, v) {
+			return
+		}
 		c.Sys[field] = v
 	}
 }

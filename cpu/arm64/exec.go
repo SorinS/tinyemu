@@ -450,9 +450,15 @@ func (c *CPU) execSystem(w uint32) error {
 		c.writeX(w&0x1F, true, false, c.readSysreg(w&0x000FFFE0))
 	case w>>20 == 0xD51: // msr sysreg, Xt
 		c.writeSysreg(w&0x000FFFE0, c.readX(w&0x1F, true, false))
-	case w>>12 == 0xD5032, w>>12 == 0xD5033:
-		// hints (nop/yield/wfe/…) and barriers (dmb/dsb/isb): architecturally
-		// no-ops for this single-core, in-order, flat-memory model.
+	case w>>12 == 0xD5032:
+		// hints. WFE/WFI park the core until an interrupt; the rest (nop/yield/
+		// sev/sevl) are no-ops for this single-core, in-order model.
+		hint := ((w>>8)&0xF)<<3 | ((w >> 5) & 7)
+		if hint == 2 || hint == 3 { // WFE / WFI
+			c.powerDown = true
+		}
+	case w>>12 == 0xD5033:
+		// barriers (dmb/dsb/isb): no-ops for flat, in-order memory.
 	case w>>19 == 0x1AA1: // SYS (tlbi/dc/ic/at)
 		if (w>>12)&0xF == 8 { // CRn==8 → TLBI: conservative full flush
 			c.flushTLB()
@@ -480,6 +486,13 @@ func (c *CPU) execException(w uint32, next *uint64) error {
 		c.ExcType = "hlt"
 	default:
 		return fmt.Errorf("arm64: bad exception %08x at %#x", w, c.PC)
+	}
+	// PSCI and other hypercalls: a board can service hvc/smc directly (read x0
+	// function-id/args, write the result to x0) instead of vectoring to EL1.
+	if (c.ExcType == "hvc" || c.ExcType == "smc") && c.HVCHandler != nil {
+		if c.HVCHandler(c) {
+			return nil // handled; *next is already PC+4
+		}
 	}
 	if c.VBAR == 0 {
 		// No vector table installed: surface as a clean halt so a bare caller
