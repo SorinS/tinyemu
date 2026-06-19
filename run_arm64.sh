@@ -30,7 +30,11 @@ EXTRA="${1:-}"
 [ -x "$TEMU" ]   || { echo "missing emulator $TEMU (run 'make build')" >&2; exit 1; }
 [ -r "$KERNEL" ] || { echo "missing kernel $KERNEL (run 'make arm64')" >&2; exit 1; }
 
-CMDLINE="console=ttyAMA0 earlycon=pl011,mmio32,0x9000000 loglevel=8 $EXTRA"
+# mitigations=off forces KPTI / Spectre alternatives off: those patch the
+# exception path into a page-table-switching trampoline this emulator's
+# simplified MMU/cache model doesn't satisfy (the kernel only enables them
+# because our ID registers read as a vulnerable CPU).
+CMDLINE="console=ttyAMA0 earlycon=pl011,mmio32,0x9000000 loglevel=8 mitigations=off $EXTRA"
 
 set -- -machine virt -m "$MEM" -kernel "$KERNEL" -append "$CMDLINE"
 [ -r "$INITRD" ] && set -- "$@" -initrd "$INITRD"
