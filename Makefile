@@ -151,6 +151,10 @@ tinycore: ## Extract TinyCore (32-bit) boot files (needs iso/TinyCore.iso)
 tamago: ## Build a TamaGo UEFI Go app image into bin/tamago/ (TAMAGO_SRC=file.go)
 	sh scripts/build_tamago.sh $(TAMAGO_SRC)
 
+.PHONY: alpine-arm64
+alpine-arm64: ## Fetch Alpine aarch64 kernel + build the busybox initramfs into bin/arm64virt/
+	sh scripts/extract_alpine_arm64.sh
+
 .PHONY: baremetal
 baremetal: ## Build Pure64 + BareMetal kernel into bin/baremetal/
 	@command -v nasm >/dev/null 2>&1 || { echo "need nasm (brew install nasm)" >&2; exit 1; }
