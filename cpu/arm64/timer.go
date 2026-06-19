@@ -30,6 +30,9 @@ const (
 // Counter returns the current system counter value.
 func (c *CPU) Counter() uint64 { return c.cycles }
 
+// SetCNTFRQ sets the timer frequency advertised to the guest (CNTFRQ_EL0).
+func (c *CPU) SetCNTFRQ(hz uint64) { c.cntfrq = hz }
+
 // readTimerReg returns a generic-timer register value; ok=false if the field is
 // not a timer register.
 func (c *CPU) readTimerReg(field uint32) (uint64, bool) {

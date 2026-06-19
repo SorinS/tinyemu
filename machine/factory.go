@@ -7,7 +7,7 @@ import (
 )
 
 // NewBoard creates a new machine board of the given architecture type.
-// Supported types: "riscv64", "riscv32", "x86", "x86_64".
+// Supported types: "riscv64", "riscv32", "x86", "x86_64", "virt"/"arm64".
 func NewBoard(machineType string, cfg Config) (Board, error) {
 	switch machineType {
 	case "riscv32":
@@ -24,6 +24,8 @@ func NewBoard(machineType string, cfg Config) (Board, error) {
 			EnableAPIC:  cfg.EnableAPIC,
 		}
 		return pc.New(pcCfg)
+	case "virt", "arm64":
+		return NewARM64(cfg)
 	default:
 		return nil, fmt.Errorf("unsupported machine type: %s", machineType)
 	}
