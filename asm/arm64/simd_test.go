@@ -24,6 +24,8 @@ func TestARM64_SIMD3(t *testing.T) {
 		"cmgt v0.4s, v1.4s, v2.4s", "cmge v0.16b, v1.16b, v2.16b", "cmhi v0.8h, v1.8h, v2.8h",
 		"cmhs v0.2d, v1.2d, v2.2d", "cmeq v0.4s, v1.4s, v2.4s", "cmtst v0.8b, v1.8b, v2.8b",
 		"cmgt v0.2d, v1.2d, v2.2d", "cmeq v0.16b, v1.16b, v2.16b",
+		// pairwise add
+		"addp v0.4s, v1.4s, v2.4s", "addp v0.16b, v1.16b, v2.16b", "addp v0.2d, v1.2d, v2.2d",
 	}
 	runDiff(t, cases)
 }
@@ -163,6 +165,9 @@ func TestARM64_SIMD3F(t *testing.T) {
 		// FP compares
 		"fcmeq v0.4s, v1.4s, v2.4s", "fcmge v0.4s, v1.4s, v2.4s", "fcmgt v0.4s, v1.4s, v2.4s",
 		"fcmeq v0.2d, v1.2d, v2.2d", "fcmgt v0.2d, v1.2d, v2.2d", "fcmge v0.2s, v1.2s, v2.2s",
+		// FP pairwise
+		"faddp v0.4s, v1.4s, v2.4s", "faddp v0.2d, v1.2d, v2.2d", "faddp v0.2s, v1.2s, v2.2s",
+		"fmaxp v0.4s, v1.4s, v2.4s", "fminp v0.4s, v1.4s, v2.4s", "fmaxp v0.2d, v1.2d, v2.2d",
 	}
 	runDiff(t, cases)
 }

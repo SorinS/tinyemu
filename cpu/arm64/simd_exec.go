@@ -140,6 +140,59 @@ func byElemFP(opcode, size uint32, aBits, elemBits, dBits uint64) uint64 {
 	return uint64(math.Float32bits(r))
 }
 
+// pairwiseElems builds the pairwise result: the lower half from adjacent pairs
+// of Vn, the upper half from adjacent pairs of Vm.
+func pairwiseElems(vn, vm [2]uint64, esize uint, n int, op func(a, b uint64) uint64) [2]uint64 {
+	var res [2]uint64
+	half := n / 2
+	for j := 0; j < half; j++ {
+		setElem(&res, esize, j, op(getElem(vn, esize, 2*j), getElem(vn, esize, 2*j+1)))
+		setElem(&res, esize, half+j, op(getElem(vm, esize, 2*j), getElem(vm, esize, 2*j+1)))
+	}
+	return res
+}
+
+// execSIMD3FPairwise executes the FP pairwise ops faddp/fmaxp/fminp.
+func (c *CPU) execSIMD3FPairwise(w uint32) error {
+	q := (w >> 30) & 1
+	a := (w >> 23) & 1
+	sz := (w >> 22) & 1
+	opcode := (w >> 11) & 0x1F
+	rm, rn, rd := (w>>16)&0x1F, (w>>5)&0x1F, w&0x1F
+
+	// Select the scalar fpArith2 opcode: faddp->fadd(2), fmaxp->fmax(4),
+	// fminp->fmin(5).
+	var scalarOp uint32
+	switch {
+	case opcode == 0x1A:
+		scalarOp = 2 // fadd
+	case opcode == 0x1E && a == 0:
+		scalarOp = 4 // fmax
+	default: // 0x1E, a==1
+		scalarOp = 5 // fmin
+	}
+
+	esize := uint(32)
+	if sz == 1 {
+		esize = 64
+	}
+	n := int((64 << q) / esize)
+	op := func(x, y uint64) uint64 {
+		if sz == 1 {
+			r, _ := fpArith2Apply(scalarOp, math.Float64frombits(x), math.Float64frombits(y))
+			return math.Float64bits(r)
+		}
+		r, _ := fpArith2Apply32(scalarOp, math.Float32frombits(uint32(x)), math.Float32frombits(uint32(y)))
+		return uint64(math.Float32bits(r))
+	}
+	res := pairwiseElems(c.Vreg[rn], c.Vreg[rm], esize, n, op)
+	if q == 0 {
+		res[1] = 0
+	}
+	c.Vreg[rd] = res
+	return nil
+}
+
 // execSIMDExt executes EXT: byte j of Vd = byte (index+j) of the concatenation
 // Vn:Vm (Vn low), over an 8- or 16-byte vector.
 func (c *CPU) execSIMDExt(w uint32) error {
@@ -518,6 +571,17 @@ func (c *CPU) execSIMD3(w uint32) error {
 		} else {
 			res = laneCmp(vn, vm, size, q, func(a, b uint64, e uint) bool { return a == b })
 		}
+	case 0x17: // addp — pairwise add
+		ebits := uint(8) << size
+		var mask uint64
+		if ebits >= 64 {
+			mask = ^uint64(0)
+		} else {
+			mask = (uint64(1) << ebits) - 1
+		}
+		res = pairwiseElems(vn, vm, ebits, int((64<<q)/ebits), func(a, b uint64) uint64 {
+			return (a + b) & mask
+		})
 	default:
 		return fmt.Errorf("arm64: unsupported Adv-SIMD opcode %08x at %#x", w, c.PC)
 	}
@@ -565,6 +629,9 @@ func (c *CPU) execSIMD3F(w uint32) error {
 	rm, rn, rd := (w>>16)&0x1F, (w>>5)&0x1F, w&0x1F
 	if opcode == 0x1C { // FP compares (fcmeq/fcmge/fcmgt) -> lane mask
 		return c.execSIMD3FCmp(w)
+	}
+	if u == 1 && (opcode == 0x1A || opcode == 0x1E) { // FP pairwise (faddp/fmaxp/fminp)
+		return c.execSIMD3FPairwise(w)
 	}
 	scalarOp, ok := simd3FScalarOp(u, a, opcode)
 	if !ok {

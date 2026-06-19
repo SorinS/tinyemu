@@ -91,6 +91,7 @@ var simd3Ops = map[string]simd3{
 	"cmhs":  {u: 1, opcode: 0x07, fixedSize: -1, maxSize: 3}, // unsigned >=
 	"cmeq":  {u: 1, opcode: 0x11, fixedSize: -1, maxSize: 3}, // equal
 	"cmtst": {u: 0, opcode: 0x11, fixedSize: -1, maxSize: 3}, // (a & b) != 0
+	"addp":  {u: 0, opcode: 0x17, fixedSize: -1, maxSize: 3}, // pairwise add
 	// bitwise logicals: size field is fixed, arrangement limited to 8b/16b.
 	"and": {u: 0, opcode: 0x03, fixedSize: 0b00, maxSize: 0},
 	"bic": {u: 0, opcode: 0x03, fixedSize: 0b01, maxSize: 0},
@@ -171,6 +172,10 @@ var simd3FOps = map[string]simd3F{
 	"fcmeq": {u: 0, a: 0, opcode: 0x1C},
 	"fcmge": {u: 1, a: 0, opcode: 0x1C},
 	"fcmgt": {u: 1, a: 1, opcode: 0x1C},
+	// FP pairwise
+	"faddp": {u: 1, a: 0, opcode: 0x1A},
+	"fmaxp": {u: 1, a: 0, opcode: 0x1E},
+	"fminp": {u: 1, a: 1, opcode: 0x1E},
 }
 
 // encodeSIMD dispatches a vector instruction whose mnemonic/operands indicate

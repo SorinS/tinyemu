@@ -419,6 +419,8 @@ func disSIMD3(w uint32) (string, error) {
 		} else {
 			mnem = "cmeq"
 		}
+	case 0x17:
+		mnem = "addp"
 	case 0x03: // logical: size field selects the op, arrangement is .8b/.16b
 		asize = 0b00
 		switch {
@@ -465,6 +467,12 @@ func fpVecMnem(u, a, opcode uint32) (string, bool) {
 		return "fcmge", true
 	case 1<<6 | 1<<5 | 0x1C:
 		return "fcmgt", true
+	case 1<<6 | 0<<5 | 0x1A:
+		return "faddp", true
+	case 1<<6 | 0<<5 | 0x1E:
+		return "fmaxp", true
+	case 1<<6 | 1<<5 | 0x1E:
+		return "fminp", true
 	}
 	return "", false
 }
