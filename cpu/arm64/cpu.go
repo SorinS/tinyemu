@@ -91,6 +91,11 @@ type CPU struct {
 	// returning true when it handled the call.
 	HVCHandler func(c *CPU) bool
 
+	// TimerSync, if set, re-samples the generic-timer outputs into the interrupt
+	// controller. The CPU calls it when the guest writes a timer register so a
+	// just-serviced timer interrupt deasserts immediately (see writeSysreg).
+	TimerSync func()
+
 	// Local exclusive monitor (ldxr/stxr). Single-core: a stxr succeeds while
 	// the monitor is set for its address; an exception clears it so a preempted
 	// ldxr/stxr sequence retries.
@@ -232,6 +237,13 @@ func (c *CPU) writeSysreg(field uint32, v uint64) {
 		c.switchEL(c.EL, uint8(v&1)) // banking: re-select the active SP
 	default:
 		if c.writeTimerReg(field, v) {
+			// The guest just (re)programmed a generic-timer register — e.g. an
+			// interrupt handler pushing CVAL forward to clear the current tick.
+			// Re-sample the timer→GIC line now, not at the next board CheckTimer,
+			// or the still-asserted PPI re-delivers the same IRQ in a loop.
+			if c.TimerSync != nil {
+				c.TimerSync()
+			}
 			return
 		}
 		c.Sys[field] = v

@@ -104,6 +104,10 @@ func NewARM64(cfg Config) (*ARM64Machine, error) {
 	// Generic timer: advertise CNTFRQ, and service PSCI via HVC.
 	m.cpu.SetCNTFRQ(a64TimerFreq)
 	m.cpu.HVCHandler = m.psci
+	// Re-sample the timer PPIs whenever the guest reprograms the timer, so a
+	// serviced tick deasserts at once instead of re-firing until the next
+	// board-loop CheckTimer.
+	m.cpu.TimerSync = m.CheckTimer
 
 	return m, nil
 }
