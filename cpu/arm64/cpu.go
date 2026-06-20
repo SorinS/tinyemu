@@ -61,7 +61,8 @@ type CPU struct {
 	FAR       uint64
 	FaultKind string
 
-	tlb [tlbSize]tlbEntry // cached VA→PA translations
+	tlb     [tlbSets][tlbWays]tlbEntry // set-associative VA→PA translation cache
+	tlbNext [tlbSets]uint8             // per-set round-robin replacement pointer
 
 	Halted   bool   // an exception (svc/brk/hlt) or a real halt stopped the core
 	ExcType  string // "svc"/"hvc"/"smc"/"brk"/"hlt" when Halted by an exception
@@ -196,11 +197,17 @@ func (c *CPU) writeSysreg(field uint32, v uint64) {
 	case a64DAIFField:
 		c.DAIF = uint8(v>>6) & 0xF // msr daif, Xt (local_irq_restore)
 	case a64SCTLRField:
+		// Only an MMU-enable transition (M bit) invalidates translations; cache/
+		// alignment/WXN bit changes do not. edk2 toggles cache bits mid-bring-up
+		// while relying on existing TLB entries (break-before-make), so a blanket
+		// flush here would drop entries it still needs.
+		if (c.SCTLR^v)&1 != 0 {
+			c.flushTLB()
+		}
 		c.SCTLR = v
-		c.flushTLB() // enabling/disabling translation invalidates cached entries
 	case a64TTBR0Field:
 		c.TTBR0 = v
-		c.flushTLB()
+		c.flushTLB() // an address-space change; we don't tag TLB entries by ASID
 	case a64TTBR1Field:
 		c.TTBR1 = v
 		c.flushTLB()

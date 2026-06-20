@@ -34,16 +34,12 @@ func (c *CPU) handleAbort(ab *abort, data bool) error {
 	if c.VBAR == 0 {
 		return ab
 	}
-	if faultDebug && ab.far < 0x10000 {
+	if faultDebug && c.PC != lastFaultPC {
+		lastFaultPC = c.PC
+		faultLogCount++
 		w, _ := c.fetch()
-		fmt.Fprintf(os.Stderr, "[arm64-fault] far=%#x pc=%#x insn=%08x kind=%s\n", ab.far, c.PC, w, ab.kind)
-		for j := 0; j < 31; j++ {
-			fmt.Fprintf(os.Stderr, " x%-2d=%016x", j, c.X[j])
-			if j%4 == 3 {
-				fmt.Fprintln(os.Stderr)
-			}
-		}
-		fmt.Fprintf(os.Stderr, "\n sp=%016x\n", c.SP)
+		fmt.Fprintf(os.Stderr, "[arm64-fault] far=%#x pc=%#x insn=%08x kind=%s write=%v\n",
+			ab.far, c.PC, w, ab.kind, ab.write)
 	}
 	c.takeException(excSync, esrAbort(ab, data, c.EL), ab.far, c.PC, true)
 	return nil
@@ -492,10 +488,20 @@ func (c *CPU) execSystem(w uint32) error {
 		// barriers (dmb/dsb/isb): no-ops for flat, in-order memory.
 	case w>>19 == 0x1AA1: // SYS (tlbi/dc/ic/at)
 		crn := (w >> 12) & 0xF
+		op2 := (w >> 5) & 7
 		switch {
-		case crn == 8: // TLBI: conservative full flush
-			c.flushTLB()
-		case crn == 7 && (w>>8)&0xF == 4 && (w>>5)&7 == 1: // DC ZVA: zero a block
+		case crn == 8: // TLBI
+			// VA-targeted variants (VAE1/VAAE1/VALE1/VAALE1: op2 odd) invalidate
+			// just that page; the rest (VMALLE1/ASIDE1: op2 even) flush all. A
+			// full flush on a targeted TLBI would drop still-valid entries an OS
+			// relies on during break-before-make page-table splits (edk2).
+			if op2&1 == 1 {
+				vpn := c.readX(w&0x1F, true, false) & 0xFFFFFFFFFFF // Xt[43:0] = VA[55:12]
+				c.flushTLBPage(vpn)
+			} else {
+				c.flushTLB()
+			}
+		case crn == 7 && (w>>8)&0xF == 4 && op2 == 1: // DC ZVA: zero a block
 			c.dcZeroVA(c.readX(w&0x1F, true, false))
 		}
 		// other dc/ic/at ops are no-ops here (no caches modelled).

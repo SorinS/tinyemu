@@ -4,7 +4,7 @@ package machine
 // CPU with PSCI, the GICv2, the ARM generic timer, the PL011 UART and the
 // populated VirtIO-MMIO slots. It mirrors the QEMU virt layout closely enough
 // that a mainline arm64 kernel binds its drivers by compatible string.
-func (m *ARM64Machine) buildARM64FDT(dst []byte, initrdStart, initrdEnd uint64, cmdLine string) int {
+func (m *ARM64Machine) buildARM64FDT(dst []byte, initrdStart, initrdEnd uint64, cmdLine string, uefi bool) int {
 	const (
 		gicPhandle = 1
 		clkPhandle = 2
@@ -33,6 +33,19 @@ func (m *ARM64Machine) buildARM64FDT(dst []byte, initrdStart, initrdEnd uint64, 
 	s.propStr("device_type", "memory")
 	s.propU64x2("reg", a64RAMBase, m.ramSize)
 	s.endNode()
+
+	// UEFI firmware flash: a two-bank cfi-flash so edk2 finds its code + writable
+	// variable store (NorFlashDxe). Only emitted on the UEFI boot path.
+	if uefi {
+		s.beginNodeNum("flash", a64FlashBase)
+		s.propStr("compatible", "cfi-flash")
+		s.propU32Tab("reg",
+			0, a64FlashBase, 0, a64FlashCodeSize,
+			0, a64FlashVarsBase, 0, a64FlashVarsSize,
+		)
+		s.propU32("bank-width", 4)
+		s.endNode()
+	}
 
 	// UART reference clock (the pl011 driver requires it).
 	s.beginNode("apb-pclk")

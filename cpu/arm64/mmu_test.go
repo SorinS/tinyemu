@@ -112,7 +112,6 @@ func TestMMU_Faults(t *testing.T) {
 	}{
 		{"invalid (0b00)", mmuPA | (1 << 10), accessRead, "translation"},
 		{"reserved 0b01 at L3", mmuPA | (1 << 10) | 0b01, accessRead, "translation"},
-		{"access-flag (AF=0)", mmuPA | 0b11, accessRead, "accessflag"},
 		{"permission (AP RO, store)", mmuPA | (1 << 10) | (1 << 7) | 0b11, accessWrite, "permission"},
 	}
 	for _, tc := range cases {
@@ -133,6 +132,16 @@ func TestMMU_Faults(t *testing.T) {
 	c := leaf(mmuPA | (1 << 10) | (1 << 7) | 0b11)
 	if _, ab := c.translate(mmuVA, accessRead); ab != nil {
 		t.Errorf("read of RO page faulted: %v", ab)
+	}
+
+	// Access flag is hardware-managed: AF=0 does not fault; the access succeeds
+	// and AF is set in the descriptor (FEAT_HAFDBS behaviour).
+	c = leaf(mmuPA | 0b11) // AF clear
+	if _, ab := c.translate(mmuVA, accessRead); ab != nil {
+		t.Errorf("AF=0 read faulted (should be hardware-managed): %v", ab)
+	}
+	if d, _ := c.Mem.Read64(mmuL3 + mmuL3Idx*8); d&(1<<10) == 0 {
+		t.Errorf("AF not set after access: desc=%#x", d)
 	}
 }
 

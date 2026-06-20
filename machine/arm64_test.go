@@ -18,9 +18,11 @@ func TestARM64BoardBoot(t *testing.T) {
 	}
 	defer m.Close()
 
-	// A tiny fake "kernel": one WFI word. Boot it and check the boot protocol.
-	image := make([]byte, 8)
-	binary.LittleEndian.PutUint32(image, 0xD503207F) // WFI
+	// A tiny fake arm64 Linux "kernel": one WFI word, with the Image magic
+	// ("ARMd") at offset 56 so it's classified as a Linux Image (not firmware).
+	image := make([]byte, 64)
+	binary.LittleEndian.PutUint32(image, 0xD503207F)          // WFI at entry
+	binary.LittleEndian.PutUint32(image[56:], linuxImageMagic) // "ARMd"
 	if err := m.LoadBIOS(image, nil, nil, "console=ttyAMA0"); err != nil {
 		t.Fatal(err)
 	}

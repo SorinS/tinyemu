@@ -41,8 +41,16 @@ func startLevel(t0sz uint64) int {
 	return 4 - levels
 }
 
-// tlbSize is the direct-mapped TLB capacity (entries indexed by VA page number).
-const tlbSize = 1024
+// The TLB is set-associative: tlbSets sets of tlbWays entries each. A direct-
+// mapped cache evicts a still-valid translation as soon as another VA collides
+// on its index — but software relies on translations surviving across a
+// break-before-make page-table split (an OS points a table entry at a new,
+// not-yet-populated table and accesses in-region pages via their cached
+// translation until it issues TLBI). Associativity keeps those entries alive.
+const (
+	tlbSets = 512
+	tlbWays = 8
+)
 
 // tlbEntry caches one 4 KiB VA→PA translation plus whether the page is writable.
 type tlbEntry struct {
@@ -53,7 +61,45 @@ type tlbEntry struct {
 }
 
 // flushTLB invalidates every cached translation.
-func (c *CPU) flushTLB() { c.tlb = [tlbSize]tlbEntry{} }
+func (c *CPU) flushTLB() {
+	c.tlb = [tlbSets][tlbWays]tlbEntry{}
+	c.tlbNext = [tlbSets]uint8{}
+}
+
+// flushTLBPage invalidates only the cached translation for one VA page (by VA
+// page number), as a VA-targeted TLBI does. Other entries survive — an OS relies
+// on this during break-before-make page-table splits.
+func (c *CPU) flushTLBPage(vpn uint64) {
+	vpn &= tlbVPNMask
+	set := &c.tlb[vpn&(tlbSets-1)]
+	for i := range set {
+		if set[i].valid && set[i].vpn&tlbVPNMask == vpn {
+			set[i] = tlbEntry{}
+		}
+	}
+}
+
+// tlbVPNMask is VA[55:12] — the page-number width a TLBI VA operand encodes.
+const tlbVPNMask = (1 << 44) - 1
+
+// tlbLookup returns a cached entry for vpn, or nil on a miss.
+func (c *CPU) tlbLookup(vpn uint64) *tlbEntry {
+	set := &c.tlb[vpn&(tlbSets-1)]
+	for i := range set {
+		if set[i].valid && set[i].vpn == vpn {
+			return &set[i]
+		}
+	}
+	return nil
+}
+
+// tlbInsert caches a translation, round-robin within the set.
+func (c *CPU) tlbInsert(e tlbEntry) {
+	s := e.vpn & (tlbSets - 1)
+	way := c.tlbNext[s]
+	c.tlb[s][way] = e
+	c.tlbNext[s] = (way + 1) % tlbWays
+}
 
 // translate resolves a virtual to a physical address for the given access,
 // consulting the TLB and walking the page tables on a miss.
@@ -63,8 +109,7 @@ func (c *CPU) translate(vaddr uint64, access accessType) (uint64, *abort) {
 	}
 	write := access == accessWrite
 	vpn := vaddr >> 12
-	e := &c.tlb[vpn&(tlbSize-1)]
-	if e.valid && e.vpn == vpn {
+	if e := c.tlbLookup(vpn); e != nil {
 		if write && !e.writable {
 			return 0, c.fault("permission", 3, vaddr, write)
 		}
@@ -74,7 +119,7 @@ func (c *CPU) translate(vaddr uint64, access accessType) (uint64, *abort) {
 	if ab != nil {
 		return 0, ab
 	}
-	*e = tlbEntry{valid: true, vpn: vpn, ppn: pa >> 12, writable: writable}
+	c.tlbInsert(tlbEntry{valid: true, vpn: vpn, ppn: pa >> 12, writable: writable})
 	if write && !writable {
 		return 0, c.fault("permission", 3, vaddr, write)
 	}
@@ -109,13 +154,14 @@ func (c *CPU) walk(vaddr uint64, write bool) (uint64, bool, *abort) {
 	for {
 		shift := uint(12 + 9*(3-level))
 		idx := (vaddr >> shift) & 0x1FF
-		desc, err := c.Mem.Read64(table + idx*8)
+		descAddr := table + idx*8
+		desc, err := c.Mem.Read64(descAddr)
 		if err != nil || desc&1 == 0 { // unreadable table or invalid descriptor
 			return 0, false, c.fault("translation", level, vaddr, write)
 		}
 		if desc&2 != 0 { // bit1 set
 			if level == 3 { // 0b11 at L3 = page (leaf)
-				return c.leaf(desc&descAddrMask|(vaddr&0xFFF), desc, level, vaddr, write)
+				return c.leaf(desc&descAddrMask|(vaddr&0xFFF), desc, descAddr, level, vaddr, write)
 			}
 			table = desc & descAddrMask // 0b11 at L0–L2 = table; descend
 			level++
@@ -126,18 +172,21 @@ func (c *CPU) walk(vaddr uint64, write bool) (uint64, bool, *abort) {
 		if level == 1 || level == 2 {
 			blockMask := descAddrMask &^ ((uint64(1) << shift) - 1)
 			pa := (desc & blockMask) | (vaddr & ((uint64(1) << shift) - 1))
-			return c.leaf(pa, desc, level, vaddr, write)
+			return c.leaf(pa, desc, descAddr, level, vaddr, write)
 		}
 		return 0, false, c.fault("translation", level, vaddr, write)
 	}
 }
 
-// leaf checks the access flag of a leaf descriptor and returns the physical
-// address with the writable flag (AP[2]==0). AP[1]/bit 6 (EL0 access) and
-// UXN/PXN are decoded once EL0 execution is modelled.
-func (c *CPU) leaf(pa, desc uint64, level int, vaddr uint64, write bool) (uint64, bool, *abort) {
-	if desc&(1<<10) == 0 { // AF: access flag not set
-		return 0, false, c.fault("accessflag", level, vaddr, write)
+// leaf finalises a leaf descriptor: it returns the physical address and the
+// writable flag (AP[2]==0). The Access Flag is hardware-managed — if AF is clear
+// we set it in the in-memory descriptor and proceed (what a FEAT_HAFDBS CPU
+// does), rather than faulting. edk2 relies on this; Linux pre-sets AF so its
+// behaviour is unchanged. AP[1]/bit 6 (EL0 access) and UXN/PXN are decoded once
+// EL0 execution is modelled.
+func (c *CPU) leaf(pa, desc, descAddr uint64, level int, vaddr uint64, write bool) (uint64, bool, *abort) {
+	if desc&(1<<10) == 0 { // AF clear: set it (hardware access-flag management)
+		_ = c.Mem.Write64(descAddr, desc|(1<<10))
 	}
 	return pa, desc&(1<<7) == 0, nil
 }

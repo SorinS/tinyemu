@@ -1,6 +1,7 @@
 package machine
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -28,6 +29,14 @@ const (
 	a64DTBOff    = 0x00000000 // DTB at RAM base
 	a64KernelOff = 0x00200000 // kernel Image at base + 2 MiB (2 MiB aligned)
 	a64InitrdOff = 0x08000000 // initrd at base + 128 MiB
+
+	// UEFI firmware flash (QEMU virt layout): two 64 MiB banks below the GIC.
+	// Bank 0 holds the firmware code (edk2 reset vector at 0x0); bank 1 is the
+	// writable UEFI variable store (left blank for edk2 to format).
+	a64FlashBase     = 0x00000000
+	a64FlashCodeSize = 0x04000000
+	a64FlashVarsBase = 0x04000000
+	a64FlashVarsSize = 0x04000000
 
 	// Interrupt IDs (GIC INTIDs). SPIs are 32+; the DTB encodes them as SPI n.
 	a64TimerVirtPPI = 27 // EL1 virtual timer (PPI 11)
@@ -181,18 +190,51 @@ func (m *ARM64Machine) psci(c *arm64cpu.CPU) bool {
 	return true
 }
 
-// LoadBIOS loads the kernel Image (passed as biosData for non-x86 machines) and
-// initrd into RAM, builds the device tree, and sets the arm64 boot state:
-// PC=kernel entry, x0=DTB physical address.
+// bootImageKind classifies what the boot blob (-bios/-kernel) is, so each type
+// of payload gets the right loader.
+type bootImageKind int
+
+const (
+	bootLinuxImage   bootImageKind = iota // flat arm64 Linux Image (direct boot)
+	bootUEFIFirmware                      // edk2/UEFI firmware flash (FreeBSD, etc.)
+)
+
+// linuxImageMagic is "ARMd" (little-endian) at offset 56 of an arm64 Image.
+const linuxImageMagic = 0x644d5241
+
+// classifyBootImage inspects the blob's header. An arm64 Linux Image carries a
+// known magic; anything else is treated as a UEFI firmware image (the chain-load
+// path for FreeBSD and other UEFI OSes).
+func classifyBootImage(data []byte) bootImageKind {
+	if len(data) >= 64 && binary.LittleEndian.Uint32(data[56:60]) == linuxImageMagic {
+		return bootLinuxImage
+	}
+	return bootUEFIFirmware
+}
+
+// LoadBIOS loads the boot payload and prepares the CPU. The payload may be a flat
+// Linux Image (direct boot) or a UEFI firmware image (which then chain-loads an
+// OS from the virtio-blk disk); the handler is chosen by classifyBootImage.
 func (m *ARM64Machine) LoadBIOS(biosData, kernelData, initrdData []byte, cmdLine string) error {
 	image := biosData
 	if len(image) == 0 {
 		image = kernelData
 	}
 	if len(image) == 0 {
-		return errors.New("arm64: no kernel image")
+		return errors.New("arm64: no boot image")
 	}
 
+	switch classifyBootImage(image) {
+	case bootUEFIFirmware:
+		return m.bootUEFIFirmware(image, cmdLine)
+	default:
+		return m.bootLinuxImage(image, initrdData, cmdLine)
+	}
+}
+
+// bootLinuxImage loads a flat arm64 Image + optional initrd into RAM, builds the
+// device tree, and sets the Linux boot protocol (x0=DTB, PC=kernel entry).
+func (m *ARM64Machine) bootLinuxImage(image, initrdData []byte, cmdLine string) error {
 	ramPtr := m.ram.PhysMem
 	if a64KernelOff+uint64(len(image)) > m.ramSize {
 		return errors.New("arm64: kernel image too large for RAM")
@@ -209,12 +251,45 @@ func (m *ARM64Machine) LoadBIOS(biosData, kernelData, initrdData []byte, cmdLine
 		initrdSize = uint64(len(initrdData))
 	}
 
-	// Device tree at RAM base.
-	m.buildARM64FDT(ramPtr[a64DTBOff:], initrdStart, initrdStart+initrdSize, cmdLine)
+	m.buildARM64FDT(ramPtr[a64DTBOff:], initrdStart, initrdStart+initrdSize, cmdLine, false)
 
-	// arm64 boot protocol: x0 = DTB phys addr; PC = kernel entry.
 	m.cpu.X[0] = a64RAMBase + a64DTBOff
 	m.cpu.X[1], m.cpu.X[2], m.cpu.X[3] = 0, 0, 0
 	m.cpu.PC = a64RAMBase + a64KernelOff
+	return nil
+}
+
+// bootUEFIFirmware maps a UEFI firmware image as the boot flash (QEMU virt
+// layout: code bank at 0x0, blank writable variable bank after it), places the
+// device tree at the base of RAM where edk2 looks for it, and resets the CPU to
+// the firmware reset vector at 0x0. The firmware then drives the rest of the
+// boot (reading the OS off the virtio-blk disk).
+func (m *ARM64Machine) bootUEFIFirmware(firmware []byte, cmdLine string) error {
+	if uint64(len(firmware)) > a64FlashCodeSize {
+		return fmt.Errorf("arm64: UEFI firmware too large (%d > %d)", len(firmware), a64FlashCodeSize)
+	}
+	// Code flash bank (read-mostly) at 0x0.
+	codeFlash, err := m.memMap.RegisterRAM(a64FlashBase, a64FlashCodeSize, 0)
+	if err != nil {
+		return fmt.Errorf("register UEFI code flash: %w", err)
+	}
+	copy(codeFlash.PhysMem, firmware)
+
+	// Writable variable bank, left blank (0xFF = erased flash) for edk2 to format.
+	varFlash, err := m.memMap.RegisterRAM(a64FlashVarsBase, a64FlashVarsSize, 0)
+	if err != nil {
+		return fmt.Errorf("register UEFI vars flash: %w", err)
+	}
+	for i := range varFlash.PhysMem {
+		varFlash.PhysMem[i] = 0xFF
+	}
+
+	// Device tree at the base of RAM (edk2 ArmVirtQemu reads it there); include
+	// the flash node so the firmware finds its variable store.
+	m.buildARM64FDT(m.ram.PhysMem[a64DTBOff:], 0, 0, cmdLine, true)
+
+	// Reset to the firmware entry at flash base.
+	m.cpu.X[0], m.cpu.X[1], m.cpu.X[2], m.cpu.X[3] = 0, 0, 0, 0
+	m.cpu.PC = a64FlashBase
 	return nil
 }
