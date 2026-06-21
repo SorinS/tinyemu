@@ -86,6 +86,11 @@ func (c *CPU) takeException(typeOffset uint64, esr, far, elr uint64, useFar bool
 	c.DAIF = 0xF          // mask D,A,I,F
 	c.exclMonitor = false // taking an exception clears the local monitor
 	c.PC = c.VBAR + base + typeOffset
+	if excDebug && esr>>26 != 0 && excLogCount < 30 {
+		excLogCount++
+		dbgf("[exc] #%d EC=%#x vec=%#x elr=%#x far=%#x fromEL=%d ec_iss=%#x\n",
+			excLogCount, esr>>26, base+typeOffset, elr, far, fromEL, esr&0x1FFFFFF)
+	}
 	if spDebug {
 		dbgf("[sp] enter EL%d/SP%d->EL1h vec=%#x esr=%#x elr=%#x SP=%#x SPEL1=%#x SPEL0=%#x\n",
 			fromEL, fromSPSel, base+typeOffset, esr, elr, c.SP, c.SPEL1, c.SPEL0)

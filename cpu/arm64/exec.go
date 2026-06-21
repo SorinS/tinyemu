@@ -42,12 +42,12 @@ func (c *CPU) handleAbort(ab *abort, data bool) error {
 	if c.VBAR == 0 {
 		return ab
 	}
-	if faultDebug && c.PC != lastFaultPC {
+	if faultDebug && (c.PC != lastFaultPC || faultLogCount < 40) {
 		lastFaultPC = c.PC
 		faultLogCount++
 		w, _ := c.fetch()
-		fmt.Fprintf(os.Stderr, "[arm64-fault] far=%#x pc=%#x insn=%08x kind=%s write=%v\n",
-			ab.far, c.PC, w, ab.kind, ab.write)
+		fmt.Fprintf(os.Stderr, "[arm64-fault] #%d far=%#x pc=%#x insn=%08x kind=%s data=%v write=%v el=%d\n",
+			faultLogCount, ab.far, c.PC, w, ab.kind, data, ab.write, c.EL)
 	}
 	c.takeException(excSync, esrAbort(ab, data, c.EL), ab.far, c.PC, true)
 	return nil
@@ -517,8 +517,10 @@ func (c *CPU) execSystem(w uint32) error {
 			}
 		case crn == 7 && (w>>8)&0xF == 4 && op2 == 1: // DC ZVA: zero a block
 			c.dcZeroVA(c.readX(w&0x1F, true, false))
+		case crn == 7 && (w>>8)&0xF == 8: // AT S1E1x/S1E0x: translate VA -> PAR_EL1
+			c.Sys[a64PARField] = c.atS1E1(c.readX(w&0x1F, true, false), op2&1 == 1)
 		}
-		// other dc/ic/at ops are no-ops here (no caches modelled).
+		// other dc/ic ops are no-ops here (no caches modelled).
 	default:
 		return fmt.Errorf("arm64: unimplemented system instruction %08x at %#x", w, c.PC)
 	}

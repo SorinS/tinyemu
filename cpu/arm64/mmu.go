@@ -191,6 +191,25 @@ func (c *CPU) leaf(pa, desc, descAddr uint64, level int, vaddr uint64, write boo
 	return pa, desc&(1<<7) == 0, nil
 }
 
+// atS1E1 implements the AT S1E1R/S1E1W/S1E0R/S1E0W instructions: it runs the
+// stage-1 translation for a VA and returns the PAR_EL1 result instead of taking
+// an exception. On success bit0 (F) is 0 and the output PA sits in bits[47:12];
+// on a fault bit0 is 1 and bits[6:1] hold the fault status code. FreeBSD's
+// pmap_bootstrap uses this to discover the physical address of a freshly mapped
+// page-table page when building the direct map — without it PAR reads 0 and the
+// kernel installs a DMAP entry pointing at physical address 0.
+func (c *CPU) atS1E1(va uint64, write bool) uint64 {
+	access := accessRead
+	if write {
+		access = accessWrite
+	}
+	pa, ab := c.translate(va, access)
+	if ab != nil {
+		return 1 | dfscForAbort(ab)<<1 // F=1, FST = fault status code
+	}
+	return pa & descAddrMask // F=0, PA[47:12]
+}
+
 // fault records FAR/FaultKind and returns the abort.
 func (c *CPU) fault(kind string, level int, vaddr uint64, write bool) *abort {
 	c.FAR = vaddr
@@ -241,6 +260,9 @@ func (c *CPU) writeMem(vaddr, val uint64, size int) error {
 			return ab
 		}
 		n := validChunk(pageRemaining(vaddr+uint64(done), size-done))
+		if watchPA != 0 && pa>>3 == watchPA>>3 {
+			dbgf("[watchpa] pa=%#x va=%#x val=%#x size=%d pc=%#x\n", pa, vaddr, val>>(8*done), n, c.PC)
+		}
 		if err := c.Mem.Write(pa, val>>(8*done), n); err != nil {
 			return err
 		}

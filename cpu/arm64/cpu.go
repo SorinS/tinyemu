@@ -22,9 +22,9 @@ type CPU struct {
 
 	// SIMD&FP register file V0–V31 (128-bit each: [0]=low 64, [1]=high 64).
 	// Scalar S/D writes zero the unused high bits, like a W write zeros an X.
-	Vreg  [32][2]uint64
-	FPCR  uint64
-	FPSR  uint64
+	Vreg [32][2]uint64
+	FPCR uint64
+	FPSR uint64
 
 	// Exception/privilege state. EL is the current exception level (0 or 1),
 	// SPSel selects SP_EL0 (0) vs SP_ELx (1), DAIF holds the interrupt masks
@@ -132,21 +132,22 @@ func (c *CPU) Reset() {
 const (
 	a64NZCVField  uint32 = 1<<19 | 3<<16 | 4<<12 | 2<<8        // NZCV   S3_3_C4_C2_0
 	a64DAIFField  uint32 = 1<<19 | 3<<16 | 4<<12 | 2<<8 | 1<<5 // DAIF   S3_3_C4_C2_1
-	a64SCTLRField uint32 = 1<<19 | 1<<12                // SCTLR_EL1 S3_0_C1_C0_0
-	a64TTBR0Field uint32 = 1<<19 | 2<<12                // TTBR0_EL1 S3_0_C2_C0_0
-	a64TTBR1Field uint32 = 1<<19 | 2<<12 | 1<<5         // TTBR1_EL1 S3_0_C2_C0_1
-	a64TCRField   uint32 = 1<<19 | 2<<12 | 2<<5         // TCR_EL1   S3_0_C2_C0_2
-	a64MAIRField  uint32 = 1<<19 | 10<<12 | 2<<8        // MAIR_EL1  S3_0_C10_C2_0
+	a64SCTLRField uint32 = 1<<19 | 1<<12                       // SCTLR_EL1 S3_0_C1_C0_0
+	a64TTBR0Field uint32 = 1<<19 | 2<<12                       // TTBR0_EL1 S3_0_C2_C0_0
+	a64TTBR1Field uint32 = 1<<19 | 2<<12 | 1<<5                // TTBR1_EL1 S3_0_C2_C0_1
+	a64TCRField   uint32 = 1<<19 | 2<<12 | 2<<5                // TCR_EL1   S3_0_C2_C0_2
+	a64MAIRField  uint32 = 1<<19 | 10<<12 | 2<<8               // MAIR_EL1  S3_0_C10_C2_0
 
-	a64SPSRField   uint32 = 1<<19 | 4<<12               // SPSR_EL1  S3_0_C4_C0_0
-	a64ELRField    uint32 = 1<<19 | 4<<12 | 1<<5        // ELR_EL1   S3_0_C4_C0_1
-	a64SPEL0Field  uint32 = 1<<19 | 4<<12 | 1<<8        // SP_EL0    S3_0_C4_C1_0
-	a64SPSelField  uint32 = 1<<19 | 4<<12 | 2<<8        // SPSel     S3_0_C4_C2_0
-	a64CurELField  uint32 = 1<<19 | 4<<12 | 2<<8 | 2<<5 // CurrentEL S3_0_C4_C2_2
-	a64ESRField    uint32 = 1<<19 | 5<<12 | 2<<8        // ESR_EL1   S3_0_C5_C2_0
-	a64FARField    uint32 = 1<<19 | 6<<12               // FAR_EL1   S3_0_C6_C0_0
-	a64VBARField   uint32 = 1<<19 | 12<<12              // VBAR_EL1  S3_0_C12_C0_0
-	a64DCZIDField  uint32 = 1<<19 | 3<<16 | 7<<5        // DCZID_EL0 S3_3_C0_C0_7
+	a64SPSRField  uint32 = 1<<19 | 4<<12               // SPSR_EL1  S3_0_C4_C0_0
+	a64ELRField   uint32 = 1<<19 | 4<<12 | 1<<5        // ELR_EL1   S3_0_C4_C0_1
+	a64SPEL0Field uint32 = 1<<19 | 4<<12 | 1<<8        // SP_EL0    S3_0_C4_C1_0
+	a64SPSelField uint32 = 1<<19 | 4<<12 | 2<<8        // SPSel     S3_0_C4_C2_0
+	a64CurELField uint32 = 1<<19 | 4<<12 | 2<<8 | 2<<5 // CurrentEL S3_0_C4_C2_2
+	a64ESRField   uint32 = 1<<19 | 5<<12 | 2<<8        // ESR_EL1   S3_0_C5_C2_0
+	a64FARField   uint32 = 1<<19 | 6<<12               // FAR_EL1   S3_0_C6_C0_0
+	a64VBARField  uint32 = 1<<19 | 12<<12              // VBAR_EL1  S3_0_C12_C0_0
+	a64DCZIDField uint32 = 1<<19 | 3<<16 | 7<<5        // DCZID_EL0 S3_3_C0_C0_7
+	a64PARField   uint32 = 1<<19 | 7<<12 | 4<<8        // PAR_EL1   S3_0_C7_C4_0
 )
 
 // readSysreg returns a system register's value. NZCV comes from the flags; the

@@ -40,7 +40,7 @@ func newMMUCPU(t *testing.T) *CPU {
 	_ = mm.Write64(mmuL2+mmuL2Idx*8, mmuL3|0b11)
 	c := New(mm)
 	c.TTBR0 = mmuL0
-	c.TCR = 16 // T0SZ=16 → 48-bit VA, walk starts at L0
+	c.TCR = 16  // T0SZ=16 → 48-bit VA, walk starts at L0
 	c.SCTLR = 1 // M: MMU on
 	return c
 }
@@ -260,9 +260,9 @@ func TestMMU_EndToEnd(t *testing.T) {
 	// L0[0] → L1. L1[0] = 1 GiB identity block (covers code + tables). L1[1] →
 	// L2 → L3, with L3[0x10] mapping testVA → dataPA.
 	_ = mm.Write64(l0+0*8, l1|0b11)
-	_ = mm.Write64(l1+0*8, 0x0|(1<<10)|0b01)  // identity block [0,1GiB), AF
-	_ = mm.Write64(l1+1*8, l2|0b11)           // VA[1GiB,2GiB) → L2
-	_ = mm.Write64(l2+0*8, l3|0b11)           // VA[1GiB,1GiB+2MiB) → L3
+	_ = mm.Write64(l1+0*8, 0x0|(1<<10)|0b01)       // identity block [0,1GiB), AF
+	_ = mm.Write64(l1+1*8, l2|0b11)                // VA[1GiB,2GiB) → L2
+	_ = mm.Write64(l2+0*8, l3|0b11)                // VA[1GiB,1GiB+2MiB) → L3
 	_ = mm.Write64(l3+0x10*8, dataPA|(1<<10)|0b11) // testVA → dataPA page, AF
 	_ = mm.Write64(dataPA, sentinel)
 
@@ -305,5 +305,37 @@ func TestMMU_DisabledIsIdentity(t *testing.T) {
 	c.SCTLR = 0
 	if pa, ab := c.translate(0xCAFE000, accessRead); ab != nil || pa != 0xCAFE000 {
 		t.Errorf("MMU-off translate = %#x, %v; want identity", pa, ab)
+	}
+}
+
+// TestMMU_AT exercises the AT S1E1R/W instructions: they must run the stage-1
+// walk and deposit the result in PAR_EL1 (F=0 + PA on success, F=1 on fault),
+// without taking an exception. FreeBSD's pmap_bootstrap relies on this to learn
+// the physical address of page-table pages when building the direct map.
+func TestMMU_AT(t *testing.T) {
+	c := newMMUCPU(t)
+	_ = c.Mem.Write64(mmuL3+mmuL3Idx*8, mmuPA|(1<<10)|0b11) // map VA→PA
+
+	// AT S1E1R, X5  (SYS #0,C7,C8,#0,X5) with X5 = mapped VA + an offset.
+	c.X[5] = mmuVA + 0x123
+	var next uint64
+	if err := c.exec(0xd5087800|5, &next); err != nil {
+		t.Fatalf("AT exec: %v", err)
+	}
+	par := c.readSysreg(a64PARField)
+	if par&1 != 0 {
+		t.Fatalf("AT (read) reported fault: PAR=%#x", par)
+	}
+	if par&descAddrMask != mmuPA {
+		t.Fatalf("AT PA = %#x, want %#x", par&descAddrMask, uint64(mmuPA))
+	}
+
+	// AT S1E1W, X6 on an unmapped VA → PAR.F set.
+	c.X[6] = 0x8080604000 + 0x1000                      // sibling page, no L3 entry
+	if err := c.exec(0xd5087820|6, &next); err != nil { // op2=1 (S1E1W)
+		t.Fatalf("AT-W exec: %v", err)
+	}
+	if c.readSysreg(a64PARField)&1 == 0 {
+		t.Fatalf("AT on unmapped VA should set PAR.F: PAR=%#x", c.readSysreg(a64PARField))
 	}
 }

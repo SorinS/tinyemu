@@ -26,6 +26,24 @@ var spDebug = os.Getenv("TINYEMU_ARM64_SP") == "1"
 // is waiting for.
 var wfiDebug = os.Getenv("TINYEMU_ARM64_WFI") == "1"
 
+// excDebug, when TINYEMU_ARM64_EXC=1, logs the first exceptions taken (EC, ELR,
+// FAR) — to see the original exception that led into a handler, not just MMU
+// aborts.
+var excDebug = os.Getenv("TINYEMU_ARM64_EXC") == "1"
+var excLogCount int
+
+// watchPA (TINYEMU_ARM64_WATCHPA=pa, hex) logs every write whose translated
+// physical address lands in the same 8-byte slot — to see who writes a PTE.
+var watchPA = func() uint64 {
+	v := os.Getenv("TINYEMU_ARM64_WATCHPA")
+	if v == "" {
+		return 0
+	}
+	var n uint64
+	fmt.Sscanf(v, "%x", &n)
+	return n
+}()
+
 // pcSample, set to N via TINYEMU_ARM64_PCSAMPLE=N, logs the PC every N retired
 // instructions — a cheap way to see where a hung guest is spinning.
 var pcSample = func() uint64 {
