@@ -36,3 +36,29 @@ var pcSample = func() uint64 {
 // guest's own fault handler re-faults on the same PC.
 var faultLogCount int
 var lastFaultPC uint64
+
+// hangLo/hangHi (TINYEMU_ARM64_HANG=lo:hi, hex) bound a PC window; the first
+// time each PC in it executes, the instruction word + a few regs are dumped —
+// for decoding a tight spin loop (disassemble the dump to read the loop body).
+var hangSeen = map[uint64]bool{}
+var hangLo, hangHi = func() (uint64, uint64) {
+	v := os.Getenv("TINYEMU_ARM64_HANG")
+	if v == "" {
+		return 0, 0
+	}
+	var lo, hi uint64
+	fmt.Sscanf(v, "%x:%x", &lo, &hi)
+	return lo, hi
+}()
+
+// loadPC (TINYEMU_ARM64_LOADPC=pc, hex) logs the X0 value (a load/MMIO address)
+// each distinct time the given PC executes. Names what a poll loop reads.
+var loadPC = func() uint64 {
+	v := os.Getenv("TINYEMU_ARM64_LOADPC")
+	if v == "" {
+		return 0
+	}
+	var n uint64
+	fmt.Sscanf(v, "%x", &n)
+	return n
+}()

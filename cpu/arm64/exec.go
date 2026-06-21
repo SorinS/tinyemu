@@ -15,6 +15,14 @@ func (c *CPU) Step() error {
 		}
 		return err
 	}
+	if hangLo != 0 && c.PC >= hangLo && c.PC < hangHi && !hangSeen[c.PC] {
+		hangSeen[c.PC] = true
+		dbgf("[hang] pc=%#x insn=%08x x0=%#x x1=%#x x2=%#x\n", c.PC, word, c.X[0], c.X[1], c.X[2])
+	}
+	if loadPC != 0 && c.PC == loadPC && !hangSeen[c.X[0]] {
+		hangSeen[c.X[0]] = true
+		dbgf("[load] pc=%#x addr=%#x\n", c.PC, c.X[0])
+	}
 	next := c.PC + 4
 	if err := c.exec(word, &next); err != nil {
 		if ab, ok := err.(*abort); ok {

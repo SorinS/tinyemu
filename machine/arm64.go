@@ -279,13 +279,13 @@ func (m *ARM64Machine) bootUEFIFirmware(firmware []byte, cmdLine string) error {
 	}
 	copy(codeFlash.PhysMem, firmware)
 
-	// Writable variable bank, left blank (0xFF = erased flash) for edk2 to format.
-	varFlash, err := m.memMap.RegisterRAM(a64FlashVarsBase, a64FlashVarsSize, 0)
-	if err != nil {
+	// Writable variable bank: a CFI NOR flash (Intel command set), erased to
+	// 0xFF, for edk2 to format and write UEFI variables into. It must be a real
+	// flash device — edk2's VirtNorFlashDxe issues erase/program commands and
+	// polls the status register for completion, which plain RAM cannot satisfy.
+	varFlash := devices.NewCFIFlash(int(a64FlashVarsSize), 0xFF)
+	if err := varFlash.Register(m.memMap, a64FlashVarsBase); err != nil {
 		return fmt.Errorf("register UEFI vars flash: %w", err)
-	}
-	for i := range varFlash.PhysMem {
-		varFlash.PhysMem[i] = 0xFF
 	}
 
 	// Device tree at the base of RAM (edk2 ArmVirtQemu reads it there); include
