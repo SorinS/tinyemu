@@ -43,8 +43,8 @@ func (c *CPU) execFPDataProc(w uint32) error {
 		return c.execFPArith1(w)
 	case field6&0xF == 0x8: // compare (bits[13:10]=0b1000)
 		return c.execFPCompare(w)
-	case (w>>10)&7 == 0b100: // fmov immediate — not yet implemented
-		return fmt.Errorf("arm64: fmov immediate not implemented %08x", w)
+	case (w>>10)&7 == 0b100: // fmov immediate
+		return c.execFPMovImm(w)
 	}
 	return fmt.Errorf("arm64: unsupported FP encoding %08x at %#x", w, c.PC)
 }
@@ -229,6 +229,47 @@ func (c *CPU) execFcvt(w uint32) error {
 		return fmt.Errorf("arm64: fcvt to half precision not implemented %08x", w)
 	}
 	return nil
+}
+
+// execFPMovImm implements FMOV (scalar, immediate): the 8-bit imm in bits[20:13]
+// expands to a single/double constant via VFPExpandImm and is written to Vd.
+func (c *CPU) execFPMovImm(w uint32) error {
+	isD, ok := fpIsDouble(w)
+	if !ok {
+		return fmt.Errorf("arm64: half-precision fmov immediate %08x", w)
+	}
+	imm8 := uint8((w >> 13) & 0xFF)
+	rd := w & 0x1F
+	if isD {
+		c.writeVD(rd, vfpExpandImm(imm8, true))
+	} else {
+		c.writeVS(rd, uint32(vfpExpandImm(imm8, false)))
+	}
+	return nil
+}
+
+// vfpExpandImm expands an 8-bit FMOV immediate (abcdefgh) into a single (N=32)
+// or double (N=64) bit pattern per the ARM VFPExpandImm pseudocode: sign=a,
+// exp = NOT(b) : b repeated (E-3) : cd, frac = efgh : zeros.
+func vfpExpandImm(imm8 uint8, isD bool) uint64 {
+	sign := uint64(imm8>>7) & 1
+	b6 := uint64(imm8>>6) & 1
+	lo := uint64((imm8 >> 4) & 3) // imm8<5:4>
+	frac4 := uint64(imm8 & 0xF)   // imm8<3:0>
+	if isD {
+		rep := uint64(0)
+		if b6 == 1 {
+			rep = 0xFF // b6 repeated 8 times
+		}
+		exp := (b6^1)<<10 | rep<<2 | lo // 11-bit exponent
+		return sign<<63 | exp<<52 | frac4<<48
+	}
+	rep := uint64(0)
+	if b6 == 1 {
+		rep = 0x1F // b6 repeated 5 times
+	}
+	exp := (b6^1)<<7 | rep<<2 | lo // 8-bit exponent
+	return sign<<31 | exp<<23 | frac4<<19
 }
 
 // execFPConvInt handles int↔FP conversions and fmov between a GPR and an FP

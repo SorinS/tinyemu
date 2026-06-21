@@ -138,3 +138,28 @@ func TestFMOVHighHalf(t *testing.T) {
 		t.Fatalf("X5 = %#x, want 0xDEADBEEFCAFEBABE", c.X[5])
 	}
 }
+
+// TestFMOVImmediate exercises FMOV (scalar, immediate) via VFPExpandImm —
+// OpenWRT's arm64 kernel uses 0x1e6e1009 = FMOV D9, #1.0.
+func TestFMOVImmediate(t *testing.T) {
+	c := New(mem.NewPhysMemoryMap())
+	var next uint64
+	if err := c.exec(0x1e6e1009, &next); err != nil { // FMOV D9, #1.0
+		t.Fatalf("FMOV D9,#1.0: %v", err)
+	}
+	if c.Vreg[9][0] != 0x3FF0000000000000 { // 1.0 (double)
+		t.Fatalf("D9 = %#x, want 0x3FF0000000000000 (1.0)", c.Vreg[9][0])
+	}
+	if err := c.exec(0x1e2e1000, &next); err != nil { // FMOV S0, #1.0
+		t.Fatalf("FMOV S0,#1.0: %v", err)
+	}
+	if c.Vreg[0][0] != 0x3F800000 { // 1.0 (single), high bits zeroed
+		t.Fatalf("S0 = %#x, want 0x3F800000 (1.0)", c.Vreg[0][0])
+	}
+	if err := c.exec(0x1e201000, &next); err != nil { // FMOV S0, #2.0 (imm8=0)
+		t.Fatalf("FMOV S0,#2.0: %v", err)
+	}
+	if c.Vreg[0][0] != 0x40000000 { // 2.0 (single)
+		t.Fatalf("S0 = %#x, want 0x40000000 (2.0)", c.Vreg[0][0])
+	}
+}
