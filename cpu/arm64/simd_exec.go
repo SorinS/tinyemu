@@ -345,6 +345,38 @@ func (c *CPU) execSIMD2RegMisc(w uint32) error {
 	case opcode == 0x1B: // fcvtzs (U=0) / fcvtzu (U=1) — FP -> int, toward zero
 		return c.execSIMDCvtToInt(w, u == 0)
 	}
+
+	// Compare each lane against zero, producing an all-ones / all-zeros mask.
+	// Signed forms sign-extend the lane first; cmeq tests the raw bits.
+	allOnes := func(cond bool) uint64 {
+		if cond {
+			return ^uint64(0)
+		}
+		return 0
+	}
+	switch {
+	case opcode == 0x08 && u == 0: // cmgt #0 (signed >0)
+		c.Vreg[rd] = c.simd2RegLanes(vn, size, q, func(a uint64, e uint) uint64 { return allOnes(sextLane(a, e) > 0) })
+		return nil
+	case opcode == 0x08 && u == 1: // cmge #0 (signed >=0)
+		c.Vreg[rd] = c.simd2RegLanes(vn, size, q, func(a uint64, e uint) uint64 { return allOnes(sextLane(a, e) >= 0) })
+		return nil
+	case opcode == 0x09 && u == 0: // cmeq #0
+		c.Vreg[rd] = c.simd2RegLanes(vn, size, q, func(a uint64, _ uint) uint64 { return allOnes(a == 0) })
+		return nil
+	case opcode == 0x09 && u == 1: // cmle #0 (signed <=0)
+		c.Vreg[rd] = c.simd2RegLanes(vn, size, q, func(a uint64, e uint) uint64 { return allOnes(sextLane(a, e) <= 0) })
+		return nil
+	case opcode == 0x0A && u == 0: // cmlt #0 (signed <0)
+		c.Vreg[rd] = c.simd2RegLanes(vn, size, q, func(a uint64, e uint) uint64 { return allOnes(sextLane(a, e) < 0) })
+		return nil
+	case opcode == 0x04 && u == 0: // cls — count leading sign bits
+		c.Vreg[rd] = c.simd2RegLanes(vn, size, q, func(a uint64, e uint) uint64 { return clsLane(a, e) })
+		return nil
+	case opcode == 0x04 && u == 1: // clz — count leading zeros
+		c.Vreg[rd] = c.simd2RegLanes(vn, size, q, func(a uint64, e uint) uint64 { return clzLane(a, e) })
+		return nil
+	}
 	return fmt.Errorf("arm64: unsupported two-reg-misc opcode %08x at %#x", w, c.PC)
 }
 
@@ -471,13 +503,17 @@ func (c *CPU) execSIMDAcross(w uint32) error {
 
 	// Collect the lanes, then reduce.
 	first := true
-	var acc uint64    // for addv (wraps at the element width)
+	var acc uint64   // for addv (wraps at the element width)
+	var uAddL uint64 // for uaddlv/saddlv: sum into the 2x-wide result (no wrap)
+	var sAddL int64
 	var sMax, sMin int64
 	var uMax, uMin uint64
 	for wi := 0; wi < words; wi++ {
 		for off := uint(0); off < 64; off += ebits {
 			v := (vn[wi] >> off) & mask
 			sv := sextLane(v, ebits)
+			uAddL += v
+			sAddL += sv
 			if first {
 				acc, sMax, sMin, uMax, uMin = v, sv, sv, v, v
 				first = false
@@ -499,10 +535,20 @@ func (c *CPU) execSIMDAcross(w uint32) error {
 		}
 	}
 
+	// The long-add (addlv) result is twice the element width; mask2 bounds it.
+	mask2 := ^uint64(0)
+	if ebits < 32 {
+		mask2 = (uint64(1) << (2 * ebits)) - 1
+	}
+
 	var res uint64
 	switch {
 	case opcode == 0x1B: // addv
 		res = acc
+	case opcode == 0x03 && u == 1: // uaddlv (unsigned add long across)
+		res = uAddL & mask2
+	case opcode == 0x03 && u == 0: // saddlv (signed add long across)
+		res = uint64(sAddL) & mask2
 	case opcode == 0x0A && u == 0: // smaxv
 		res = uint64(sMax) & mask
 	case opcode == 0x0A && u == 1: // umaxv
@@ -514,7 +560,7 @@ func (c *CPU) execSIMDAcross(w uint32) error {
 	default:
 		return fmt.Errorf("arm64: unsupported across-lanes opcode %08x at %#x", w, c.PC)
 	}
-	c.Vreg[rd] = [2]uint64{res & mask, 0}
+	c.Vreg[rd] = [2]uint64{res, 0}
 	return nil
 }
 
@@ -999,6 +1045,27 @@ func sextLane(v uint64, ebits uint) int64 {
 	}
 	shift := 64 - ebits
 	return int64(v<<shift) >> shift
+}
+
+// clzLane counts leading zeros of an ebits-wide lane (clz of 0 is ebits).
+func clzLane(v uint64, ebits uint) uint64 {
+	if v == 0 {
+		return uint64(ebits)
+	}
+	return uint64(bits.LeadingZeros64(v)) - uint64(64-ebits)
+}
+
+// clsLane counts leading sign bits of an ebits-wide lane (the run of bits below
+// the MSB equal to it): clz of the value with its sign folded out, minus one.
+func clsLane(v uint64, ebits uint) uint64 {
+	mask := (uint64(1) << ebits) - 1
+	if ebits >= 64 {
+		mask = ^uint64(0)
+	}
+	if v>>(ebits-1)&1 == 1 {
+		v = ^v & mask
+	}
+	return clzLane(v&mask, ebits) - 1
 }
 
 // laneCmp produces a per-lane all-ones (predicate true) or all-zeros mask, the
