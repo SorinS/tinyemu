@@ -21,6 +21,11 @@ var irqDebug = os.Getenv("TINYEMU_ARM64_IRQ") == "1"
 // the timer-PPI re-delivery bug.
 var spDebug = os.Getenv("TINYEMU_ARM64_SP") == "1"
 
+// wfiDebug, when TINYEMU_ARM64_WFI=1, dumps the timer/interrupt state each time
+// the core parks in WFI with no interrupt pending — to see what a wedged guest
+// is waiting for.
+var wfiDebug = os.Getenv("TINYEMU_ARM64_WFI") == "1"
+
 // pcSample, set to N via TINYEMU_ARM64_PCSAMPLE=N, logs the PC every N retired
 // instructions — a cheap way to see where a hung guest is spinning.
 var pcSample = func() uint64 {

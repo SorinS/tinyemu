@@ -884,8 +884,17 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 					pcBoard.AdvanceIdle()
 					continue
 				}
-				// Sleep a bit to avoid busy waiting (RISC-V WFI path)
-				time.Sleep(maxSleepTime)
+				// Let the board decide how to wait. arm64's system counter is
+				// the retired-instruction count, which is frozen while parked,
+				// so its GetSleepDuration fast-forwards the counter to the next
+				// timer deadline and returns 0 — the following CheckTimer then
+				// raises the tick and wakes the core. Without this a guest that
+				// WFIs waiting only on the timer (e.g. edk2's BDS boot timeout)
+				// never wakes. RISC-V returns the real-time delay until its next
+				// timer event (its counter advances with wall-clock).
+				if ms := m.GetSleepDuration(int(maxSleepTime / time.Millisecond)); ms > 0 {
+					time.Sleep(time.Duration(ms) * time.Millisecond)
+				}
 				continue
 			}
 		}

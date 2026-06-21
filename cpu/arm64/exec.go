@@ -491,6 +491,12 @@ func (c *CPU) execSystem(w uint32) error {
 		hint := ((w>>8)&0xF)<<3 | ((w >> 5) & 7)
 		if hint == 2 || hint == 3 { // WFE / WFI
 			c.powerDown = true
+			if wfiDebug && !c.irqLine && !c.fiqLine {
+				dbgf("[wfi] cyc=%d daif=%#x irq=%v fiq=%v vCtl=%#x vCval=%#x(%+d) pCtl=%#x pCval=%#x(%+d)\n",
+					c.cycles, c.DAIF, c.irqLine, c.fiqLine,
+					c.cntvCtl, c.cntvCval, int64(c.cntvCval-c.cycles),
+					c.cntpCtl, c.cntpCval, int64(c.cntpCval-c.cycles))
+			}
 		}
 	case w>>12 == 0xD5033:
 		// barriers (dmb/dsb/isb): no-ops for flat, in-order memory.
