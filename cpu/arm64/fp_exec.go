@@ -14,8 +14,8 @@ import (
 // Register-write rule (mirrors W-zeros-X): a scalar S or D write zeros the rest
 // of the 128-bit V register. writeVS/writeVD encode that.
 
-func (c *CPU) readVD(n uint32) uint64    { return c.Vreg[n][0] }
-func (c *CPU) readVS(n uint32) uint32    { return uint32(c.Vreg[n][0]) }
+func (c *CPU) readVD(n uint32) uint64     { return c.Vreg[n][0] }
+func (c *CPU) readVS(n uint32) uint32     { return uint32(c.Vreg[n][0]) }
 func (c *CPU) writeVD(n uint32, v uint64) { c.Vreg[n] = [2]uint64{v, 0} }
 func (c *CPU) writeVS(n uint32, v uint32) { c.Vreg[n] = [2]uint64{uint64(v), 0} }
 
@@ -258,6 +258,16 @@ func (c *CPU) execFPConvInt(w uint32) error {
 			c.writeX(rd, false, false, uint64(c.readVS(rn)))
 		}
 		return nil
+	case 0b01<<3 | 0b111: // fmov Vd.D[1] <- Xn (move GPR into the high 64 bits)
+		if ftype == 0b10 {
+			c.Vreg[rd][1] = c.readX(rn, true, false) // preserve the low half
+			return nil
+		}
+	case 0b01<<3 | 0b110: // fmov Xd <- Vn.D[1] (read the high 64 bits)
+		if ftype == 0b10 {
+			c.writeX(rd, true, false, c.Vreg[rn][1])
+			return nil
+		}
 	case 0b00<<3 | 0b010: // scvtf (signed int -> FP)
 		return c.cvtIntToFP(rd, rn, ftype, is64, true)
 	case 0b00<<3 | 0b011: // ucvtf (unsigned int -> FP)

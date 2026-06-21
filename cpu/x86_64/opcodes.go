@@ -1908,8 +1908,8 @@ func (c *CPU) opGroup9(rex, operandSize uint8) error {
 			c.writeMem64(ea, uint64(c.GetReg32(RCX))<<32|uint64(c.GetReg32(RBX)))
 			c.rflags |= RFLAGS_ZF
 		} else {
-			c.SetReg32(RAX, uint32(val))      // 32-bit write zero-extends RAX
-			c.SetReg32(RDX, uint32(val>>32))  //   "          "          RDX
+			c.SetReg32(RAX, uint32(val))     // 32-bit write zero-extends RAX
+			c.SetReg32(RDX, uint32(val>>32)) //   "          "          RDX
 			c.rflags &^= RFLAGS_ZF
 		}
 		return nil
@@ -3719,7 +3719,25 @@ func (c *CPU) opMOVImm(rex, operandSize uint8) error {
 	// on. We treat /1..6 as MOV-with-reg-ignored; /7 is the only one
 	// that's genuinely a different instruction and stays unimplemented.
 	if m.reg == 7 {
-		return c.unimplementedAt("Group 11 /7 (XBEGIN/XABORT — TSX, not implemented)")
+		// TSX (RTM): 0xC7 /7 = XBEGIN rel16/32, 0xC6 /7 = XABORT imm8. We don't
+		// implement hardware transactional memory, so model the architecturally
+		// valid "transaction always aborts" outcome: XBEGIN sets EAX to an abort
+		// status and branches to its fallback (guest then takes the lock path);
+		// XABORT outside a transaction is a no-op. This is what real RTM code is
+		// written to fall back to, so it executes correctly without TSX.
+		if operandSize == 1 { // XABORT imm8
+			c.fetch8()
+			return nil
+		}
+		var disp int64 // XBEGIN rel
+		if operandSize == 2 {
+			disp = int64(int16(c.fetch16()))
+		} else {
+			disp = int64(int32(c.fetch32()))
+		}
+		c.writeReg(0, 0, 4) // EAX = 0: aborted, no RETRY bit set → don't retry
+		c.rip = uint64(int64(c.rip) + disp)
+		return nil
 	}
 	var v uint64
 	switch operandSize {

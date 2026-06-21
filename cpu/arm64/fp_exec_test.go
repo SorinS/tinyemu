@@ -94,22 +94,47 @@ func TestFcvtzsSaturation(t *testing.T) {
 		signed bool
 		want   uint64
 	}{
-		{3.9, true, true, 3},                       // truncate toward zero
-		{-3.9, true, true, ^uint64(0) - 2},         // -3
-		{math.NaN(), true, true, 0},                // NaN -> 0
-		{1e300, true, true, 0x7FFFFFFFFFFFFFFF},    // overflow -> INT64_MAX
-		{-1e300, true, true, 0x8000000000000000},   // -overflow -> INT64_MIN
-		{1e300, true, false, math.MaxUint64},       // unsigned overflow
-		{-5.0, true, false, 0},                     // negative -> 0 (unsigned)
-		{1e300, false, true, 0x7FFFFFFF},           // 32-bit signed sat
-		{-1e300, false, true, 0x80000000},          // 32-bit signed -sat
-		{1e300, false, false, 0xFFFFFFFF},          // 32-bit unsigned sat
-		{2.5, false, true, 2},                      // round toward zero
+		{3.9, true, true, 3},                     // truncate toward zero
+		{-3.9, true, true, ^uint64(0) - 2},       // -3
+		{math.NaN(), true, true, 0},              // NaN -> 0
+		{1e300, true, true, 0x7FFFFFFFFFFFFFFF},  // overflow -> INT64_MAX
+		{-1e300, true, true, 0x8000000000000000}, // -overflow -> INT64_MIN
+		{1e300, true, false, math.MaxUint64},     // unsigned overflow
+		{-5.0, true, false, 0},                   // negative -> 0 (unsigned)
+		{1e300, false, true, 0x7FFFFFFF},         // 32-bit signed sat
+		{-1e300, false, true, 0x80000000},        // 32-bit signed -sat
+		{1e300, false, false, 0xFFFFFFFF},        // 32-bit unsigned sat
+		{2.5, false, true, 2},                    // round toward zero
 	}
 	for _, tc := range cases {
 		if got := fpToIntSat(tc.f, tc.is64, tc.signed); got != tc.want {
 			t.Errorf("fpToIntSat(%v, is64=%v, signed=%v) = %#x, want %#x",
 				tc.f, tc.is64, tc.signed, got, tc.want)
 		}
+	}
+}
+
+// TestFMOVHighHalf exercises FMOV between a GPR and the high 64 bits of a vector
+// register (Vd.D[1] / Vn.D[1]) — the ftype=10, rmode=01 forms OpenWRT's arm64
+// kernel uses (e.g. 0x9eaf0060 = FMOV V0.D[1], X3). The low half must survive.
+func TestFMOVHighHalf(t *testing.T) {
+	c := New(mem.NewPhysMemoryMap())
+	c.Vreg[0] = [2]uint64{0x1111111122222222, 0x3333333344444444}
+	c.X[3] = 0xDEADBEEFCAFEBABE
+
+	var next uint64
+	if err := c.exec(0x9eaf0060, &next); err != nil { // FMOV V0.D[1], X3
+		t.Fatalf("FMOV Vd.D[1],Xn: %v", err)
+	}
+	if c.Vreg[0] != [2]uint64{0x1111111122222222, 0xDEADBEEFCAFEBABE} {
+		t.Fatalf("V0 = %#x, want low preserved + high=X3", c.Vreg[0])
+	}
+
+	// FMOV X5, V0.D[1] (read the high half back): 0x9eae0000|rn<<5|rd, rn=0,rd=5.
+	if err := c.exec(0x9eae0005, &next); err != nil {
+		t.Fatalf("FMOV Xd,Vn.D[1]: %v", err)
+	}
+	if c.X[5] != 0xDEADBEEFCAFEBABE {
+		t.Fatalf("X5 = %#x, want 0xDEADBEEFCAFEBABE", c.X[5])
 	}
 }
