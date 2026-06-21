@@ -82,10 +82,14 @@ func (c *CPU) takeException(typeOffset uint64, esr, far, elr uint64, useFar bool
 	default:
 		base = 0x000
 	}
-	c.switchEL(1, 1)        // enter EL1h
-	c.DAIF = 0xF            // mask D,A,I,F
-	c.exclMonitor = false   // taking an exception clears the local monitor
+	c.switchEL(1, 1)      // enter EL1h
+	c.DAIF = 0xF          // mask D,A,I,F
+	c.exclMonitor = false // taking an exception clears the local monitor
 	c.PC = c.VBAR + base + typeOffset
+	if spDebug {
+		dbgf("[sp] enter EL%d/SP%d->EL1h vec=%#x esr=%#x elr=%#x SP=%#x SPEL1=%#x SPEL0=%#x\n",
+			fromEL, fromSPSel, base+typeOffset, esr, elr, c.SP, c.SPEL1, c.SPEL0)
+	}
 }
 
 // eret returns from an exception: restore PSTATE from SPSR_EL1 and jump to
@@ -94,6 +98,10 @@ func (c *CPU) eret() {
 	pc := c.ELR
 	c.setPstate(c.SPSR)
 	c.PC = pc
+	if spDebug {
+		dbgf("[sp] eret  ->EL%d/SP%d pc=%#x SP=%#x SPEL1=%#x SPEL0=%#x\n",
+			c.EL, c.SPSel, c.PC, c.SP, c.SPEL1, c.SPEL0)
+	}
 }
 
 // --- exception syndrome (ESR_EL1) builders ---
