@@ -74,6 +74,26 @@ func (p *PIT8254) tickByCycles(cycleDelta uint64) uint32 {
 	return uint32(steps)
 }
 
+// CyclesToNextIRQ0 returns the CPU cycles until channel 0 next raises IRQ0, or 0
+// if it isn't counting. Used by the board's idle fast-forward to jump to the
+// next timer interrupt instead of advancing a fixed step at a time.
+func (p *PIT8254) CyclesToNextIRQ0() uint64 {
+	p.advanceLazy()
+	c := &p.channels[0]
+	if !c.active {
+		return 0
+	}
+	count := uint64(c.count)
+	if count == 0 {
+		count = 65536
+	}
+	cyc := count * pitCyclesPerTick
+	if cyc > p.cycleResid {
+		return cyc - p.cycleResid
+	}
+	return 1
+}
+
 // Register registers the PIT's I/O ports.
 func (p *PIT8254) Register(io *IOPortDispatcher) {
 	io.RegisterRead(0x40, 0x42, func(port uint16) uint32 {

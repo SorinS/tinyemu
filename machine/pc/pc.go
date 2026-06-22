@@ -918,9 +918,25 @@ func (p *PC) CheckTimer() {
 // CPU from HLT. Without this, a tickless-idle kernel (NOHZ) that HLTs
 // after issuing nanosleep() would block forever because the CPU's
 // cycle counter doesn't advance while halted.
+// AdvanceIdle fast-forwards the system clock while the CPU is halted (HLT) so
+// the next timer interrupt arrives without busy-spinning. It jumps straight to
+// the nearest armed timer deadline (PIT IRQ0 or LVT timer) instead of crawling a
+// fixed step at a time — crawling made a halted guest iterate the main loop
+// millions of times, with the per-iteration overhead (timer/console polling)
+// swamping actual emulation. The jump is capped so a guest with no armed timer
+// still advances and the caller can stay responsive to input.
 func (p *PC) AdvanceIdle() {
-	const idleStep uint64 = 10000 // enough cycles to cover a PIT tick boundary
-	p.cpu.AddCycles(idleStep)
+	const idleCap uint64 = 1 << 20 // bound when no timer is armed (or it's far off)
+	next := p.pit.CyclesToNextIRQ0()
+	if p.lapic != nil {
+		if d := p.lapic.CyclesToNextTimer(); d > 0 && (next == 0 || d < next) {
+			next = d
+		}
+	}
+	if next == 0 || next > idleCap {
+		next = idleCap
+	}
+	p.cpu.AddCycles(next)
 	p.CheckTimer()
 }
 

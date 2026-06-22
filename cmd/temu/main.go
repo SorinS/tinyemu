@@ -783,6 +783,12 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 		}
 	}
 
+	// Reused across loop iterations — the loop runs millions of times/sec while
+	// the guest is halted, so allocating this per iteration was the single
+	// largest source of GC churn in CPU profiles (makeslice/mallocgc dominating
+	// actual instruction execution).
+	inputBuf := make([]byte, 256)
+
 	for {
 		if perfEnabled {
 			now := time.Now()
@@ -832,7 +838,6 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 		// The C version only reads from stdin when virtio_console_can_write_data()
 		// returns true, which keeps early input buffered in the OS. Since we must
 		// always read to process escape sequences, we buffer input explicitly.
-		inputBuf := make([]byte, 256)
 		n, _ := console.Read(inputBuf)
 
 		// For x86 PC boards, route stdin into the COM1 RX FIFO so the
@@ -881,7 +886,15 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 				// the PIT only advances on `CheckTimer` calls,
 				// which are gated on CPU cycles in `pc.go`.
 				if pcBoard, ok := m.(*pc.PC); ok {
-					pcBoard.AdvanceIdle()
+					// Fast-forward through the halt without re-running the
+					// per-iteration console/device-poll overhead, which otherwise
+					// dominates while the guest is idle. Each AdvanceIdle jumps to
+					// the next timer deadline; loop until an interrupt is pending
+					// (it'll wake the CPU) or a bounded number of jumps, so we
+					// still return to service stdin/signals promptly.
+					for i := 0; i < 256 && cpu.IsPowerDown() && !cpu.HasPendingInterrupt(); i++ {
+						pcBoard.AdvanceIdle()
+					}
 					continue
 				}
 				// Let the board decide how to wait. arm64's system counter is

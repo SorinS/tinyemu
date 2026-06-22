@@ -158,6 +158,21 @@ func (l *LocalAPIC) currentCount() uint32 {
 	return l.timerInitCount - uint32(elapsed)
 }
 
+// CyclesToNextTimer returns the CPU cycles until the LVT timer next fires, or 0
+// if no timer is armed/deliverable. Used by the board's idle fast-forward to
+// jump straight to the next interrupt instead of crawling tick by tick.
+func (l *LocalAPIC) CyclesToNextTimer() uint64 {
+	if !l.timerRunning || l.timerInitCount == 0 || l.lvtTimer&lvtMasked != 0 {
+		return 0
+	}
+	target := l.timerStart + uint64(l.timerInitCount)*l.timerDivisor()
+	now := l.cyclesFunc()
+	if target <= now {
+		return 1
+	}
+	return target - now
+}
+
 // Tick advances the timer and fires the LVT-timer interrupt on expiry.
 // Called from the machine's CheckTimer loop with the cycle delta.
 func (l *LocalAPIC) Tick(uint64) {

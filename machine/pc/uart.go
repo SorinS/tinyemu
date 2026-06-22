@@ -2,9 +2,16 @@
 package pc
 
 import (
+	"fmt"
 	"io"
+	"os"
 	"sync"
 )
+
+// com1Debug (TINYEMU_COM1_DEBUG=1) logs every data byte the guest writes to the
+// COM1 transmit register — to tell "guest emits nothing on serial" from "guest
+// emits but we drop it".
+var com1Debug = os.Getenv("TINYEMU_COM1_DEBUG") == "1"
 
 // UART16550 implements a minimal 16550A-compatible serial port (COM1).
 // Implements TX-to-writer, RX FIFO with optional IRQ, basic LSR/IIR/IER
@@ -24,7 +31,7 @@ type UART16550 struct {
 	dll uint8 // Divisor Latch Low (when DLAB=1)
 	dlh uint8 // Divisor Latch High (when DLAB=1)
 
-	rxFIFO []byte
+	rxFIFO   []byte
 	thrEmpty bool
 
 	pic *PIC8259
@@ -34,7 +41,7 @@ type UART16550 struct {
 
 // LSR bit definitions.
 const (
-	lsrDR  = 0x01 // Data Ready (RBR has a byte)
+	lsrDR   = 0x01 // Data Ready (RBR has a byte)
 	lsrTHRE = 0x20 // Transmitter Holding Register Empty
 	lsrTEMT = 0x40 // Transmitter Empty (THR + shift)
 )
@@ -189,6 +196,9 @@ func (u *UART16550) Register(io *IOPortDispatcher) {
 		u.lsr |= lsrTHRE | lsrTEMT
 		u.updateIRQLocked()
 		u.mu.Unlock()
+		if com1Debug {
+			fmt.Fprintf(os.Stderr, "[com1] write %#02x %q\n", uint8(val), string([]byte{uint8(val)}))
+		}
 		if out != nil {
 			out.Write([]byte{uint8(val)})
 		}
