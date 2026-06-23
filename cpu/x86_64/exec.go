@@ -79,7 +79,131 @@ func dumpRipRing(label string) {
 	}
 }
 
+// recoverStep delivers a fault/exception captured as a panic during a step.
+// Shared by Step (per-instruction) and Run (once per batch) so the hot
+// loop need not arm a deferred recover on every instruction.
+func (c *CPU) recoverStep(r any) (err error) {
+	switch ex := r.(type) {
+	case pageFaultPanic:
+		c.rip = c.curInsnRIP
+		if ex.Err.NonCanonical {
+			// A non-canonical linear address is #GP(0), not #PF:
+			// deliver vector 13 with error code 0 and do NOT load
+			// CR2 (only #PF writes CR2).
+			if c.segLimit[IDTR] > 0 {
+				if derr := c.deliverInterrupt(13, true, 0); derr == nil {
+					err = nil
+					return
+				}
+			}
+			err = ex.Err
+			return
+		}
+		c.cr[2] = ex.Err.Addr
+		// Try IDT-based delivery first. If no IDT is configured
+		// (limit 0) or the gate is bogus, surface the original
+		// fault to the host so the caller can decide what to do.
+		if c.segLimit[IDTR] > 0 {
+			if intrTrace && ex.Err.ErrorCode != 0 {
+				// On a "page present" fault, dump the walk so we
+				// can see WHICH entry triggered the rsvd check.
+				c.dumpWalk(ex.Err.Addr)
+			}
+			// Dump the RIP ring on a user-mode "jumped to NX page"
+			// fault — i.e. an instruction-fetch fault on a
+			// page that's present (P=1) with NX set. We do NOT
+			// fire on P=0 faults: those are normal lazy-paging
+			// where the kernel will install the PTE and resume.
+			const X86_PF_P = uint32(1 << 0)
+			const X86_PF_INSTR = uint32(1 << 4)
+			if c.cpl == 3 && ex.Err.Addr == c.curInsnRIP &&
+				ex.Err.ErrorCode&X86_PF_INSTR != 0 &&
+				ex.Err.ErrorCode&X86_PF_P != 0 {
+				dumpRipRing("rip-trap")
+			}
+			if derr := c.deliverInterrupt(14, true, ex.Err.ErrorCode); derr == nil {
+				err = nil
+				return
+			} else {
+				// Log the delivery failure once, regardless of
+				// intrTrace, because otherwise the caller only
+				// sees the original PF and has no clue why the
+				// kernel handler didn't run.
+				fmt.Fprintf(os.Stderr, "[pf-deliver] FAILED for vec=14 addr=%#x ec=%#x cpl=%d TR.base=%#x CR3=%#x: %v\n",
+					ex.Err.Addr, ex.Err.ErrorCode, c.cpl, c.segBase[TR], c.cr[3], derr)
+			}
+		}
+		if pfDebug {
+			fmt.Fprintf(os.Stderr, "[pf] addr=%#x ec=%#x RIP=%#x CR3=%#x IDTR.base=%#x IDTR.limit=%#x\n",
+				ex.Err.Addr, ex.Err.ErrorCode, c.rip, c.cr[3], c.segBase[IDTR], c.segLimit[IDTR])
+			// Walk the page tables manually and report what's
+			// present at each level.
+			cr3 := c.cr[3] & 0xFFFFFFFFF000
+			addr := ex.Err.Addr
+			pml4i := (addr >> 39) & 0x1FF
+			pdpti := (addr >> 30) & 0x1FF
+			pdi := (addr >> 21) & 0x1FF
+			pti := (addr >> 12) & 0x1FF
+			// Print a few neighbouring PML4 entries for context.
+			for _, idx := range []uint64{0, pml4i, 0x100, 0x111, 0x1FF} {
+				v, _ := c.memMap.Read64(cr3 + idx*8)
+				fmt.Fprintf(os.Stderr, "[pf]   PML4[%#x] @ %#x = %#x\n",
+					idx, cr3+idx*8, v)
+			}
+			pml4e, _ := c.memMap.Read64(cr3 + pml4i*8)
+			if pml4e&1 != 0 {
+				pdpt := pml4e & 0xFFFFFFFFF000
+				pdpte, _ := c.memMap.Read64(pdpt + pdpti*8)
+				fmt.Fprintf(os.Stderr, "[pf]   PDPT[%#x] @ %#x = %#x\n",
+					pdpti, pdpt+pdpti*8, pdpte)
+				if pdpte&1 != 0 && pdpte&0x80 == 0 {
+					pd := pdpte & 0xFFFFFFFFF000
+					pde, _ := c.memMap.Read64(pd + pdi*8)
+					fmt.Fprintf(os.Stderr, "[pf]   PD[%#x]   @ %#x = %#x\n",
+						pdi, pd+pdi*8, pde)
+					if pde&1 != 0 && pde&0x80 == 0 {
+						pt := pde & 0xFFFFFFFFF000
+						pte, _ := c.memMap.Read64(pt + pti*8)
+						fmt.Fprintf(os.Stderr, "[pf]   PT[%#x]  @ %#x = %#x\n",
+							pti, pt+pti*8, pte)
+					}
+				}
+			}
+		}
+		err = ex.Err
+	case exceptionPanic:
+		// Computed processor fault (#DE today; reusable for the
+		// other vectors). RIP points at the faulting instruction.
+		c.rip = c.curInsnRIP
+		if c.segLimit[IDTR] > 0 {
+			if derr := c.deliverInterrupt(ex.Vec, ex.HasErr, ex.ErrorCode); derr == nil {
+				err = nil
+				return
+			} else {
+				fmt.Fprintf(os.Stderr, "[exc-deliver] FAILED vec=%d hasErr=%v ec=%#x RIP=%#x: %v\n",
+					ex.Vec, ex.HasErr, ex.ErrorCode, c.curInsnRIP, derr)
+			}
+		}
+		err = fmt.Errorf("x86_64: unhandled exception vec=%d at RIP=%#x (no usable IDT)", ex.Vec, c.curInsnRIP)
+	default:
+		panic(r)
+	}
+	return err
+}
+
+// Step executes one instruction with fault recovery (for direct callers).
 func (c *CPU) Step() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = c.recoverStep(r)
+		}
+	}()
+	return c.stepCore()
+}
+
+// stepCore executes one instruction. It may panic with a pageFaultPanic/
+// exceptionPanic on a fault; callers (Step, Run) recover via recoverStep.
+func (c *CPU) stepCore() (err error) {
 	// IP wrapping. Per Intel SDM, real-mode code fetch uses a 16-bit IP:
 	// after an instruction at offset 0xFFFF, IP wraps back to 0x0000 of
 	// the SAME segment rather than spilling into the next linear page.
@@ -103,6 +227,7 @@ func (c *CPU) Step() (err error) {
 		c.rip &= 0xFFFF
 	}
 	origRIP := c.rip
+	c.curInsnRIP = origRIP
 	recordRIP(origRIP)
 	traceCycleWindow := traceCycleLo < traceCycleHi && c.cycles >= traceCycleLo && c.cycles < traceCycleHi
 	if stepTrace || traceCycleWindow || (ripTraceLo < ripTraceHi && origRIP >= ripTraceLo && origRIP < ripTraceHi) {
@@ -144,115 +269,6 @@ func (c *CPU) Step() (err error) {
 		fmt.Fprintf(os.Stderr, "[strwatch] RDI=%#x RAX=%#x RDX=%#x RSI=%#x str=%q\n",
 			rdi, c.GetReg64(RAX), c.GetReg64(RDX), c.GetReg64(RSI), string(buf[:end]))
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			switch ex := r.(type) {
-			case pageFaultPanic:
-				c.rip = origRIP
-				if ex.Err.NonCanonical {
-					// A non-canonical linear address is #GP(0), not #PF:
-					// deliver vector 13 with error code 0 and do NOT load
-					// CR2 (only #PF writes CR2).
-					if c.segLimit[IDTR] > 0 {
-						if derr := c.deliverInterrupt(13, true, 0); derr == nil {
-							err = nil
-							return
-						}
-					}
-					err = ex.Err
-					return
-				}
-				c.cr[2] = ex.Err.Addr
-				// Try IDT-based delivery first. If no IDT is configured
-				// (limit 0) or the gate is bogus, surface the original
-				// fault to the host so the caller can decide what to do.
-				if c.segLimit[IDTR] > 0 {
-					if intrTrace && ex.Err.ErrorCode != 0 {
-						// On a "page present" fault, dump the walk so we
-						// can see WHICH entry triggered the rsvd check.
-						c.dumpWalk(ex.Err.Addr)
-					}
-					// Dump the RIP ring on a user-mode "jumped to NX page"
-					// fault — i.e. an instruction-fetch fault on a
-					// page that's present (P=1) with NX set. We do NOT
-					// fire on P=0 faults: those are normal lazy-paging
-					// where the kernel will install the PTE and resume.
-					const X86_PF_P = uint32(1 << 0)
-					const X86_PF_INSTR = uint32(1 << 4)
-					if c.cpl == 3 && ex.Err.Addr == origRIP &&
-						ex.Err.ErrorCode&X86_PF_INSTR != 0 &&
-						ex.Err.ErrorCode&X86_PF_P != 0 {
-						dumpRipRing("rip-trap")
-					}
-					if derr := c.deliverInterrupt(14, true, ex.Err.ErrorCode); derr == nil {
-						err = nil
-						return
-					} else {
-						// Log the delivery failure once, regardless of
-						// intrTrace, because otherwise the caller only
-						// sees the original PF and has no clue why the
-						// kernel handler didn't run.
-						fmt.Fprintf(os.Stderr, "[pf-deliver] FAILED for vec=14 addr=%#x ec=%#x cpl=%d TR.base=%#x CR3=%#x: %v\n",
-							ex.Err.Addr, ex.Err.ErrorCode, c.cpl, c.segBase[TR], c.cr[3], derr)
-					}
-				}
-				if pfDebug {
-					fmt.Fprintf(os.Stderr, "[pf] addr=%#x ec=%#x RIP=%#x CR3=%#x IDTR.base=%#x IDTR.limit=%#x\n",
-						ex.Err.Addr, ex.Err.ErrorCode, c.rip, c.cr[3], c.segBase[IDTR], c.segLimit[IDTR])
-					// Walk the page tables manually and report what's
-					// present at each level.
-					cr3 := c.cr[3] & 0xFFFFFFFFF000
-					addr := ex.Err.Addr
-					pml4i := (addr >> 39) & 0x1FF
-					pdpti := (addr >> 30) & 0x1FF
-					pdi := (addr >> 21) & 0x1FF
-					pti := (addr >> 12) & 0x1FF
-					// Print a few neighbouring PML4 entries for context.
-					for _, idx := range []uint64{0, pml4i, 0x100, 0x111, 0x1FF} {
-						v, _ := c.memMap.Read64(cr3 + idx*8)
-						fmt.Fprintf(os.Stderr, "[pf]   PML4[%#x] @ %#x = %#x\n",
-							idx, cr3+idx*8, v)
-					}
-					pml4e, _ := c.memMap.Read64(cr3 + pml4i*8)
-					if pml4e&1 != 0 {
-						pdpt := pml4e & 0xFFFFFFFFF000
-						pdpte, _ := c.memMap.Read64(pdpt + pdpti*8)
-						fmt.Fprintf(os.Stderr, "[pf]   PDPT[%#x] @ %#x = %#x\n",
-							pdpti, pdpt+pdpti*8, pdpte)
-						if pdpte&1 != 0 && pdpte&0x80 == 0 {
-							pd := pdpte & 0xFFFFFFFFF000
-							pde, _ := c.memMap.Read64(pd + pdi*8)
-							fmt.Fprintf(os.Stderr, "[pf]   PD[%#x]   @ %#x = %#x\n",
-								pdi, pd+pdi*8, pde)
-							if pde&1 != 0 && pde&0x80 == 0 {
-								pt := pde & 0xFFFFFFFFF000
-								pte, _ := c.memMap.Read64(pt + pti*8)
-								fmt.Fprintf(os.Stderr, "[pf]   PT[%#x]  @ %#x = %#x\n",
-									pti, pt+pti*8, pte)
-							}
-						}
-					}
-				}
-				err = ex.Err
-			case exceptionPanic:
-				// Computed processor fault (#DE today; reusable for the
-				// other vectors). RIP points at the faulting instruction.
-				c.rip = origRIP
-				if c.segLimit[IDTR] > 0 {
-					if derr := c.deliverInterrupt(ex.Vec, ex.HasErr, ex.ErrorCode); derr == nil {
-						err = nil
-						return
-					} else {
-						fmt.Fprintf(os.Stderr, "[exc-deliver] FAILED vec=%d hasErr=%v ec=%#x RIP=%#x: %v\n",
-							ex.Vec, ex.HasErr, ex.ErrorCode, origRIP, derr)
-					}
-				}
-				err = fmt.Errorf("x86_64: unhandled exception vec=%d at RIP=%#x (no usable IDT)", ex.Vec, origRIP)
-			default:
-				panic(r)
-			}
-		}
-	}()
 
 	if c.intrLineState != 0 && (c.rflags&RFLAGS_IF) != 0 && !c.interruptsBlocked {
 		// Hardware interrupt pending and IF set. Ack the PIC to learn
@@ -401,8 +417,16 @@ func (c *CPU) Step() (err error) {
 	}
 }
 
-// Run executes up to maxCycles cycles.
-func (c *CPU) Run(maxCycles int) error {
+// Run executes up to maxCycles cycles. A fault during any instruction unwinds
+// to the single deferred recover here (not one per instruction), which delivers
+// it and returns; the caller re-enters Run to run the handler.
+func (c *CPU) Run(maxCycles int) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = c.recoverStep(r)
+			c.cycles++ // count the faulting instruction, as the per-Step path did
+		}
+	}()
 	for i := 0; i < maxCycles; i++ {
 		if c.powerDown {
 			if !c.HasPendingInterrupt() {
@@ -443,7 +467,7 @@ func (c *CPU) Run(maxCycles int) error {
 			}
 			fmt.Fprintf(os.Stderr, "[dump] stack@%#x={%s}\n", slin, hexDump(st[:]))
 		}
-		if err := c.Step(); err != nil {
+		if err := c.stepCore(); err != nil {
 			return err
 		}
 		c.cycles++

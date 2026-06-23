@@ -161,6 +161,10 @@ type CPU struct {
 
 	rflags uint64
 	rip    uint64
+	// curInsnRIP is the start RIP of the instruction currently executing —
+	// recoverStep restores rip to it when delivering a fault, so the faulting
+	// instruction re-runs after the handler. Set once per stepCore.
+	curInsnRIP uint64
 
 	cpl int
 
