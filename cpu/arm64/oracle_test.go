@@ -366,7 +366,7 @@ func TestARM64_NativeOracle(t *testing.T) {
 		// system: hints/barriers are no-ops; mrs/msr round-trip NZCV and the
 		// EL0-accessible tpidr_el0 (read-only/EL1 regs would trap natively).
 		{"nop", "add x0, x1, x2", "dmb sy", "isb", "yield"},
-		{"msr nzcv, x1", "mrs x0, nzcv"},        // x0 = x1 & 0xF0000000
+		{"msr nzcv, x1", "mrs x0, nzcv"},           // x0 = x1 & 0xF0000000
 		{"msr tpidr_el0, x1", "mrs x0, tpidr_el0"}, // x0 = x1
 		// a small straight-line sequence mixing classes
 		{"add x0, x1, x2", "mul x0, x0, x3", "eor x0, x0, x4", "lsr x0, x0, #7", "sub x0, x0, #1"},
@@ -494,6 +494,15 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		// pairwise add
 		{"addp v0.4s, v1.4s, v2.4s"}, {"addp v0.16b, v3.16b, v4.16b"}, {"addp v0.2d, v1.2d, v2.2d"},
 		{"addp v0.8h, v3.8h, v4.8h"},
+		// per-lane max/min (signed + unsigned)
+		{"smax v0.16b, v1.16b, v2.16b"}, {"umax v0.16b, v1.16b, v2.16b"},
+		{"smax v0.4s, v1.4s, v2.4s"}, {"umax v0.8h, v3.8h, v4.8h"},
+		{"smin v0.16b, v1.16b, v2.16b"}, {"umin v0.16b, v1.16b, v2.16b"},
+		{"smin v0.4s, v3.4s, v4.4s"}, {"umin v0.2s, v1.2s, v2.2s"},
+		// pairwise max/min — incl. the FreeBSD aarch64 strlen op umaxp v.16b
+		{"umaxp v0.16b, v1.16b, v2.16b"}, {"smaxp v0.16b, v3.16b, v4.16b"},
+		{"uminp v0.4s, v1.4s, v2.4s"}, {"sminp v0.8h, v3.8h, v4.8h"},
+		{"umaxp v0.8h, v1.8h, v2.8h"}, {"smaxp v0.4s, v3.4s, v4.4s"},
 		// int -> FP (integer seeds are fine)
 		{"scvtf v0.4s, v1.4s"}, {"ucvtf v0.4s, v3.4s"}, {"scvtf v0.2d, v1.2d"}, {"ucvtf v0.2d, v3.2d"},
 		{"scvtf v0.2s, v1.2s"},
@@ -519,7 +528,7 @@ func TestARM64_NativeOracleSIMD(t *testing.T) {
 		{"add v0.4s, v1.4s, v2.4s", "mul v0.4s, v0.4s, v3.4s", "eor v0.16b, v0.16b, v4.16b"},
 		{"dup v0.4s, w1", "ins v0.s[0], w2", "umov w3, v0.s[3]"},
 		{"cmgt v0.4s, v1.4s, v2.4s", "and v3.16b, v0.16b, v5.16b"}, // mask then select bits
-		{"shl v0.4s, v1.4s, #4", "sshr v0.4s, v0.4s, #2"},         // shift left then arithmetic right
+		{"shl v0.4s, v1.4s, #4", "sshr v0.4s, v0.4s, #2"},          // shift left then arithmetic right
 	}
 	runVec := func(progs [][]string, inputs []oracleRegs) {
 		for _, prog := range progs {
@@ -640,11 +649,11 @@ func TestARM64_NativeOracleFP(t *testing.T) {
 	// divergent-NaN-payload concern that keeps NaN out of fpSeedValues doesn't
 	// apply: the V registers carry the seed bits through unchanged on both sides.
 	specialD := [][]string{
-		{"fcvtzs x0, d0", "fcvtzs x3, d1", "fcvtzs x4, d2"}, // +inf, -inf, NaN -> MAX, MIN, 0
-		{"fcvtzu x0, d0", "fcvtzu x3, d1", "fcvtzu x4, d2"}, // MAX, 0, 0
-		{"fcvtzs x0, d3", "fcvtzs x3, d4"},                  // ±1e300 -> ±sat
+		{"fcvtzs x0, d0", "fcvtzs x3, d1", "fcvtzs x4, d2"},                                        // +inf, -inf, NaN -> MAX, MIN, 0
+		{"fcvtzu x0, d0", "fcvtzu x3, d1", "fcvtzu x4, d2"},                                        // MAX, 0, 0
+		{"fcvtzs x0, d3", "fcvtzs x3, d4"},                                                         // ±1e300 -> ±sat
 		{"fcmp d2, d5", "cset x0, vs", "cset x3, cs", "cset x4, mi", "cset x5, eq", "cset x6, gt"}, // unordered: V=C=1
-		{"fcmp d0, d1", "cset x0, gt", "cset x3, mi"}, // +inf > -inf
+		{"fcmp d0, d1", "cset x0, gt", "cset x3, mi"},                                              // +inf > -inf
 	}
 	specialS := [][]string{
 		{"fcvtzs w0, s0", "fcvtzs w3, s1", "fcvtzu w4, s0", "fcvtzs w5, s2"}, // 32-bit saturation + NaN

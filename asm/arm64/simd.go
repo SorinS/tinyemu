@@ -92,6 +92,15 @@ var simd3Ops = map[string]simd3{
 	"cmeq":  {u: 1, opcode: 0x11, fixedSize: -1, maxSize: 3}, // equal
 	"cmtst": {u: 0, opcode: 0x11, fixedSize: -1, maxSize: 3}, // (a & b) != 0
 	"addp":  {u: 0, opcode: 0x17, fixedSize: -1, maxSize: 3}, // pairwise add
+	// per-lane and pairwise max/min (no 64-bit element form)
+	"smax":  {u: 0, opcode: 0x0C, fixedSize: -1, maxSize: 2},
+	"umax":  {u: 1, opcode: 0x0C, fixedSize: -1, maxSize: 2},
+	"smin":  {u: 0, opcode: 0x0D, fixedSize: -1, maxSize: 2},
+	"umin":  {u: 1, opcode: 0x0D, fixedSize: -1, maxSize: 2},
+	"smaxp": {u: 0, opcode: 0x14, fixedSize: -1, maxSize: 2},
+	"umaxp": {u: 1, opcode: 0x14, fixedSize: -1, maxSize: 2},
+	"sminp": {u: 0, opcode: 0x15, fixedSize: -1, maxSize: 2},
+	"uminp": {u: 1, opcode: 0x15, fixedSize: -1, maxSize: 2},
 	// bitwise logicals: size field is fixed, arrangement limited to 8b/16b.
 	"and": {u: 0, opcode: 0x03, fixedSize: 0b00, maxSize: 0},
 	"bic": {u: 0, opcode: 0x03, fixedSize: 0b01, maxSize: 0},

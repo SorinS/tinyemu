@@ -437,6 +437,30 @@ func disSIMD3(w uint32) (string, error) {
 		}
 	case 0x17:
 		mnem = "addp"
+	case 0x0C:
+		if u == 0 {
+			mnem = "smax"
+		} else {
+			mnem = "umax"
+		}
+	case 0x0D:
+		if u == 0 {
+			mnem = "smin"
+		} else {
+			mnem = "umin"
+		}
+	case 0x14:
+		if u == 0 {
+			mnem = "smaxp"
+		} else {
+			mnem = "umaxp"
+		}
+	case 0x15:
+		if u == 0 {
+			mnem = "sminp"
+		} else {
+			mnem = "uminp"
+		}
 	case 0x03: // logical: size field selects the op, arrangement is .8b/.16b
 		asize = 0b00
 		switch {

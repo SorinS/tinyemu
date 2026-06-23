@@ -706,6 +706,18 @@ func (c *CPU) execSIMD3(w uint32) error {
 		res = pairwiseElems(vn, vm, ebits, int((64<<q)/ebits), func(a, b uint64) uint64 {
 			return (a + b) & mask
 		})
+	case 0x0C: // smax (U=0) / umax (U=1) — per-lane maximum
+		ebits := uint(8) << size
+		res = laneOp(vn, vm, size, q, maxOp(u == 0, ebits, true))
+	case 0x0D: // smin (U=0) / umin (U=1) — per-lane minimum
+		ebits := uint(8) << size
+		res = laneOp(vn, vm, size, q, maxOp(u == 0, ebits, false))
+	case 0x14: // smaxp (U=0) / umaxp (U=1) — pairwise maximum
+		ebits := uint(8) << size
+		res = pairwiseElems(vn, vm, ebits, int((64<<q)/ebits), maxOp(u == 0, ebits, true))
+	case 0x15: // sminp (U=0) / uminp (U=1) — pairwise minimum
+		ebits := uint(8) << size
+		res = pairwiseElems(vn, vm, ebits, int((64<<q)/ebits), maxOp(u == 0, ebits, false))
 	default:
 		return fmt.Errorf("arm64: unsupported Adv-SIMD opcode %08x at %#x", w, c.PC)
 	}
@@ -1045,6 +1057,26 @@ func sextLane(v uint64, ebits uint) int64 {
 	}
 	shift := 64 - ebits
 	return int64(v<<shift) >> shift
+}
+
+// maxOp builds a per-element selector for laneOp/pairwiseElems implementing the
+// SMAX/UMAX/SMIN/UMIN (and pairwise *P) family. The element values a,b arrive
+// zero-extended to ebits; signed=true compares via sign extension. wantMax=true
+// returns the larger element, false the smaller. Ties return a (left operand),
+// matching the architecture (the values are equal so the choice is immaterial).
+func maxOp(signed bool, ebits uint, wantMax bool) func(a, b uint64) uint64 {
+	return func(a, b uint64) uint64 {
+		var ge bool
+		if signed {
+			ge = sextLane(a, ebits) >= sextLane(b, ebits)
+		} else {
+			ge = a >= b
+		}
+		if ge == wantMax {
+			return a
+		}
+		return b
+	}
 }
 
 // clzLane counts leading zeros of an ebits-wide lane (clz of 0 is ebits).
