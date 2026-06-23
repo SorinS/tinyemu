@@ -159,6 +159,16 @@ func (c *CPU) parseModRM64WithImm(rex uint8, immBytes uint8) modRMResult {
 		ea += uint64(int64(int32(c.fetch32())))
 	}
 
+	// In 32-bit address-size mode the effective address wraps modulo 2^32 —
+	// base + index + disp is truncated to 32 bits. Without this, a memory
+	// operand whose components sum past 4 GiB reads a bogus high address: GRUB's
+	// LZMA match copy uses `mov al,[edi+edx]` with edx = -rep0 (a NEGed small
+	// distance, e.g. 0xfffffffa), so edi+edx must wrap to edi-rep0 rather than
+	// land ~4 GiB up. (Long mode keeps the full 64-bit address: addrSize==8.)
+	if c.currentAddressSize == 4 {
+		ea = uint64(uint32(ea))
+	}
+
 	r.ea = ea
 	if rex&rexB != 0 {
 		rm |= 0x8
