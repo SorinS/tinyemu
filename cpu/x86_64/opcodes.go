@@ -145,10 +145,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	_ = segOverride // segment-override handling lands with explicit memory operands beyond the initial slice
 	_ = addressSize // 32-bit addressing not yet wired
 
-	switch {
+	switch op {
 	// ===== Single-byte primary ops =====
 
-	case op >= 0x90 && op <= 0x97:
+	case 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97:
 		// 0x90+r = XCHG rAX, rN with REX.B extending the source to
 		// R8..R15. The classic 0x90 (REX absent, or REX with B=0) is
 		// XCHG RAX,RAX which is a NOP — also covers the F3 90 PAUSE
@@ -163,7 +163,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.writeReg(dstReg, tmp, operandSize)
 		return nil
 
-	case op == 0xF4:
+	case 0xF4:
 		if intrTrace {
 			fmt.Fprintf(os.Stderr, "[hlt] RIP=%#x RFLAGS=%#x IF=%v intrLine=%d\n",
 				c.rip, c.rflags, c.rflags&RFLAGS_IF != 0, c.intrLineState)
@@ -178,134 +178,134 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// 0x2D), XOR (0x30-0x35), CMP (0x38-0x3D). TEST is its own
 	// shorter sub-family (0x84/0x85, 0xA8/0xA9).
 
-	case op == 0x00:
+	case 0x00:
 		return c.opALURM(rex, 1, aluADD)
-	case op == 0x01:
+	case 0x01:
 		return c.opALURM(rex, operandSize, aluADD)
-	case op == 0x02:
+	case 0x02:
 		return c.opALURfromM(rex, 1, aluADD)
-	case op == 0x03:
+	case 0x03:
 		return c.opALURfromM(rex, operandSize, aluADD)
-	case op == 0x04:
+	case 0x04:
 		return c.opALUImmAL(aluADD)
 
-	case op == 0x10:
+	case 0x10:
 		return c.opALURM(rex, 1, aluADC)
-	case op == 0x11:
+	case 0x11:
 		return c.opALURM(rex, operandSize, aluADC)
-	case op == 0x12:
+	case 0x12:
 		return c.opALURfromM(rex, 1, aluADC)
-	case op == 0x13:
+	case 0x13:
 		return c.opALURfromM(rex, operandSize, aluADC)
-	case op == 0x14:
+	case 0x14:
 		return c.opALUImmAL(aluADC)
-	case op == 0x15:
+	case 0x15:
 		return c.opALUImmRAX(operandSize, aluADC)
 
-	case op == 0x18:
+	case 0x18:
 		return c.opALURM(rex, 1, aluSBB)
-	case op == 0x19:
+	case 0x19:
 		return c.opALURM(rex, operandSize, aluSBB)
-	case op == 0x1A:
+	case 0x1A:
 		return c.opALURfromM(rex, 1, aluSBB)
-	case op == 0x1B:
+	case 0x1B:
 		return c.opALURfromM(rex, operandSize, aluSBB)
-	case op == 0x1C:
+	case 0x1C:
 		return c.opALUImmAL(aluSBB)
-	case op == 0x1D:
+	case 0x1D:
 		return c.opALUImmRAX(operandSize, aluSBB)
 
-	case op == 0x08:
+	case 0x08:
 		return c.opALURM(rex, 1, aluOR)
-	case op == 0x09:
+	case 0x09:
 		return c.opALURM(rex, operandSize, aluOR)
-	case op == 0x0A:
+	case 0x0A:
 		return c.opALURfromM(rex, 1, aluOR)
-	case op == 0x0B:
+	case 0x0B:
 		return c.opALURfromM(rex, operandSize, aluOR)
-	case op == 0x0C:
+	case 0x0C:
 		return c.opALUImmAL(aluOR)
 
-	case op == 0x20:
+	case 0x20:
 		return c.opALURM(rex, 1, aluAND)
-	case op == 0x21:
+	case 0x21:
 		return c.opALURM(rex, operandSize, aluAND)
-	case op == 0x22:
+	case 0x22:
 		return c.opALURfromM(rex, 1, aluAND)
-	case op == 0x23:
+	case 0x23:
 		return c.opALURfromM(rex, operandSize, aluAND)
-	case op == 0x24:
+	case 0x24:
 		return c.opALUImmAL(aluAND)
 
-	case op == 0x28:
+	case 0x28:
 		return c.opALURM(rex, 1, aluSUB)
-	case op == 0x29:
+	case 0x29:
 		return c.opALURM(rex, operandSize, aluSUB)
-	case op == 0x2A:
+	case 0x2A:
 		return c.opALURfromM(rex, 1, aluSUB)
-	case op == 0x2B:
+	case 0x2B:
 		return c.opALURfromM(rex, operandSize, aluSUB)
-	case op == 0x2C:
+	case 0x2C:
 		return c.opALUImmAL(aluSUB)
 
-	case op == 0x30:
+	case 0x30:
 		return c.opALURM(rex, 1, aluXOR)
-	case op == 0x31:
+	case 0x31:
 		return c.opALURM(rex, operandSize, aluXOR)
-	case op == 0x32:
+	case 0x32:
 		return c.opALURfromM(rex, 1, aluXOR)
-	case op == 0x33:
+	case 0x33:
 		return c.opALURfromM(rex, operandSize, aluXOR)
-	case op == 0x34:
+	case 0x34:
 		return c.opALUImmAL(aluXOR)
 
-	case op == 0x38:
+	case 0x38:
 		return c.opALURM(rex, 1, aluCMP)
-	case op == 0x39:
+	case 0x39:
 		return c.opALURM(rex, operandSize, aluCMP)
-	case op == 0x3A:
+	case 0x3A:
 		return c.opALURfromM(rex, 1, aluCMP)
-	case op == 0x3B:
+	case 0x3B:
 		return c.opALURfromM(rex, operandSize, aluCMP)
-	case op == 0x3C:
+	case 0x3C:
 		return c.opALUImmAL(aluCMP)
 
-	case op == 0x84: // TEST r/m8, r8
+	case 0x84: // TEST r/m8, r8
 		return c.opTEST(rex, 1)
-	case op == 0x85:
+	case 0x85:
 		return c.opTEST(rex, operandSize)
-	case op == 0xA8: // TEST AL, imm8
+	case 0xA8: // TEST AL, imm8
 		return c.opALUImmAL(aluTEST)
-	case op == 0xA9:
+	case 0xA9:
 		return c.opALUImmRAX(operandSize, aluTEST)
 
 	// ALU rAX, imm forms (single-byte primary opcode + imm). The imm is
 	// imm16 in operandSize=2 mode and imm32 sign-extended-to-64
 	// otherwise. AL,imm8 byte forms (0x04/0x0C/...) are not implemented
 	// — none of M2's tests need them.
-	case op == 0x05:
+	case 0x05:
 		return c.opALUImmRAX(operandSize, aluADD)
-	case op == 0x0D:
+	case 0x0D:
 		return c.opALUImmRAX(operandSize, aluOR)
-	case op == 0x25:
+	case 0x25:
 		return c.opALUImmRAX(operandSize, aluAND)
-	case op == 0x2D:
+	case 0x2D:
 		return c.opALUImmRAX(operandSize, aluSUB)
-	case op == 0x35:
+	case 0x35:
 		return c.opALUImmRAX(operandSize, aluXOR)
-	case op == 0x3D:
+	case 0x3D:
 		return c.opALUImmRAX(operandSize, aluCMP)
 
 	// ===== MOV family =====
 
-	case op == 0x86:
+	case 0x86:
 		// XCHG r/m8, r8 — atomic swap (always atomic on real
 		// hardware; in our single-CPU model it's just a swap).
 		return c.opXCHGRM(rex, 1)
-	case op == 0x87:
+	case 0x87:
 		return c.opXCHGRM(rex, operandSize)
 
-	case op == 0x8F:
+	case 0x8F:
 		// POP r/m. ModR/M.reg must be 0; the rest are reserved. Width
 		// follows OPERAND SIZE (see pushPopOperandSize), not stack-slot
 		// size: SeaBIOS's irqentry_extrastack uses `66 8F` (popl to
@@ -321,7 +321,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.writeOperand(m, v, size)
 		return nil
 
-	case op == 0xC2:
+	case 0xC2:
 		// RET imm16 — pops return at OPERAND SIZE (same rule as 0xC3),
 		// then frees imm16 bytes of stack arguments. Using stackSlotSize
 		// for the return pop would drop the 0x66 promotion in real mode.
@@ -334,7 +334,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.SetReg64(RSP, c.GetReg64(RSP)+imm)
 		return nil
 
-	case op == 0xE0, op == 0xE1, op == 0xE2:
+	case 0xE0, 0xE1, 0xE2:
 		// LOOPNE / LOOPE / LOOP — decrement RCX, branch if !=0
 		// (with ZF condition for LOOPNE/LOOPE).
 		disp := int64(int8(c.fetch8()))
@@ -351,7 +351,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 			c.rip = uint64(int64(c.rip) + disp)
 		}
 		return nil
-	case op == 0xE3:
+	case 0xE3:
 		// JCXZ / JRCXZ — branch if RCX is zero (no decrement).
 		disp := int64(int8(c.fetch8()))
 		if c.GetReg64(RCX) == 0 {
@@ -359,40 +359,40 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
-	case op == 0x88:
+	case 0x88:
 		// MOV r/m8, r8 — byte form. Source is the 8-bit register
 		// picked by ModR/M.reg with REX-aware decoding (read8FromModRM-
 		// style indexing).
 		return c.opMOVRM8(rex)
-	case op == 0x8A:
+	case 0x8A:
 		// MOV r8, r/m8.
 		return c.opMOVRfromM8(rex)
 
-	case op == 0x89:
+	case 0x89:
 		return c.opMOVRM(rex, operandSize)
-	case op == 0x8B:
+	case 0x8B:
 		return c.opMOVRfromM(rex, operandSize)
 
-	case op >= 0xB0 && op <= 0xB7:
+	case 0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7:
 		// MOV r8, imm8 — REX-aware: the destination encoding follows
 		// the same AH/CH/DH/BH vs SPL/BPL/SIL/DIL rule as MODR/M for
 		// the low 3 bits.
 		return c.opMOVImm8ToReg(op-0xB0, rex)
-	case op == 0x8C:
+	case 0x8C:
 		// MOV r/m16, Sreg — store a segment-register selector. ModR/M
 		// reg field picks the segment (0=ES, 1=CS, 2=SS, 3=DS, 4=FS,
 		// 5=GS).
 		return c.opMOVfromSreg(rex)
 
-	case op == 0x8D:
+	case 0x8D:
 		return c.opLEA(rex, operandSize)
 
-	case op == 0x8E:
+	case 0x8E:
 		// MOV Sreg, r/m16 — load a segment-register selector. The
 		// source is always 16 bits regardless of operand-size prefix.
 		return c.opMOVtoSreg(rex)
 
-	case op == 0x6C, op == 0x6D, op == 0x6E, op == 0x6F:
+	case 0x6C, 0x6D, 0x6E, 0x6F:
 		// String IO:
 		//   0x6C  INSB                 IN AL,  DX ; MOV [ES:(E)DI], AL ; (E)DI+=±1
 		//   0x6D  INSW/INSD            IN ?X,  DX ; MOV [ES:(E)DI], ?X ; advance
@@ -454,7 +454,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
-	case op == 0xA0, op == 0xA1, op == 0xA2, op == 0xA3:
+	case 0xA0, 0xA1, 0xA2, 0xA3:
 		// MOV AL/AX/EAX/RAX, moffs (direct memory addressing). The
 		// offset is fetched at address-size width (2/4/8 bytes); the
 		// data transfer is at operand size (A0/A2 = byte; A1/A3 =
@@ -502,36 +502,35 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
-	case op == 0xB8, op == 0xB9, op == 0xBA, op == 0xBB,
-		op == 0xBC, op == 0xBD, op == 0xBE, op == 0xBF:
+	case 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF:
 		return c.opMOVImmToReg(op-0xB8, rex, operandSize)
 
-	case op == 0xC6:
+	case 0xC6:
 		return c.opMOVImm(rex, 1)
-	case op == 0xC7:
+	case 0xC7:
 		return c.opMOVImm(rex, operandSize)
 
 	// ===== Group 1 (immediate) =====
 
-	case op == 0x80:
+	case 0x80:
 		// Group 1 r/m8, imm8.
 		return c.opGroup1(rex, 1, true)
-	case op == 0x81:
+	case 0x81:
 		// Group 1 r/m, imm16/imm32 (sign-extended to 64).
 		return c.opGroup1(rex, operandSize, false)
-	case op == 0x82:
+	case 0x82:
 		// Same encoding as 0x83 in legacy mode; #UD in long mode per
 		// Intel SDM. Surfacing explicitly.
 		return unimplemented("0x82 (illegal in long mode)")
-	case op == 0x83:
+	case 0x83:
 		// Group 1 r/m, imm8 (sign-extended).
 		return c.opGroup1(rex, operandSize, true)
 
 	// ===== Stack =====
 
-	case op >= 0x50 && op <= 0x57:
+	case 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57:
 		return c.opPUSHReg(op-0x50, rex, operandSize)
-	case op >= 0x58 && op <= 0x5F:
+	case 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f:
 		return c.opPOPReg(op-0x58, rex, operandSize)
 
 	// ===== Segment-register PUSH/POP (16/32-bit modes only; #UD in long mode) =====
@@ -543,7 +542,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// (8 long never reaches here / 4 pm32 / 2 pm16). High bits of the
 	// stack slot are zero on PUSH, ignored on POP. Cannot POP CS — it's
 	// 0x0E only.
-	case op == 0x62 && c.mode != ModeLong64:
+	case 0x62:
+		if !(c.mode != ModeLong64) {
+			return c.unimplementedAt("opcode %#02x rex=%#x", op, rex)
+		}
 		// BOUND r16/r32, m. Verifies that an index is within bounds of
 		// an array; if r < [m] or r > [m+size], raises #BR (vec 5).
 		// #UD in long mode (that's why the long-mode TestDecode_
@@ -580,7 +582,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		_, _, _ = idx, lo, hi // bounds check omitted: no #BR delivery in non-long mode yet
 		return nil
 
-	case (op == 0x27 || op == 0x2F || op == 0x37 || op == 0x3F) && c.mode != ModeLong64:
+	case 0x27, 0x2F, 0x37, 0x3F:
+		if c.mode == ModeLong64 {
+			return c.unimplementedAt("opcode %#02x rex=%#x", op, rex)
+		}
 		// BCD adjust instructions. All set AF + CF based on a nibble
 		// check on AL, and conditionally adjust AL. #UD in long mode.
 		//   0x27 DAA — decimal adjust AL after addition
@@ -653,7 +658,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
-	case (op == 0xD4 || op == 0xD5) && c.mode != ModeLong64:
+	case 0xD4, 0xD5:
+		if c.mode == ModeLong64 {
+			return c.unimplementedAt("opcode %#02x rex=%#x", op, rex)
+		}
 		// AAM (D4 ib) / AAD (D5 ib) — ASCII Adjust AX after Multiply /
 		// before Divide. #UD in long mode. Both take an explicit imm8
 		// base; the legacy assembler `aam` / `aad` mnemonic emits the
@@ -689,7 +697,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
-	case op == 0xD6 && c.mode != ModeLong64:
+	case 0xD6:
+		if !(c.mode != ModeLong64) {
+			return c.unimplementedAt("opcode %#02x rex=%#x", op, rex)
+		}
 		// SALC — undocumented "Set AL to -CF". Listed in many opcode
 		// references (a.k.a. SETALC). Old SeaBIOS uses it for terse
 		// flag-to-byte conversions. AL = CF ? 0xFF : 0x00. Flags
@@ -701,7 +712,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
-	case op == 0xD7:
+	case 0xD7:
 		// XLAT / XLATB — AL = [DS:eBX + zero_extended(AL)]. Address
 		// width follows currentAddressSize; segment override allowed.
 		// In long mode the base is RBX (full 64-bit).
@@ -724,7 +735,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.SetReg8(AL, c.readMem8(addr))
 		return nil
 
-	case (op == 0x60 || op == 0x61) && c.mode != ModeLong64:
+	case 0x60, 0x61:
+		if c.mode == ModeLong64 {
+			return c.unimplementedAt("opcode %#02x rex=%#x", op, rex)
+		}
 		// PUSHA/POPA (16-bit) / PUSHAD/POPAD (32-bit). #UD in long
 		// mode. Push order: EAX, ECX, EDX, EBX, ESP-original, EBP,
 		// ESI, EDI. POPA mirror: EDI first, then ESI..EAX, but the
@@ -761,9 +775,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
-	case (op == 0x06 || op == 0x07 || op == 0x0E ||
-		op == 0x16 || op == 0x17 || op == 0x1E || op == 0x1F) &&
-		c.mode != ModeLong64:
+	case 0x06, 0x07, 0x0E, 0x16, 0x17, 0x1E, 0x1F:
+		if c.mode == ModeLong64 {
+			return c.unimplementedAt("opcode %#02x rex=%#x", op, rex)
+		}
 		// PUSH/POP segment register. The 6 encodings here are #UD in
 		// long mode; gating on mode preserves the long-mode test that
 		// pins 0x06 as unimplemented while letting BIOS / real-mode
@@ -805,7 +820,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	//
 	// Reachable only when c.mode != ModeLong64 because the prefix-loop
 	// in Step() captures 0x40..0x4F as a REX prefix in long mode.
-	case op >= 0x40 && op <= 0x47:
+	case 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47:
 		// INC r16/r32 — operand size keys off mode. CF preserved per
 		// Intel SDM (only OF/SF/ZF/AF/PF touched).
 		idx := op - 0x40
@@ -816,7 +831,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.setArithFlags(fl)
 		c.rflags = (c.rflags &^ RFLAGS_CF) | oldCF
 		return nil
-	case op >= 0x48 && op <= 0x4F:
+	case 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f:
 		// DEC r16/r32.
 		idx := op - 0x48
 		v := c.readReg(idx, operandSize)
@@ -827,7 +842,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.rflags = (c.rflags &^ RFLAGS_CF) | oldCF
 		return nil
 
-	case op == 0x68:
+	case 0x68:
 		// PUSH imm32 (or imm16 with 0x66) sign-extended to operand size
 		// and pushed at the corresponding width — see pushPopOperandSize
 		// for the long-mode promotion (no 32-bit PUSH form in long mode).
@@ -840,7 +855,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.pushStack(uint64(v), c.pushPopOperandSize(operandSize))
 		return nil
 
-	case op == 0x6A:
+	case 0x6A:
 		// PUSH imm8 sign-extended.
 		v := int64(int8(c.fetch8()))
 		c.pushStack(uint64(v), c.pushPopOperandSize(operandSize))
@@ -848,7 +863,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 
 	// ===== Control flow =====
 
-	case op == 0xC3:
+	case 0xC3:
 		// RET near. Per Intel SDM Vol 2A: the return-address width is
 		// the OPERAND SIZE, not the stack-slot size. Default operand
 		// size follows CS.D / mode, but the 0x66 prefix can flip it:
@@ -868,7 +883,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.rip = c.popStack(retSize)
 		return nil
 
-	case op == 0xCB:
+	case 0xCB:
 		// RETF / LRETQ — far return. Pops RIP and CS at operand-size
 		// width. In long mode REX.W=1 picks 8-byte slots, else 4. CS
 		// is loaded by reading its descriptor from the GDT, but we
@@ -877,16 +892,19 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		// into its newly-loaded GDT's kernel CS, where L=1.
 		return c.opRETF(operandSize)
 
-	case op == 0xCC:
+	case 0xCC:
 		// INT3 — software breakpoint, vector 3, no error code.
 		return c.deliverInterrupt(3, false, 0)
 
-	case op == 0xCD:
+	case 0xCD:
 		// INT imm8.
 		vec := c.fetch8()
 		return c.deliverInterrupt(vec, false, 0)
 
-	case op == 0xCE && c.mode != ModeLong64:
+	case 0xCE:
+		if !(c.mode != ModeLong64) {
+			return c.unimplementedAt("opcode %#02x rex=%#x", op, rex)
+		}
 		// INTO — overflow trap. Delivers vector 4 if OF=1, else NOP. #UD
 		// in long mode (we let it fall through to unimplementedAt).
 		if c.rflags&RFLAGS_OF != 0 {
@@ -894,43 +912,43 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
-	case op == 0xCF:
+	case 0xCF:
 		// IRET. In long mode the 64-bit form requires REX.W=1; the
 		// 32-bit IRETD form (REX.W=0) is decoded but pops 32-bit values
 		// — not yet implemented because nothing in our test surface
 		// exercises it. Treat REX.W=0 as IRETQ for simplicity.
 		return c.opIRETQ(operandSize)
 
-	case op == 0xE4: // IN AL, imm8
+	case 0xE4: // IN AL, imm8
 		port := uint16(c.fetch8())
 		c.SetReg8(AL, c.ioRead8(port))
 		return nil
-	case op == 0xE5: // IN eAX, imm8 — width follows operandSize
+	case 0xE5: // IN eAX, imm8 — width follows operandSize
 		port := uint16(c.fetch8())
 		return c.opINEAX(port, operandSize)
-	case op == 0xE6: // OUT imm8, AL
+	case 0xE6: // OUT imm8, AL
 		port := uint16(c.fetch8())
 		c.ioWrite8(port, c.GetReg8(AL))
 		return nil
-	case op == 0xE7: // OUT imm8, eAX
+	case 0xE7: // OUT imm8, eAX
 		port := uint16(c.fetch8())
 		return c.opOUTEAX(port, operandSize)
-	case op == 0xEC: // IN AL, DX
+	case 0xEC: // IN AL, DX
 		port := c.GetReg16(DX)
 		c.SetReg8(AL, c.ioRead8(port))
 		return nil
-	case op == 0xED: // IN eAX, DX
+	case 0xED: // IN eAX, DX
 		port := c.GetReg16(DX)
 		return c.opINEAX(port, operandSize)
-	case op == 0xEE: // OUT DX, AL
+	case 0xEE: // OUT DX, AL
 		port := c.GetReg16(DX)
 		c.ioWrite8(port, c.GetReg8(AL))
 		return nil
-	case op == 0xEF: // OUT DX, eAX
+	case 0xEF: // OUT DX, eAX
 		port := c.GetReg16(DX)
 		return c.opOUTEAX(port, operandSize)
 
-	case op == 0xE8:
+	case 0xE8:
 		// CALL rel — displacement size and return-address push size
 		// both follow OPERAND SIZE (Intel SDM Vol 2A). Real mode uses
 		// rel16 + 16-bit push by default; 0x66 flips to rel32 + 32-bit
@@ -950,7 +968,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.rip = uint64(int64(c.rip) + disp)
 		return nil
 
-	case op == 0xE9:
+	case 0xE9:
 		// JMP rel — same operand-size dispatch as CALL rel.
 		var disp int64
 		if operandSize == 2 {
@@ -961,12 +979,15 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.rip = uint64(int64(c.rip) + disp)
 		return nil
 
-	case op == 0xEB:
+	case 0xEB:
 		disp := int64(int8(c.fetch8()))
 		c.rip = uint64(int64(c.rip) + disp)
 		return nil
 
-	case op == 0x9A && c.mode != ModeLong64:
+	case 0x9A:
+		if !(c.mode != ModeLong64) {
+			return c.unimplementedAt("opcode %#02x rex=%#x", op, rex)
+		}
 		// CALL FAR PTR16:16/32 — direct intersegment call. Sibling of
 		// 0xEA JMP FAR; pushes (CS, RIP-of-next-insn) before the jump.
 		// Width of the offset follows operandSize. #UD in long mode.
@@ -1007,7 +1028,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.rip = off
 		return nil
 
-	case op == 0xEA:
+	case 0xEA:
 		// JMP FAR PTR16:32 / FAR PTR16:16 — direct intersegment jump.
 		// Invalid only when actually executing in 64-bit mode (CS.L=1);
 		// valid in real, 16-bit protected, 32-bit protected, AND
@@ -1071,7 +1092,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.rip = off
 		return nil
 
-	case op >= 0x70 && op <= 0x7F:
+	case 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e, 0x7f:
 		// Conditional jump rel8.
 		disp := int64(int8(c.fetch8()))
 		if c.evalCond(op & 0xF) {
@@ -1081,46 +1102,46 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 
 	// ===== Group 3 (TEST/NOT/NEG/MUL/IMUL/DIV/IDIV) =====
 
-	case op == 0xF6:
+	case 0xF6:
 		// Group 3 byte form — TEST r/m8,imm8 / NOT / NEG / MUL / IMUL
 		// / DIV / IDIV at 8-bit operand width.
 		return c.opGroup3(rex, 1)
-	case op == 0xF7:
+	case 0xF7:
 		return c.opGroup3(rex, operandSize)
 
 	// ===== IMUL signed-integer forms =====
 
-	case op == 0x69:
+	case 0x69:
 		// IMUL r, r/m, imm32 (sign-extended to operand size).
 		return c.opIMULImm(rex, operandSize, false)
-	case op == 0x6B:
+	case 0x6B:
 		// IMUL r, r/m, imm8 (sign-extended).
 		return c.opIMULImm(rex, operandSize, true)
 
 	// ===== Group 2 (shifts and rotates) =====
 
-	case op == 0xD1:
+	case 0xD1:
 		// SHL/SHR/SAR/ROL/ROR/RCL/RCR r/m, 1 — count is implicit.
 		return c.opGroup2Reg(rex, operandSize, 1)
-	case op == 0xD3:
+	case 0xD3:
 		// Group 2 r/m, CL — count comes from CL register.
 		return c.opGroup2Reg(rex, operandSize, uint64(c.GetReg8(CL)))
-	case op == 0xC1:
+	case 0xC1:
 		// Group 2 r/m, imm8 — count is an 8-bit immediate.
 		return c.opGroup2Imm(rex, operandSize)
-	case op == 0xD0:
+	case 0xD0:
 		// Group 2 r/m8, 1 — byte form, count is implicit.
 		return c.opGroup2Reg(rex, 1, 1)
-	case op == 0xD2:
+	case 0xD2:
 		// Group 2 r/m8, CL — byte form, count comes from CL.
 		return c.opGroup2Reg(rex, 1, uint64(c.GetReg8(CL)))
-	case op == 0xC0:
+	case 0xC0:
 		// Group 2 r/m8, imm8 — byte form, count is 8-bit immediate.
 		return c.opGroup2Imm(rex, 1)
 
 	// ===== Sign-extending integer move (MOVSXD r64, r/m32) =====
 
-	case op == 0x63:
+	case 0x63:
 		// In long mode 0x63 is MOVSXD (in 32-bit mode it was ARPL).
 		// Destination is the reg field, full 64 bits; source is a
 		// 32-bit r/m that gets sign-extended.
@@ -1128,9 +1149,9 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 
 	// ===== Group 4/5 (Inc/Dec [byte / full] + Call/Jmp/Push) =====
 
-	case op == 0xFE:
+	case 0xFE:
 		return c.opGroup4(rex)
-	case op == 0xFF:
+	case 0xFF:
 		return c.opGroup5(rex, operandSize)
 
 	// ===== Group 15 (0x0F 0xAE) — FXSAVE/FXRSTOR/LDMXCSR/STMXCSR + LFENCE/MFENCE/SFENCE/CLFLUSH =====
@@ -1148,7 +1169,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 
 	// FWAIT / WAIT — synchronise with the FPU. We don't pipeline FPU
 	// ops so there's nothing to wait for; effectively a NOP.
-	case op == 0x9B:
+	case 0x9B:
 		return nil
 
 	// ===== x87 FPU escape opcodes (0xD8..0xDF) =====
@@ -1161,12 +1182,15 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 	// Minimal stub: identify the no-operand control insns and silently
 	// succeed; for memory-operand forms consume the ModR/M so the
 	// instruction stream stays aligned.
-	case op >= 0xD8 && op <= 0xDF:
+	case 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf:
 		return c.handleX87(op, rex)
 
 	// ===== Flag manipulation =====
 
-	case op == 0xC8 && c.mode != ModeLong64:
+	case 0xC8:
+		if !(c.mode != ModeLong64) {
+			return c.unimplementedAt("opcode %#02x rex=%#x", op, rex)
+		}
 		// ENTER imm16, imm8 — create a stack frame for a procedure.
 		//   imm16 = local variable size (bytes)
 		//   imm8  = nesting level (low 5 bits). Common usage is level=0.
@@ -1213,7 +1237,10 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
-	case (op == 0xC4 || op == 0xC5) && c.mode != ModeLong64:
+	case 0xC4, 0xC5:
+		if c.mode == ModeLong64 {
+			return c.unimplementedAt("opcode %#02x rex=%#x", op, rex)
+		}
 		// LES r16/32, m16:16/32 (0xC4) / LDS (0xC5). #UD in long mode
 		// (the encoding is repurposed as VEX prefix). Loads a 16-bit
 		// segment selector + 16/32-bit offset from memory into ES/DS
@@ -1247,7 +1274,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.writeReg(m.reg, off, operandSize)
 		return nil
 
-	case op == 0xF1:
+	case 0xF1:
 		// INT1 / ICEBP — vectors through gate 1 (#DB). Rare in user
 		// code but SeaBIOS occasionally lands here when stale data is
 		// decoded as code. Delivering vector 1 is the architectural
@@ -1256,7 +1283,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		// install a debug handler.
 		return c.deliverInterrupt(1, false, 0)
 
-	case op == 0xC9: // LEAVE — restore RBP, pop saved RBP
+	case 0xC9: // LEAVE — restore RBP, pop saved RBP
 		// LEAVE := mov rsp, rbp ; pop rbp. Per Intel SDM the width is the
 		// operand-size attribute (16/32/64), so 0x66 flips it. The MOV
 		// RSP, RBP and the pop both use that width.
@@ -1276,7 +1303,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
-	case op == 0x98: // CBW / CWDE / CDQE — sign-extend AL/AX/EAX in place.
+	case 0x98: // CBW / CWDE / CDQE — sign-extend AL/AX/EAX in place.
 		switch operandSize {
 		case 2: // CBW: AX = sign-extend(AL)
 			c.SetReg16(AX, uint16(int8(c.GetReg8(AL))))
@@ -1287,7 +1314,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		}
 		return nil
 
-	case op == 0x99: // CWD / CDQ / CQO — sign-extend RAX into RDX.
+	case 0x99: // CWD / CDQ / CQO — sign-extend RAX into RDX.
 		a := c.readReg(RAX, operandSize)
 		var hi uint64
 		if a&signBit(operandSize) != 0 {
@@ -1296,14 +1323,14 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.writeReg(RDX, hi, operandSize)
 		return nil
 
-	case op == 0x9C: // PUSHF / PUSHFD / PUSHFQ — width follows operand
+	case 0x9C: // PUSHF / PUSHFD / PUSHFQ — width follows operand
 		// size (pushPopOperandSize): real/pm16 default 2 (0x66→4), pm32
 		// default 4 (0x66→2), long default 8 / PUSHFQ (0x66→2, no 4-byte
 		// form). stackSlotSize() dropped the 0x66 promotion in real mode.
 		size := c.pushPopOperandSize(operandSize)
 		c.pushStack(c.rflags, size)
 		return nil
-	case op == 0x9D: // POPF / POPFD / POPFQ — symmetric to PUSHF.
+	case 0x9D: // POPF / POPFD / POPFQ — symmetric to PUSHF.
 		size := c.pushPopOperandSize(operandSize)
 		v := c.popStack(size)
 		// Filter reserved bits via ValidFlagMask; bit 1 always reads 1
@@ -1321,7 +1348,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.rflags = (c.rflags &^ mask) | (v & mask &^ RFLAGS_RF) | 2
 		return nil
 
-	case op == 0x9E: // SAHF — store AH into low byte of RFLAGS
+	case 0x9E: // SAHF — store AH into low byte of RFLAGS
 		// AH bits 7,6,4,2,0 ↔ SF, ZF, AF, PF, CF. Bits 1,3,5 ignored.
 		ah := c.GetReg8(AH)
 		c.rflags &^= RFLAGS_SF | RFLAGS_ZF | RFLAGS_AF | RFLAGS_PF | RFLAGS_CF
@@ -1341,7 +1368,7 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 			c.rflags |= RFLAGS_CF
 		}
 		return nil
-	case op == 0x9F: // LAHF — load AH from low byte of RFLAGS
+	case 0x9F: // LAHF — load AH from low byte of RFLAGS
 		var ah uint8 = 0x02 // bit 1 always reads 1
 		if c.rflags&RFLAGS_SF != 0 {
 			ah |= 0x80
@@ -1361,54 +1388,54 @@ func (c *CPU) executeOpcode(op, rex, operandSize, addressSize uint8, segOverride
 		c.SetReg8(AH, ah)
 		return nil
 
-	case op == 0xF5: // CMC — complement CF
+	case 0xF5: // CMC — complement CF
 		c.rflags ^= RFLAGS_CF
 		return nil
-	case op == 0xF8: // CLC — clear CF
+	case 0xF8: // CLC — clear CF
 		c.rflags &^= RFLAGS_CF
 		return nil
-	case op == 0xF9: // STC — set CF
+	case 0xF9: // STC — set CF
 		c.rflags |= RFLAGS_CF
 		return nil
-	case op == 0xFA: // CLI — clear IF
+	case 0xFA: // CLI — clear IF
 		c.rflags &^= RFLAGS_IF
 		return nil
-	case op == 0xFB: // STI — set IF
+	case 0xFB: // STI — set IF
 		c.rflags |= RFLAGS_IF
 		return nil
-	case op == 0xFC: // CLD — clear DF
+	case 0xFC: // CLD — clear DF
 		c.rflags &^= RFLAGS_DF
 		return nil
-	case op == 0xFD: // STD — set DF
+	case 0xFD: // STD — set DF
 		c.rflags |= RFLAGS_DF
 		return nil
 
 	// ===== String operations =====
 
-	case op == 0xA4:
+	case 0xA4:
 		return c.opStringMOVS(rex, 1, repPrefix)
-	case op == 0xA5:
+	case 0xA5:
 		return c.opStringMOVS(rex, operandSize, repPrefix)
-	case op == 0xA6:
+	case 0xA6:
 		return c.opStringCMPS(rex, 1, repPrefix)
-	case op == 0xA7:
+	case 0xA7:
 		return c.opStringCMPS(rex, operandSize, repPrefix)
-	case op == 0xAA:
+	case 0xAA:
 		return c.opStringSTOS(rex, 1, repPrefix)
-	case op == 0xAB:
+	case 0xAB:
 		return c.opStringSTOS(rex, operandSize, repPrefix)
-	case op == 0xAC:
+	case 0xAC:
 		return c.opStringLODS(rex, 1, repPrefix)
-	case op == 0xAD:
+	case 0xAD:
 		return c.opStringLODS(rex, operandSize, repPrefix)
-	case op == 0xAE:
+	case 0xAE:
 		return c.opStringSCAS(rex, 1, repPrefix)
-	case op == 0xAF:
+	case 0xAF:
 		return c.opStringSCAS(rex, operandSize, repPrefix)
 
 	// ===== Two-byte escape =====
 
-	case op == 0x0F:
+	case 0x0F:
 		return c.opTwoByte(rex, operandSize, segOverride, repPrefix, has66)
 	}
 
