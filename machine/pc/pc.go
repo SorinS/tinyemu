@@ -94,6 +94,7 @@ type PC struct {
 	biosROM    *mem.PhysMemoryRange
 	biosHigh   *mem.PhysMemoryRange
 	lapic      *LocalAPIC
+	ioapic     *IOAPIC
 	fwCfg      *fwCfg
 	ps2        *PS2Controller
 	console    *virtio.CharacterDevice
@@ -405,13 +406,26 @@ func New(cfg Config) (*PC, error) {
 			a.SetAPICEnabled(true)
 		}
 		p.pic.SetINTRFunc(p.lapic.SetExtINT)
-	} else if _, err := p.memMap.RegisterDevice(0xFEE00000, 0x1000, nil, stubRead, stubWrite, stubFlags); err != nil {
-		return nil, fmt.Errorf("register LAPIC stub: %w", err)
-	}
-	// IOAPIC window stays a read-zero stub for now (redirection table is
-	// a later increment); kernels poke it during early init.
-	if _, err := p.memMap.RegisterDevice(0xFEC00000, 0x1000, nil, stubRead, stubWrite, stubFlags); err != nil {
-		return nil, fmt.Errorf("register IOAPIC stub: %w", err)
+		// Real I/O APIC at 0xFEC00000. In APIC mode the kernel masks the 8259
+		// and routes device GSIs through the I/O APIC to the LAPIC; we mirror
+		// the master PIC's device lines into it via SetObserver so the same
+		// RaiseIRQ/LowerIRQ drives both paths (PIC-mode ExtINT vs APIC-mode
+		// redirection). Without this, PCI INTx (virtio-blk) interrupts are lost
+		// and the guest can't mount root.
+		p.ioapic = NewIOAPIC(p.lapic)
+		if _, err := p.memMap.RegisterDevice(0xFEC00000, 0x1000, nil, p.ioapic.MMIORead, p.ioapic.MMIOWrite, stubFlags); err != nil {
+			return nil, fmt.Errorf("register IOAPIC: %w", err)
+		}
+		p.pic.SetObserver(func(irq uint8, level bool) { p.ioapic.SetGSI(int(irq), level) })
+	} else {
+		if _, err := p.memMap.RegisterDevice(0xFEE00000, 0x1000, nil, stubRead, stubWrite, stubFlags); err != nil {
+			return nil, fmt.Errorf("register LAPIC stub: %w", err)
+		}
+		// IOAPIC read-zero stub (kernels poke it during early init even with
+		// noapic). No redirection in PIC mode.
+		if _, err := p.memMap.RegisterDevice(0xFEC00000, 0x1000, nil, stubRead, stubWrite, stubFlags); err != nil {
+			return nil, fmt.Errorf("register IOAPIC stub: %w", err)
+		}
 	}
 
 	// fw_cfg — QEMU paravirt channel that SeaBIOS reads to find ACPI
@@ -941,8 +955,18 @@ func (p *PC) AdvanceIdle() {
 }
 
 func (p *PC) PollDevices() {
-	// Nothing to poll for now
+	if blkqDebug {
+		blkqPoll++
+		if blkqPoll%4000 == 0 {
+			for _, d := range p.virtioDevices {
+				d.DebugQueueState("poll")
+			}
+		}
+	}
 }
+
+var blkqDebug = os.Getenv("TINYEMU_BLKQ_DEBUG") == "1"
+var blkqPoll int
 
 func (p *PC) GetSleepDuration(delay int) int {
 	if !p.cpu.IsPowerDown() {

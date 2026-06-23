@@ -37,11 +37,22 @@ type PIC8259 struct {
 	// instead of the CPU directly — used to route the PIC through the
 	// local APIC as ExtINT.
 	intrFunc func(level int)
+
+	// observer, when set on the master, is notified of every input-line
+	// change (with the full 0..15 IRQ number) before the master/slave
+	// dispatch — used to feed the same device lines into the I/O APIC so
+	// APIC mode delivers them while the 8259 is masked.
+	observer func(irq uint8, level bool)
 }
 
 // SetINTRFunc redirects the (master) PIC's INTR output. Used by the
 // machine in APIC mode to feed the local APIC's ExtINT input.
 func (p *PIC8259) SetINTRFunc(fn func(level int)) { p.intrFunc = fn }
+
+// SetObserver registers a callback notified of every input-line change on the
+// master PIC (full IRQ number 0..15). Used to mirror device lines into the
+// I/O APIC.
+func (p *PIC8259) SetObserver(fn func(irq uint8, level bool)) { p.observer = fn }
 
 // NewPIC8259 creates a single (master) PIC. IMR defaults to 0xFF (all
 // masked) so devices that fire before the kernel programs them don't
@@ -177,6 +188,9 @@ func (p *PIC8259) updateINTR() {
 // slave-side IRQs (master-side only — calling with 8-15 on a slave PIC is
 // undefined).
 func (p *PIC8259) RaiseIRQ(irq uint8) {
+	if p.observer != nil {
+		p.observer(irq, true)
+	}
 	if irq >= 8 {
 		if p.slave != nil {
 			p.slave.RaiseIRQ(irq - 8)
@@ -209,6 +223,9 @@ func (p *PIC8259) ISR() uint8 { return p.isr }
 // LowerIRQ lowers an IRQ line. Accepts 0-7 for local IRQs and 8-15 for
 // slave-side IRQs.
 func (p *PIC8259) LowerIRQ(irq uint8) {
+	if p.observer != nil {
+		p.observer(irq, false)
+	}
 	if irq >= 8 {
 		if p.slave != nil {
 			p.slave.LowerIRQ(irq - 8)
