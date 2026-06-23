@@ -153,10 +153,10 @@ type Device struct {
 	//
 	// Legacy virtio-pci can only expose the low 32 bits; modern and
 	// MMIO support both halves via the *Sel registers.
-	Features         uint32
-	FeaturesHi       uint32
-	GuestFeatures    uint32
-	GuestFeaturesHi  uint32
+	Features        uint32
+	FeaturesHi      uint32
+	GuestFeatures   uint32
+	GuestFeaturesHi uint32
 
 	// Callbacks
 	DeviceRecv  DeviceRecvFunc  // Called when descriptors are available
@@ -620,6 +620,23 @@ func (dev *Device) ConsumeDesc(queueIdx int, descIdx int, descLen int) {
 	dev.consumeDescLocked(queueIdx, descIdx, descLen)
 }
 
+// DebugQueueState logs queue 0's avail.idx vs used.idx vs our LastAvailIdx for
+// the block device — to tell a never-processed request (avail>used) from a
+// completed-but-not-woken one (avail==used). Gated by the caller.
+func (dev *Device) DebugQueueState(tag string) {
+	if dev.DeviceID != DeviceIDBlock {
+		return
+	}
+	qs := &dev.Queues[0]
+	if qs.AvailAddr == 0 {
+		return
+	}
+	availIdx := dev.read16(qs.AvailAddr + 2)
+	usedIdx := dev.read16(qs.UsedAddr + 2)
+	fmt.Fprintf(os.Stderr, "[blkq %s] availIdx=%d usedIdx=%d lastAvail=%d intStatus=%d\n",
+		tag, availIdx, usedIdx, qs.LastAvailIdx, dev.IntStatus)
+}
+
 // DebugConsumeDesc enables debug logging for used ring writes.
 var DebugConsumeDesc bool
 
@@ -635,17 +652,19 @@ func init() {
 func (dev *Device) consumeDescLocked(queueIdx int, descIdx int, descLen int) {
 	qs := &dev.Queues[queueIdx]
 
-	// Read current used index and increment it immediately (matching C behavior)
-	// Reference: tinyemu-2019-12-21/virtio.c:468-470
+	// Virtio §2.7.8.2: the used element (id, len) must be visible to the driver
+	// BEFORE used.idx advances — the driver keys off idx to read the element, so
+	// publishing idx first would expose a stale/garbage entry. (Harmless while
+	// the device runs synchronously inside the guest's notify, but required once
+	// completion moves to its own goroutine, and it's the spec-correct order.)
 	usedIdxAddr := qs.UsedAddr + 2
 	usedIdx := dev.read16(usedIdxAddr)
-	dev.write16(usedIdxAddr, usedIdx+1)
 
-	// Write used ring entry
-	// Reference: tinyemu-2019-12-21/virtio.c:472-474
 	entryAddr := qs.UsedAddr + 4 + uint64(usedIdx&uint16(qs.Num-1))*8
 	dev.write32(entryAddr, uint32(descIdx))
 	dev.write32(entryAddr+4, uint32(descLen))
+
+	dev.write16(usedIdxAddr, usedIdx+1) // publish the new index last
 
 	if DebugConsumeDesc {
 		tag := "id?"
