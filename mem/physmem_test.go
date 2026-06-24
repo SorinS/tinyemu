@@ -691,3 +691,34 @@ func TestDevice64BitAccess(t *testing.T) {
 	}
 	_ = lastSize // unused, but we verify it's set correctly
 }
+
+// TestUnbackedWriteDroppedAndWarns verifies the documented behavior: a write to
+// a physical address with no registered range is dropped (read-back returns 0),
+// and the warning path (warnUnbackedWrite) runs without panicking. This is the
+// guard against silent data loss that disguised a guest-RAM-too-small bug
+// (seL4 / map_it_pd_cap) as a subtle kernel fault.
+func TestUnbackedWriteDroppedAndWarns(t *testing.T) {
+	m := NewPhysMemoryMap()
+	defer m.Close()
+	if _, err := m.RegisterRAM(0x40000000, 0x1000, 0); err != nil {
+		t.Fatal(err)
+	}
+	const unbacked = 0x50000000 // outside the registered 4 KiB RAM
+	if err := m.Write64(unbacked, 0xdeadbeefcafef00d); err != nil {
+		t.Fatalf("unbacked Write64 should not error: %v", err)
+	}
+	v, err := m.Read64(unbacked)
+	if err != nil {
+		t.Fatalf("unbacked Read64 should not error: %v", err)
+	}
+	if v != 0 {
+		t.Fatalf("unbacked read = %#x, want 0 (write must be dropped)", v)
+	}
+	// A backed write still works (warning path is only the unbacked branch).
+	if err := m.Write64(0x40000000, 0x1234); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := m.Read64(0x40000000); v != 0x1234 {
+		t.Fatalf("backed read = %#x, want 0x1234", v)
+	}
+}

@@ -5,7 +5,45 @@ package mem
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"os"
+	"sync"
 )
+
+// Unbacked-write warning. Writes to physical addresses with no registered range
+// are silently dropped (and reads return 0). That silent data loss can disguise
+// itself as far subtler bugs — e.g. a guest whose DTB/e820 claims more RAM than
+// we registered writes its page tables into the gap, they vanish, and the kernel
+// faults somewhere unrelated (this stalled seL4 for a long debug at
+// map_it_pd_cap). Warn once per 4 KiB page, capped, so the cause is obvious.
+// Reads aren't warned (returning 0 is usually legitimate probing). Set
+// TINYEMU_MEM_QUIET=1 to silence.
+var (
+	unmappedMu    sync.Mutex
+	unmappedSeen  = map[uint64]bool{}
+	unmappedCount int
+	unmappedQuiet = os.Getenv("TINYEMU_MEM_QUIET") == "1"
+)
+
+const unmappedWarnMax = 32
+
+func warnUnbackedWrite(paddr, val uint64, size int) {
+	if unmappedQuiet {
+		return
+	}
+	page := paddr &^ 0xFFF
+	unmappedMu.Lock()
+	defer unmappedMu.Unlock()
+	if unmappedSeen[page] || unmappedCount >= unmappedWarnMax {
+		return
+	}
+	unmappedSeen[page] = true
+	unmappedCount++
+	fmt.Fprintf(os.Stderr, "[mem] WARNING: write %#x (%d bytes) to UNBACKED physical address %#x — dropped; guest RAM smaller than its DTB/e820 claims? (set -m higher)\n", val, size, paddr)
+	if unmappedCount == unmappedWarnMax {
+		fmt.Fprintln(os.Stderr, "[mem] (further unbacked-write warnings suppressed; TINYEMU_MEM_QUIET=1 to silence)")
+	}
+}
 
 // Memory subsystem constants
 const (
@@ -434,7 +472,8 @@ func (m *PhysMemoryMap) Read64(paddr uint64) (uint64, error) {
 func (m *PhysMemoryMap) Write8(paddr uint64, val uint8) error {
 	pr := m.GetRange(paddr)
 	if pr == nil {
-		return nil // Silent ignore for unmapped address (C behavior)
+		warnUnbackedWrite(paddr, uint64(val), 1)
+		return nil // unmapped write: dropped (see warnUnbackedWrite)
 	}
 	offset := paddr - pr.Addr
 
@@ -461,7 +500,8 @@ func (m *PhysMemoryMap) Write8(paddr uint64, val uint8) error {
 func (m *PhysMemoryMap) Write16(paddr uint64, val uint16) error {
 	pr := m.GetRange(paddr)
 	if pr == nil {
-		return nil // Silent ignore for unmapped address (C behavior)
+		warnUnbackedWrite(paddr, uint64(val), 2)
+		return nil // unmapped write: dropped (see warnUnbackedWrite)
 	}
 	offset := paddr - pr.Addr
 
@@ -488,7 +528,8 @@ func (m *PhysMemoryMap) Write16(paddr uint64, val uint16) error {
 func (m *PhysMemoryMap) Write32(paddr uint64, val uint32) error {
 	pr := m.GetRange(paddr)
 	if pr == nil {
-		return nil // Silent ignore for unmapped address (C behavior)
+		warnUnbackedWrite(paddr, uint64(val), 4)
+		return nil // unmapped write: dropped (see warnUnbackedWrite)
 	}
 	offset := paddr - pr.Addr
 
@@ -515,7 +556,8 @@ func (m *PhysMemoryMap) Write32(paddr uint64, val uint32) error {
 func (m *PhysMemoryMap) Write64(paddr uint64, val uint64) error {
 	pr := m.GetRange(paddr)
 	if pr == nil {
-		return nil // Silent ignore for unmapped address (C behavior)
+		warnUnbackedWrite(paddr, uint64(val), 8)
+		return nil // unmapped write: dropped (see warnUnbackedWrite)
 	}
 	offset := paddr - pr.Addr
 
