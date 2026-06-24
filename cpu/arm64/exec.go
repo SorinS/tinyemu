@@ -123,8 +123,33 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 	case (w>>25)&0x7F == 0x6B:
 		return c.execBranchReg(w, next)
 	}
+	// AArch64 top-level groups op0=bits[28:25] in {0,1,2,3} are unallocated or
+	// belong to extensions this base CPU doesn't implement (reserved, SVE, SME,
+	// and the UDF space) — i.e. architecturally UNDEFINED here. Deliver an
+	// Unknown-reason synchronous exception (ESR.EC=0, IL=1) to the guest like
+	// real hardware, instead of aborting the emulator: a guest's
+	// undefined-instruction handler must run (e.g. seL4's PAGEFAULT0005 tests
+	// exactly this with the unallocated encoding 0xe7f000f0). Valid groups
+	// (4-15) that reach here are emulator gaps, so they keep hard-erroring to
+	// surface the missing opcode.
+	if (w>>25)&0xF <= 3 {
+		if c.VBAR == 0 {
+			return fmt.Errorf("arm64: undefined instruction %08x at %#x (no VBAR to deliver to)", w, c.PC)
+		}
+		if !undefSeen[w] {
+			undefSeen[w] = true
+			fmt.Fprintf(os.Stderr, "[arm64] undefined instruction %08x at %#x — delivering UNDEF exception to guest\n", w, c.PC)
+		}
+		c.takeException(excSync, uint64(1)<<25, 0, c.PC, false) // ESR.EC=0 (Unknown), IL=1
+		*next = c.PC                                            // keep the vector (Step does c.PC = next)
+		return nil
+	}
 	return fmt.Errorf("arm64: unimplemented instruction %08x at %#x", w, c.PC)
 }
+
+// undefSeen dedupes the "delivered UNDEF" log to once per encoding (the CPU runs
+// on a single goroutine, so no lock is needed).
+var undefSeen = map[uint32]bool{}
 
 func is64bit(w uint32) bool { return (w>>31)&1 == 1 }
 
