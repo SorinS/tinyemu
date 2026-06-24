@@ -1,6 +1,8 @@
 package machine
 
 import (
+	"bytes"
+	"debug/elf"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -213,6 +215,7 @@ type bootImageKind int
 const (
 	bootLinuxImage   bootImageKind = iota // flat arm64 Linux Image (direct boot)
 	bootUEFIFirmware                      // edk2/UEFI firmware flash (FreeBSD, etc.)
+	bootELFKernel                         // bare-metal AArch64 ELF (e.g. seL4 elfloader)
 )
 
 // linuxImageMagic is "ARMd" (little-endian) at offset 56 of an arm64 Image.
@@ -222,6 +225,9 @@ const linuxImageMagic = 0x644d5241
 // known magic; anything else is treated as a UEFI firmware image (the chain-load
 // path for FreeBSD and other UEFI OSes).
 func classifyBootImage(data []byte) bootImageKind {
+	if len(data) >= 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F' {
+		return bootELFKernel
+	}
 	if len(data) >= 64 && binary.LittleEndian.Uint32(data[56:60]) == linuxImageMagic {
 		return bootLinuxImage
 	}
@@ -243,9 +249,69 @@ func (m *ARM64Machine) LoadBIOS(biosData, kernelData, initrdData []byte, cmdLine
 	switch classifyBootImage(image) {
 	case bootUEFIFirmware:
 		return m.bootUEFIFirmware(image, cmdLine)
+	case bootELFKernel:
+		return m.bootELFImage(image, initrdData, cmdLine)
 	default:
 		return m.bootLinuxImage(image, initrdData, cmdLine)
 	}
+}
+
+// bootELFImage loads a bare-metal AArch64 ELF (e.g. seL4's elfloader): each
+// PT_LOAD segment is placed at its physical address (BSS zeroed), then the core
+// enters at the ELF entry point with x0 = DTB — the same handoff QEMU's -kernel
+// gives an arm64 ELF (MMU off, at the reset EL).
+func (m *ARM64Machine) bootELFImage(image, initrdData []byte, cmdLine string) error {
+	f, err := elf.NewFile(bytes.NewReader(image))
+	if err != nil {
+		return fmt.Errorf("arm64: not a valid ELF: %w", err)
+	}
+	defer f.Close()
+	if f.Class != elf.ELFCLASS64 || f.Machine != elf.EM_AARCH64 {
+		return fmt.Errorf("arm64: expected AArch64 ELF64, got class=%v machine=%v", f.Class, f.Machine)
+	}
+
+	ramPtr := m.ram.PhysMem
+	loaded := false
+	for _, prog := range f.Progs {
+		if prog.Type != elf.PT_LOAD || prog.Memsz == 0 {
+			continue
+		}
+		if prog.Paddr < a64RAMBase || prog.Paddr+prog.Memsz > a64RAMBase+m.ramSize {
+			return fmt.Errorf("arm64: PT_LOAD %#x..%#x outside RAM [%#x,%#x) — need more -m?",
+				prog.Paddr, prog.Paddr+prog.Memsz, a64RAMBase, a64RAMBase+m.ramSize)
+		}
+		off := prog.Paddr - a64RAMBase
+		data := make([]byte, prog.Filesz)
+		if _, err := prog.ReadAt(data, 0); err != nil {
+			return fmt.Errorf("arm64: read PT_LOAD @ %#x: %w", prog.Paddr, err)
+		}
+		copy(ramPtr[off:], data)
+		if prog.Memsz > prog.Filesz { // zero BSS
+			clear(ramPtr[off+prog.Filesz : off+prog.Memsz])
+		}
+		loaded = true
+	}
+	if !loaded {
+		return errors.New("arm64: ELF has no PT_LOAD segments")
+	}
+
+	// DTB at the base of RAM (below seL4's load address); passed in x0 like the
+	// Linux/QEMU arm64 boot protocol so the elfloader can find memory + serial.
+	var initrdStart, initrdEnd uint64
+	if len(initrdData) > 0 {
+		if a64InitrdOff+uint64(len(initrdData)) > m.ramSize {
+			return errors.New("arm64: initrd too large for RAM")
+		}
+		copy(ramPtr[a64InitrdOff:], initrdData)
+		initrdStart = a64RAMBase + a64InitrdOff
+		initrdEnd = initrdStart + uint64(len(initrdData))
+	}
+	m.buildARM64FDT(ramPtr[a64DTBOff:], initrdStart, initrdEnd, cmdLine, false)
+
+	m.cpu.X[0] = a64RAMBase + a64DTBOff
+	m.cpu.X[1], m.cpu.X[2], m.cpu.X[3] = 0, 0, 0
+	m.cpu.PC = f.Entry
+	return nil
 }
 
 // bootLinuxImage loads a flat arm64 Image + optional initrd into RAM, builds the
