@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/sorins/tinyemu-go/cpu"
 	arm64cpu "github.com/sorins/tinyemu-go/cpu/arm64"
@@ -18,12 +19,12 @@ import (
 
 // Memory map (matches the QEMU virt layout the kernel expects via the DTB).
 const (
-	a64GICDBase  = 0x08000000
-	a64GICCBase  = 0x08010000
-	a64UARTBase  = 0x09000000
+	a64GICDBase   = 0x08000000
+	a64GICCBase   = 0x08010000
+	a64UARTBase   = 0x09000000
 	a64VirtIOBase = 0x0a000000
 	a64VirtIOSize = 0x200 // per-device window
-	a64RAMBase   = 0x40000000
+	a64RAMBase    = 0x40000000
 
 	// Load layout within RAM.
 	a64DTBOff    = 0x00000000 // DTB at RAM base
@@ -114,13 +115,13 @@ func NewARM64(cfg Config) (*ARM64Machine, error) {
 
 // --- Board interface ---
 
-func (m *ARM64Machine) GetCPU() cpu.Core          { return m.cpu }
+func (m *ARM64Machine) GetCPU() cpu.Core           { return m.cpu }
 func (m *ARM64Machine) MemMap() *mem.PhysMemoryMap { return m.memMap }
-func (m *ARM64Machine) Close()                    { m.memMap.Close() }
-func (m *ARM64Machine) Console() *virtio.Console  { return nil } // console is the PL011
-func (m *ARM64Machine) IsShutdownRequested() bool { return m.shutdownRequested }
-func (m *ARM64Machine) GetShutdownExitCode() int  { return m.shutdownExitCode }
-func (m *ARM64Machine) Run(maxCycles int) error   { return m.cpu.Run(maxCycles) }
+func (m *ARM64Machine) Close()                     { m.memMap.Close() }
+func (m *ARM64Machine) Console() *virtio.Console   { return nil } // console is the PL011
+func (m *ARM64Machine) IsShutdownRequested() bool  { return m.shutdownRequested }
+func (m *ARM64Machine) GetShutdownExitCode() int   { return m.shutdownExitCode }
+func (m *ARM64Machine) Run(maxCycles int) error    { return m.cpu.Run(maxCycles) }
 
 // CheckTimer samples the generic-timer outputs into the GIC's timer PPIs.
 func (m *ARM64Machine) CheckTimer() {
@@ -131,7 +132,18 @@ func (m *ARM64Machine) CheckTimer() {
 // PollDevices pumps host console input into the UART.
 func (m *ARM64Machine) PollDevices() {
 	m.uart.PollInput()
+	if blkqDebugARM {
+		blkqPollARM++
+		if blkqPollARM%2000 == 0 {
+			for _, d := range m.virtioDevices {
+				d.DebugQueueState("arm")
+			}
+		}
+	}
 }
+
+var blkqDebugARM = os.Getenv("TINYEMU_BLKQ_DEBUG") == "1"
+var blkqPollARM int
 
 // GetSleepDuration: when parked in WFI, fast-forward the system counter to the
 // next timer deadline (skipping idle time) so the timer fires immediately;
@@ -174,10 +186,10 @@ func (m *ARM64Machine) AddVirtIODevice(dev *virtio.Device) (int, error) {
 // writes the result back to x0.
 func (m *ARM64Machine) psci(c *arm64cpu.CPU) bool {
 	const (
-		psciVersion    = 0x84000000
-		psciSystemOff  = 0x84000008
-		psciSystemRst  = 0x84000009
-		psciMigrInfo   = 0x84000006
+		psciVersion      = 0x84000000
+		psciSystemOff    = 0x84000008
+		psciSystemRst    = 0x84000009
+		psciMigrInfo     = 0x84000006
 		psciNotSupported = 0xFFFFFFFF
 	)
 	switch c.X[0] & 0xFFFFFFFF {
