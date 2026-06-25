@@ -32,6 +32,29 @@ var wfiDebug = os.Getenv("TINYEMU_ARM64_WFI") == "1"
 var excDebug = os.Getenv("TINYEMU_ARM64_EXC") == "1"
 var excLogCount int
 
+// svcDebug, when TINYEMU_ARM64_SVC=1, logs every syscall (svc from EL0) with its
+// number (x8) + first args — the last one before a wedge is what userspace (e.g.
+// FreeBSD init) is blocked in.
+var svcDebug = os.Getenv("TINYEMU_ARM64_SVC") == "1"
+
+// guestCStr reads a NUL-terminated string from the guest VA (current translation
+// regime), for tracing syscall path arguments. Best-effort: stops at a fault.
+func (c *CPU) guestCStr(va uint64) string {
+	var b []byte
+	for i := 0; i < 128; i++ {
+		pa, ab := c.translate(va+uint64(i), accessRead)
+		if ab != nil {
+			break
+		}
+		ch, err := c.Mem.Read8(pa)
+		if err != nil || ch == 0 {
+			break
+		}
+		b = append(b, ch)
+	}
+	return string(b)
+}
+
 // watchPA (TINYEMU_ARM64_WATCHPA=pa, hex) logs every write whose translated
 // physical address lands in the same 8-byte slot — to see who writes a PTE.
 var watchPA = func() uint64 {

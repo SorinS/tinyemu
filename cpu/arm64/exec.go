@@ -651,6 +651,16 @@ func (c *CPU) execException(w uint32, next *uint64) error {
 	case "hlt":
 		esr, elr = esrBRK(imm), c.PC
 	}
+	if svcDebug && c.ExcType == "svc" && c.EL == 0 {
+		extra := ""
+		switch c.X[8] {
+		case 5: // open(path, flags, mode)
+			extra = " path=" + c.guestCStr(c.X[0])
+		case 499, 552, 540, 513: // openat / fstatat / faccessat / linkat (fd, path, ...)
+			extra = " path=" + c.guestCStr(c.X[1])
+		}
+		dbgf("[svc] num=%d x0=%#x x1=%#x x2=%#x pc=%#x%s\n", c.X[8], c.X[0], c.X[1], c.X[2], c.PC, extra)
+	}
 	c.takeException(excSync, esr, 0, elr, false)
 	*next = c.PC
 	return nil
