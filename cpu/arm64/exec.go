@@ -56,6 +56,21 @@ func (c *CPU) handleAbort(ab *abort, data bool) error {
 // exec decodes and executes one instruction word. next points at the default
 // fall-through address (PC+4); branches overwrite it.
 func (c *CPU) exec(w uint32, next *uint64) error {
+	// CPACR_EL1.FPEN: an Advanced SIMD/FP instruction whose access is disabled
+	// for the current EL traps as an "Access to SVE/SIMD/FP" synchronous
+	// exception (ESR.EC=0x07). seL4's lazy-FPU switching relies on this (it
+	// disables FP per-thread and enables it on the trap); sel4test FPU0004
+	// disables FP, runs an FP op, and expects the resulting fault.
+	// Cheap CPACR check first so isFPSIMD (a multi-field decode) only runs in the
+	// rare case where FP access is actually disabled.
+	if c.fpTrapped() && isFPSIMD(w) {
+		if c.VBAR == 0 {
+			return fmt.Errorf("arm64: FP/SIMD trapped by CPACR.FPEN at %#x (no VBAR)", c.PC)
+		}
+		c.takeException(excSync, 0x07<<26|1<<25, 0, c.PC, false) // EC=0x07, IL=1
+		*next = c.PC
+		return nil
+	}
 	switch {
 	case (w>>23)&0x3F == 0x22:
 		return c.execAddSubImm(w)
@@ -150,6 +165,39 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 // undefSeen dedupes the "delivered UNDEF" log to once per encoding (the CPU runs
 // on a single goroutine, so no lock is needed).
 var undefSeen = map[uint32]bool{}
+
+// fpTrapped reports whether an Advanced SIMD/FP instruction is trapped at the
+// current EL by CPACR_EL1.FPEN (bits 21:20): EL0 traps unless FPEN==0b11; EL1
+// traps when FPEN is 0b00 or 0b10.
+func (c *CPU) fpTrapped() bool {
+	fpen := (c.CPACR >> 20) & 0b11
+	if c.EL == 0 {
+		return fpen != fpenNoTrap
+	}
+	return fpen == 0b00 || fpen == 0b10
+}
+
+// isFPSIMD reports whether w is an Advanced SIMD or scalar-FP instruction — the
+// encodings that read/write the V registers and so are gated by CPACR.FPEN.
+// Mirrors the FP/SIMD cases in exec's dispatch.
+func isFPSIMD(w uint32) bool {
+	b := w >> 24 // bits[31:24] — most groups key on this
+	switch {
+	case b&0x3F == 0x3C || b&0x3F == 0x3D: // FP/SIMD load/store
+		return true
+	case b&0x5F == 0x1E: // scalar FP data-processing
+		return true
+	case b&0x9F == 0x0E: // Advanced SIMD (vector)
+		return true
+	case b&0xBF == 0x0C: // Advanced SIMD load/store multiple structures
+		return true
+	case b&0x9F == 0x0F: // Advanced SIMD by-element / shift / movi
+		return true
+	case (w>>25)&0x1F == 0x16: // FP/SIMD load/store PAIR — decoded on bits[29:25]
+		return true
+	}
+	return false
+}
 
 func is64bit(w uint32) bool { return (w>>31)&1 == 1 }
 

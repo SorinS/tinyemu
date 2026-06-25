@@ -55,6 +55,7 @@ type CPU struct {
 	TTBR1 uint64
 	TCR   uint64
 	MAIR  uint64
+	CPACR uint64 // CPACR_EL1: FPEN (bits 21:20) gates Advanced SIMD/FP access
 
 	// Fault state from the last translation abort (carries type + faulting
 	// address so VBAR_EL1 exception delivery can slot in later).
@@ -106,7 +107,7 @@ type CPU struct {
 
 // New creates a CPU over the given physical memory, in the EL1h reset state.
 func New(m *mem.PhysMemoryMap) *CPU {
-	return &CPU{Mem: m, Sys: map[uint32]uint64{}, EL: 1, SPSel: 1, DAIF: 0xF}
+	return &CPU{Mem: m, Sys: map[uint32]uint64{}, EL: 1, SPSel: 1, DAIF: 0xF, CPACR: fpenNoTrap << 20}
 }
 
 // Reset clears architectural state.
@@ -117,6 +118,7 @@ func (c *CPU) Reset() {
 	c.Sys = map[uint32]uint64{}
 	c.Halted, c.ExcType, c.ExcImm = false, "", 0
 	c.SCTLR, c.TTBR0, c.TTBR1, c.TCR, c.MAIR = 0, 0, 0, 0, 0
+	c.CPACR = fpenNoTrap << 20 // FPEN=0b11: FP/SIMD enabled until the guest disables it
 	c.FAR, c.FaultKind = 0, ""
 	c.flushTLB()
 	// Reset enters EL1h (SPSel=1) with interrupts masked — the state a bare
@@ -133,10 +135,15 @@ const (
 	a64NZCVField  uint32 = 1<<19 | 3<<16 | 4<<12 | 2<<8        // NZCV   S3_3_C4_C2_0
 	a64DAIFField  uint32 = 1<<19 | 3<<16 | 4<<12 | 2<<8 | 1<<5 // DAIF   S3_3_C4_C2_1
 	a64SCTLRField uint32 = 1<<19 | 1<<12                       // SCTLR_EL1 S3_0_C1_C0_0
-	a64TTBR0Field uint32 = 1<<19 | 2<<12                       // TTBR0_EL1 S3_0_C2_C0_0
-	a64TTBR1Field uint32 = 1<<19 | 2<<12 | 1<<5                // TTBR1_EL1 S3_0_C2_C0_1
-	a64TCRField   uint32 = 1<<19 | 2<<12 | 2<<5                // TCR_EL1   S3_0_C2_C0_2
-	a64MAIRField  uint32 = 1<<19 | 10<<12 | 2<<8               // MAIR_EL1  S3_0_C10_C2_0
+	a64CPACRField uint32 = 1<<19 | 1<<12 | 2<<5                // CPACR_EL1 S3_0_C1_C0_2
+
+	// CPACR_EL1.FPEN (bits 21:20): 0b00/0b10 trap FP at EL0+EL1, 0b01 traps EL0
+	// only, 0b11 never traps.
+	fpenNoTrap    uint64 = 0b11
+	a64TTBR0Field uint32 = 1<<19 | 2<<12         // TTBR0_EL1 S3_0_C2_C0_0
+	a64TTBR1Field uint32 = 1<<19 | 2<<12 | 1<<5  // TTBR1_EL1 S3_0_C2_C0_1
+	a64TCRField   uint32 = 1<<19 | 2<<12 | 2<<5  // TCR_EL1   S3_0_C2_C0_2
+	a64MAIRField  uint32 = 1<<19 | 10<<12 | 2<<8 // MAIR_EL1  S3_0_C10_C2_0
 
 	a64SPSRField  uint32 = 1<<19 | 4<<12               // SPSR_EL1  S3_0_C4_C0_0
 	a64ELRField   uint32 = 1<<19 | 4<<12 | 1<<5        // ELR_EL1   S3_0_C4_C0_1
@@ -161,6 +168,8 @@ func (c *CPU) readSysreg(field uint32) uint64 {
 		return uint64(c.DAIF) << 6 // PSTATE.DAIF lives in bits 9:6
 	case a64SCTLRField:
 		return c.SCTLR
+	case a64CPACRField:
+		return c.CPACR
 	case a64TTBR0Field:
 		return c.TTBR0
 	case a64TTBR1Field:
@@ -211,6 +220,8 @@ func (c *CPU) writeSysreg(field uint32, v uint64) {
 			c.flushTLB()
 		}
 		c.SCTLR = v
+	case a64CPACRField:
+		c.CPACR = v
 	case a64TTBR0Field:
 		c.TTBR0 = v
 		c.flushTLB() // an address-space change; we don't tag TLB entries by ASID
