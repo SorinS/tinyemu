@@ -52,12 +52,16 @@ const (
 	tlbWays = 8
 )
 
-// tlbEntry caches one 4 KiB VA→PA translation plus whether the page is writable.
+// tlbEntry caches one 4 KiB VA→PA translation plus the permissions needed to
+// gate later accesses without re-walking: writable (AP[2]==0) and the
+// execute-never bits UXN (bit 54, EL0) / PXN (bit 53, EL1).
 type tlbEntry struct {
 	valid    bool
 	vpn      uint64
 	ppn      uint64
 	writable bool
+	uxn      bool
+	pxn      bool
 }
 
 // flushTLB invalidates every cached translation.
@@ -108,29 +112,45 @@ func (c *CPU) translate(vaddr uint64, access accessType) (uint64, *abort) {
 		return vaddr, nil
 	}
 	write := access == accessWrite
+	exec := access == accessExec
 	vpn := vaddr >> 12
 	if e := c.tlbLookup(vpn); e != nil {
 		if write && !e.writable {
 			return 0, c.fault("permission", 3, vaddr, write)
 		}
+		if exec && c.execNever(e.uxn, e.pxn) {
+			return 0, c.fault("permission", 3, vaddr, false)
+		}
 		return e.ppn<<12 | (vaddr & 0xFFF), nil
 	}
-	pa, writable, ab := c.walk(vaddr, write)
+	pa, writable, uxn, pxn, ab := c.walk(vaddr, write)
 	if ab != nil {
 		return 0, ab
 	}
-	c.tlbInsert(tlbEntry{valid: true, vpn: vpn, ppn: pa >> 12, writable: writable})
+	c.tlbInsert(tlbEntry{valid: true, vpn: vpn, ppn: pa >> 12, writable: writable, uxn: uxn, pxn: pxn})
 	if write && !writable {
 		return 0, c.fault("permission", 3, vaddr, write)
 	}
+	if exec && c.execNever(uxn, pxn) {
+		return 0, c.fault("permission", 3, vaddr, false)
+	}
 	return pa, nil
+}
+
+// execNever reports whether an instruction fetch at the current EL hits an
+// execute-never page: UXN governs EL0, PXN governs EL1 (stage-1 EL1&0 regime).
+func (c *CPU) execNever(uxn, pxn bool) bool {
+	if c.EL == 0 {
+		return uxn
+	}
+	return pxn
 }
 
 // walk performs the stage-1 table walk and the access-flag check, returning the
 // physical address and whether the page is writable (AP[2]==0). Write-permission
 // enforcement is left to translate so a cached entry can serve both reads and
 // writes.
-func (c *CPU) walk(vaddr uint64, write bool) (uint64, bool, *abort) {
+func (c *CPU) walk(vaddr uint64, write bool) (pa uint64, writable, uxn, pxn bool, ab *abort) {
 	// Pick the translation base by the top VA bit: the low half uses TTBR0,
 	// the high half TTBR1. The bits above the configured region must be all-0
 	// (TTBR0) or all-1 (TTBR1), else it's an address-size fault (the VA hole).
@@ -138,13 +158,13 @@ func (c *CPU) walk(vaddr uint64, write bool) (uint64, bool, *abort) {
 	if vaddr&(1<<63) == 0 {
 		tsz = c.TCR & 0x3F
 		if vaddr>>(64-tsz) != 0 {
-			return 0, false, c.fault("address-size", 0, vaddr, write)
+			return 0, false, false, false, c.fault("address-size", 0, vaddr, write)
 		}
 		base = c.TTBR0 & descAddrMask
 	} else {
 		tsz = (c.TCR >> 16) & 0x3F
 		if ^vaddr>>(64-tsz) != 0 {
-			return 0, false, c.fault("address-size", 0, vaddr, write)
+			return 0, false, false, false, c.fault("address-size", 0, vaddr, write)
 		}
 		base = c.TTBR1 & descAddrMask
 	}
@@ -157,7 +177,7 @@ func (c *CPU) walk(vaddr uint64, write bool) (uint64, bool, *abort) {
 		descAddr := table + idx*8
 		desc, err := c.Mem.Read64(descAddr)
 		if err != nil || desc&1 == 0 { // unreadable table or invalid descriptor
-			return 0, false, c.fault("translation", level, vaddr, write)
+			return 0, false, false, false, c.fault("translation", level, vaddr, write)
 		}
 		if desc&2 != 0 { // bit1 set
 			if level == 3 { // 0b11 at L3 = page (leaf)
@@ -174,7 +194,7 @@ func (c *CPU) walk(vaddr uint64, write bool) (uint64, bool, *abort) {
 			pa := (desc & blockMask) | (vaddr & ((uint64(1) << shift) - 1))
 			return c.leaf(pa, desc, descAddr, level, vaddr, write)
 		}
-		return 0, false, c.fault("translation", level, vaddr, write)
+		return 0, false, false, false, c.fault("translation", level, vaddr, write)
 	}
 }
 
@@ -184,11 +204,12 @@ func (c *CPU) walk(vaddr uint64, write bool) (uint64, bool, *abort) {
 // does), rather than faulting. edk2 relies on this; Linux pre-sets AF so its
 // behaviour is unchanged. AP[1]/bit 6 (EL0 access) and UXN/PXN are decoded once
 // EL0 execution is modelled.
-func (c *CPU) leaf(pa, desc, descAddr uint64, level int, vaddr uint64, write bool) (uint64, bool, *abort) {
+func (c *CPU) leaf(pa, desc, descAddr uint64, level int, vaddr uint64, write bool) (uint64, bool, bool, bool, *abort) {
 	if desc&(1<<10) == 0 { // AF clear: set it (hardware access-flag management)
 		_ = c.Mem.Write64(descAddr, desc|(1<<10))
 	}
-	return pa, desc&(1<<7) == 0, nil
+	// AP[2]=bit7 → writable; UXN=bit54 (EL0 execute-never); PXN=bit53 (EL1).
+	return pa, desc&(1<<7) == 0, desc&(1<<54) != 0, desc&(1<<53) != 0, nil
 }
 
 // atS1E1 implements the AT S1E1R/S1E1W/S1E0R/S1E0W instructions: it runs the
