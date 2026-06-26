@@ -45,6 +45,7 @@ Grouped by area; within a group, roughly alphabetical.
 | SATP | Supervisor Address Translation & Protection | RISC-V page-table root CSR |
 | NX | No-eXecute | non-executable page bit |
 | KPTI | Kernel Page-Table Isolation | Meltdown mitigation (disabled via `mitigations=off`) |
+| ASLR | Address Space Layout Randomization | randomizes load/stack/mmap bases; disable for deterministic & differential traces (FreeBSD loader: `set kern.elf64.aslr.enable=0`) |
 
 ## Interrupts / Exceptions
 
@@ -182,6 +183,7 @@ Grouped by area; within a group, roughly alphabetical.
 | OpenRC | Alpine init system | |
 | GEOM | FreeBSD storage framework | tastes/labels disks |
 | callout | FreeBSD timer-wheel deferred-work mechanism | driven by the timer tick |
+| SEGV | Segmentation Violation (SIGSEGV / signal 11) | process killed for a bad memory access — e.g. dereferencing a corrupted pointer (the FreeBSD arm64 `sh` crash) |
 
 ---
 

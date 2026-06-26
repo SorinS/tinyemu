@@ -11,6 +11,7 @@
       "WebSearch",
       "WebFetch(domain:bellard.org)",
 
+      "Bash(go:*)",
       "Bash(go build:*)",
       "Bash(go test:*)",
       "Bash(go run:*)",
@@ -19,7 +20,16 @@
       "Bash(go mod:*)",
       "Bash(go tool:*)",
 
+      "Bash(xxd:*)",
+      "Bash(objdump:*)",
+      "Bash(llvm-objdump:*)",
+      "Bash(llvm-mc:*)",
+      "Bash(readelf:*)",
+      "Bash(nm:*)",
+      "Bash(otool:*)",
+
       "Bash(grep:*)",
+      "Bash(/usr/bin/grep:*)",
       "Bash(find:*)",
       "Bash(ls:*)",
       "Bash(cat:*)",
