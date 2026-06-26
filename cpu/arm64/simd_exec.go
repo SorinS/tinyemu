@@ -344,6 +344,8 @@ func (c *CPU) execSIMD2RegMisc(w uint32) error {
 		return c.execSIMDCvtToFP(w, u == 0)
 	case opcode == 0x1B: // fcvtzs (U=0) / fcvtzu (U=1) — FP -> int, toward zero
 		return c.execSIMDCvtToInt(w, u == 0)
+	case opcode == 0x12 || opcode == 0x14: // extract-narrow: xtn/xtn2, sqxtn, uqxtn, sqxtun
+		return c.execSIMDNarrow(w)
 	}
 
 	// Compare each lane against zero, producing an all-ones / all-zeros mask.
@@ -378,6 +380,89 @@ func (c *CPU) execSIMD2RegMisc(w uint32) error {
 		return nil
 	}
 	return fmt.Errorf("arm64: unsupported two-reg-misc opcode %08x at %#x", w, c.PC)
+}
+
+// execSIMDNarrow implements the extract-narrow family: each source element
+// (width 16<<size in Vn) is narrowed to half width (8<<size) in Vd, optionally
+// with saturation — XTN (truncate), SQXTN (signed→signed sat), UQXTN
+// (unsigned→unsigned sat), SQXTUN (signed→unsigned sat). Q=0 (XTN) writes the
+// low 64 bits of Vd and zeros the top; Q=1 (XTN2) fills the upper 64, keeping
+// the lower. The full Vn is always read (size encodes the source element width).
+func (c *CPU) execSIMDNarrow(w uint32) error {
+	q := (w >> 30) & 1
+	u := (w >> 29) & 1
+	size := uint((w >> 22) & 3)
+	opcode := (w >> 12) & 0x1F
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	if size > 2 {
+		return fmt.Errorf("arm64: bad narrow size %08x at %#x", w, c.PC)
+	}
+	vn := c.Vreg[rn]
+	nelem := uint(8) >> size // 8/4/2 elements
+	srcW := uint(16) << size // source element width (16/32/64)
+	dstW := uint(8) << size  // dest element width (8/16/32)
+	dstMask := (uint64(1) << dstW) - 1
+	sMax := int64(dstMask >> 1) // dstW-bit signed range
+	sMin := -sMax - 1
+	sext := func(v uint64) int64 { // sign-extend the low srcW bits
+		if srcW >= 64 {
+			return int64(v)
+		}
+		s := 64 - srcW
+		return int64(v<<s) >> s
+	}
+	srcMask := ^uint64(0)
+	if srcW < 64 {
+		srcMask = (uint64(1) << srcW) - 1
+	}
+
+	var lo uint64
+	for i := uint(0); i < nelem; i++ {
+		bitpos := i * srcW
+		var raw uint64
+		if bitpos < 64 {
+			raw = vn[0] >> bitpos
+		} else {
+			raw = vn[1] >> (bitpos - 64)
+		}
+		var dv uint64
+		switch {
+		case opcode == 0x12 && u == 0: // XTN: plain truncate
+			dv = raw & dstMask
+		case opcode == 0x14 && u == 0: // SQXTN: signed saturate
+			sv := sext(raw)
+			if sv > sMax {
+				sv = sMax
+			} else if sv < sMin {
+				sv = sMin
+			}
+			dv = uint64(sv) & dstMask
+		case opcode == 0x14 && u == 1: // UQXTN: unsigned saturate
+			uv := raw & srcMask
+			if uv > dstMask {
+				uv = dstMask
+			}
+			dv = uv
+		case opcode == 0x12 && u == 1: // SQXTUN: signed src, unsigned saturating dst
+			sv := sext(raw)
+			if sv < 0 {
+				sv = 0
+			} else if uint64(sv) > dstMask {
+				sv = int64(dstMask)
+			}
+			dv = uint64(sv) & dstMask
+		default:
+			return fmt.Errorf("arm64: unsupported narrow opcode %08x at %#x", w, c.PC)
+		}
+		lo |= dv << (i * dstW)
+	}
+	if q == 1 { // xtn2 etc.: fill the upper half, keep the lower
+		c.Vreg[rd] = [2]uint64{c.Vreg[rd][0], lo}
+	} else {
+		c.Vreg[rd] = [2]uint64{lo, 0}
+	}
+	return nil
 }
 
 // execSIMDCvtToFP converts each integer lane to FP (scvtf/ucvtf); bit22 selects
