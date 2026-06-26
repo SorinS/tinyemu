@@ -49,6 +49,24 @@ func (c *CPU) handleAbort(ab *abort, data bool) error {
 		fmt.Fprintf(os.Stderr, "[arm64-fault] #%d far=%#x pc=%#x insn=%08x kind=%s data=%v write=%v el=%d\n",
 			faultLogCount, ab.far, c.PC, w, ab.kind, data, ab.write, c.EL)
 	}
+	if faultDebug && c.EL == 0 && ab.far < 0x1000 {
+		// Near-null fault from userspace = a corrupted pointer. Dump the GPRs
+		// (plus SP and TPIDR_EL0, the TLS base) to see the corruption pattern.
+		for i := 0; i < 31; i++ {
+			fmt.Fprintf(os.Stderr, "[segv-regs] x%d=%#x\n", i, c.X[i])
+		}
+		fmt.Fprintf(os.Stderr, "[segv-regs] sp=%#x tpidr_el0=%#x pc=%#x far=%#x\n",
+			c.SP, c.Sys[1<<19|3<<16|13<<12|2<<5], c.PC, ab.far)
+		if itrace {
+			n := len(itraceRing)
+			for k := 0; k < n; k++ {
+				e := itraceRing[(itraceIdx+k)%n]
+				if e.pc != 0 {
+					fmt.Fprintf(os.Stderr, "[itrace] %#x: %08x\n", e.pc, e.w)
+				}
+			}
+		}
+	}
 	c.takeException(excSync, esrAbort(ab, data, c.EL), ab.far, c.PC, true)
 	return nil
 }
@@ -56,6 +74,10 @@ func (c *CPU) handleAbort(ab *abort, data bool) error {
 // exec decodes and executes one instruction word. next points at the default
 // fall-through address (PC+4); branches overwrite it.
 func (c *CPU) exec(w uint32, next *uint64) error {
+	if itrace && c.EL == 0 {
+		itraceRing[itraceIdx%len(itraceRing)] = itraceEntry{c.PC, w}
+		itraceIdx++
+	}
 	// CPACR_EL1.FPEN: an Advanced SIMD/FP instruction whose access is disabled
 	// for the current EL traps as an "Access to SVE/SIMD/FP" synchronous
 	// exception (ESR.EC=0x07). seL4's lazy-FPU switching relies on this (it
@@ -170,6 +192,9 @@ var undefSeen = map[uint32]bool{}
 // current EL by CPACR_EL1.FPEN (bits 21:20): EL0 traps unless FPEN==0b11; EL1
 // traps when FPEN is 0b00 or 0b10.
 func (c *CPU) fpTrapped() bool {
+	if fpTrapOff {
+		return false
+	}
 	fpen := (c.CPACR >> 20) & 0b11
 	if c.EL == 0 {
 		return fpen != fpenNoTrap

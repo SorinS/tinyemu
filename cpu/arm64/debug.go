@@ -37,6 +37,24 @@ var excLogCount int
 // FreeBSD init) is blocked in.
 var svcDebug = os.Getenv("TINYEMU_ARM64_SVC") == "1"
 
+// fpTrapOff, when TINYEMU_ARM64_FPTRAP_OFF=1, disables CPACR.FPEN trapping (FP
+// always allowed) — a bisection toggle to test whether FP-access trapping is
+// behind a userspace crash.
+var fpTrapOff = os.Getenv("TINYEMU_ARM64_FPTRAP_OFF") == "1"
+
+// itrace (TINYEMU_ARM64_ITRACE=1) keeps a ring of the last EL0 instructions so a
+// near-null userspace SEGV can be traced back to the op that corrupted a
+// pointer (the faulting load is only the symptom).
+var itrace = os.Getenv("TINYEMU_ARM64_ITRACE") == "1"
+
+type itraceEntry struct {
+	pc uint64
+	w  uint32
+}
+
+var itraceRing [96]itraceEntry
+var itraceIdx int
+
 // guestCStr reads a NUL-terminated string from the guest VA (current translation
 // regime), for tracing syscall path arguments. Best-effort: stops at a fault.
 func (c *CPU) guestCStr(va uint64) string {
