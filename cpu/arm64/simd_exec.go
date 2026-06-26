@@ -1046,6 +1046,83 @@ func (c *CPU) execSIMDLdSt1(w uint32) error {
 	return nil
 }
 
+// execSIMDLdStSingle implements the Advanced SIMD load/store single-structure
+// group (0x0D): LD1/ST1..LD4/ST4 of a single lane, plus the LDxR replicating
+// loads. The element size + lane index come from opcode[2:1]:size:S:Q; selem
+// (1-4 registers) from opcode[0]:R. Optional post-index writeback (Rm or the
+// transfer size).
+func (c *CPU) execSIMDLdStSingle(w uint32) error {
+	q := (w >> 30) & 1
+	post := (w>>23)&1 == 1
+	load := (w>>22)&1 == 1
+	r := (w >> 21) & 1
+	rm := (w >> 16) & 0x1F
+	opcode := (w >> 13) & 7
+	s := (w >> 12) & 1
+	size := (w >> 10) & 3
+	rn := (w >> 5) & 0x1F
+	rt := w & 0x1F
+
+	var esize, index uint32
+	replicate := false
+	switch opcode >> 1 {
+	case 0b00: // B
+		esize, index = 8, q<<3|s<<2|size
+	case 0b01: // H
+		esize, index = 16, q<<2|s<<1|(size>>1)
+	case 0b10: // S (size[0]==0) or D (size[0]==1)
+		if size&1 == 0 {
+			esize, index = 32, q<<1|s
+		} else {
+			esize, index = 64, q
+		}
+	default: // 0b11: replicate (LDxR)
+		replicate, esize = true, 8<<size
+	}
+	selem := uint32((opcode&1)<<1|r) + 1
+	bytes := int(esize / 8)
+	addr := c.readX(rn, true, true) // base, SP-capable
+
+	for i := uint32(0); i < selem; i++ {
+		reg := (rt + i) % 32
+		switch {
+		case replicate:
+			val, err := c.readMem(addr, bytes)
+			if err != nil {
+				return err
+			}
+			var v [2]uint64
+			for j := 0; j < int(64<<q)/int(esize); j++ {
+				setElem(&v, uint(esize), j, val)
+			}
+			c.Vreg[reg] = v
+		case load:
+			val, err := c.readMem(addr, bytes)
+			if err != nil {
+				return err
+			}
+			v := c.Vreg[reg]
+			setElem(&v, uint(esize), int(index), val)
+			c.Vreg[reg] = v
+		default: // store one lane
+			if err := c.writeMem(addr, getElem(c.Vreg[reg], uint(esize), int(index)), bytes); err != nil {
+				return err
+			}
+		}
+		addr += uint64(bytes)
+	}
+	if post {
+		var incr uint64
+		if rm == 0x1F {
+			incr = uint64(selem) * uint64(bytes)
+		} else {
+			incr = c.readX(rm, true, false)
+		}
+		c.writeX(rn, true, true, c.readX(rn, true, true)+incr)
+	}
+	return nil
+}
+
 // execSIMDShiftImm executes a vector shift-by-immediate (shl/sshr/ushr/ssra/
 // usra). The element size and shift amount are folded into immh:immb. (immh==0
 // is the modified-immediate group — movi/etc — which is not yet implemented.)

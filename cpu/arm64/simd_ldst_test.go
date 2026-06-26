@@ -1,6 +1,50 @@
 package arm64
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sorins/tinyemu-go/mem"
+)
+
+// TestSIMDLdStSingle covers the load/store single-structure group (0x0D):
+// per-lane ST1/LD1 and the replicating LD1R. `st1 {v0.s}[1],[x21]` (0x0d0092a0)
+// was a gap hit by FreeBSD's sh running commands. Raw opcodes (the assembler
+// doesn't encode the single-lane forms yet).
+func TestSIMDLdStSingle(t *testing.T) {
+	mm := mem.NewPhysMemoryMap()
+	t.Cleanup(mm.Close)
+	if _, err := mm.RegisterRAM(0, 1<<20, 0); err != nil {
+		t.Fatal(err)
+	}
+	c := New(mm)
+	c.X[21] = 0x2000
+	c.Vreg[0] = [2]uint64{0x1122334455667788, 0xAABBCCDDEEFF0011}
+
+	// st1 {v0.s}[1], [x21] : store S-lane 1 (bits[63:32] of v0[0] = 0x11223344)
+	if err := c.execSIMDLdStSingle(0x0d0092a0); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := c.readMem(0x2000, 4); got != 0x11223344 {
+		t.Errorf("st1.s[1]: stored %#x, want 0x11223344", got)
+	}
+
+	// ld1 {v1.s}[0], [x21] : load it into v1 lane 0, keeping the rest
+	c.Vreg[1] = [2]uint64{0x9999999999999999, 0x8888888888888888}
+	if err := c.execSIMDLdStSingle(0x0d4082a1); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Vreg[1]; got != ([2]uint64{0x9999999911223344, 0x8888888888888888}) {
+		t.Errorf("ld1.s[0]: got %#016x", got)
+	}
+
+	// ld1r {v2.4s}, [x21] : load 0x11223344, replicate to all 4 S lanes
+	if err := c.execSIMDLdStSingle(0x4d40caa2); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Vreg[2]; got != ([2]uint64{0x1122334411223344, 0x1122334411223344}) {
+		t.Errorf("ld1r.4s: got %#016x", got)
+	}
+}
 
 // TestSIMDLdSt1RoundTrip stores vector registers to RAM with ST1 and loads them
 // back with LD1, across register counts and both element widths — the half the

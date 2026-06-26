@@ -128,6 +128,8 @@ func (c *CPU) exec(w uint32, next *uint64) error {
 		return c.execLoadLiteral(w)
 	case (w>>24)&0x3F == 0x38 || (w>>24)&0x3F == 0x39:
 		return c.execLoadStore(w)
+	case (w>>24)&0xBF == 0x0D: // Advanced SIMD load/store single structure
+		return c.execSIMDLdStSingle(w)
 	case (w>>24)&0x3F == 0x3C || (w>>24)&0x3F == 0x3D: // FP load/store (V bit set)
 		return c.execFPLoadStore(w)
 	case (w>>24)&0x5F == 0x1E: // scalar FP data-processing (excludes Adv-SIMD-scalar 0x5E/0x7E)
@@ -214,7 +216,7 @@ func isFPSIMD(w uint32) bool {
 		return true
 	case b&0x9F == 0x0E: // Advanced SIMD (vector)
 		return true
-	case b&0xBF == 0x0C: // Advanced SIMD load/store multiple structures
+	case b&0xBE == 0x0C: // Advanced SIMD load/store multiple (0x0C) / single (0x0D)
 		return true
 	case b&0x9F == 0x0F: // Advanced SIMD by-element / shift / movi
 		return true
