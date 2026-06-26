@@ -346,6 +346,8 @@ func (c *CPU) execSIMD2RegMisc(w uint32) error {
 		return c.execSIMDCvtToInt(w, u == 0)
 	case opcode == 0x12 || opcode == 0x14: // extract-narrow: xtn/xtn2, sqxtn, uqxtn, sqxtun
 		return c.execSIMDNarrow(w)
+	case opcode == 0x0F: // vector FP fabs (U=0) / fneg (U=1) — clear/flip the sign bit
+		return c.execSIMDFPAbsNeg(w, u == 1)
 	}
 
 	// Compare each lane against zero, producing an all-ones / all-zeros mask.
@@ -380,6 +382,44 @@ func (c *CPU) execSIMD2RegMisc(w uint32) error {
 		return nil
 	}
 	return fmt.Errorf("arm64: unsupported two-reg-misc opcode %08x at %#x", w, c.PC)
+}
+
+// execSIMDFPAbsNeg implements the vector FP fabs/fneg (two-reg-misc opcode 0x0F):
+// per element, clear (fabs) or flip (fneg) the sign bit. bit22 selects single
+// (32-bit) vs double (64-bit); Q selects the 64- vs 128-bit vector.
+func (c *CPU) execSIMDFPAbsNeg(w uint32, neg bool) error {
+	q := (w >> 30) & 1
+	esize := uint(32)
+	if (w>>22)&1 == 1 { // sz: double
+		esize = 64
+	}
+	rn := (w >> 5) & 0x1F
+	rd := w & 0x1F
+	signbit := uint64(1) << (esize - 1)
+	mask := uint64(1)<<esize - 1
+	if esize == 64 {
+		mask = ^uint64(0)
+	}
+	vn := c.Vreg[rn]
+	var res [2]uint64
+	for word := 0; word < 2; word++ {
+		var out uint64
+		for off := uint(0); off < 64; off += esize {
+			e := (vn[word] >> off) & mask
+			if neg {
+				e ^= signbit
+			} else {
+				e &^= signbit
+			}
+			out |= (e & mask) << off
+		}
+		res[word] = out
+	}
+	if q == 0 {
+		res[1] = 0
+	}
+	c.Vreg[rd] = res
+	return nil
 }
 
 // execSIMDNarrow implements the extract-narrow family: each source element
