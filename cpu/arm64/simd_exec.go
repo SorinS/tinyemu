@@ -761,7 +761,7 @@ func (c *CPU) execSIMD3(w uint32) error {
 		}
 		res = laneOp(vn, vm, size, q, func(a, b uint64) uint64 { return a * b })
 	case 0x03: // bitwise logicals — size field selects the op, whole-register
-		res = simdLogical(vn, vm, size, u)
+		res = simdLogical(vn, vm, c.Vreg[rd], size, u)
 	case 0x06: // cmgt (signed, U=0) / cmhi (unsigned, U=1)
 		if u == 0 {
 			res = laneCmp(vn, vm, size, q, func(a, b uint64, e uint) bool { return sextLane(a, e) > sextLane(b, e) })
@@ -1243,19 +1243,35 @@ func laneOp(vn, vm [2]uint64, size, q uint32, op func(a, b uint64) uint64) [2]ui
 
 // simdLogical applies the three-same bitwise logical selected by (size, U) over
 // the full 128 bits: and/bic/orr/orn (U=0, size 00/01/10/11) and eor (U=1).
-func simdLogical(vn, vm [2]uint64, size, u uint32) [2]uint64 {
-	var op func(a, b uint64) uint64
-	switch {
-	case u == 1: // eor (size=00)
-		op = func(a, b uint64) uint64 { return a ^ b }
-	case size == 0b00: // and
-		op = func(a, b uint64) uint64 { return a & b }
-	case size == 0b01: // bic
-		op = func(a, b uint64) uint64 { return a &^ b }
-	case size == 0b10: // orr
-		op = func(a, b uint64) uint64 { return a | b }
-	default: // size == 0b11: orn
-		op = func(a, b uint64) uint64 { return a | ^b }
+// simdLogical implements the three-same bitwise ops (whole 128-bit register; the
+// caller zeroes the upper 64 bits for a 64-bit/half-vector op). The size field
+// selects the op: U=0 -> and/bic/orr/orn, U=1 -> eor/bsl/bit/bif. BSL/BIT/BIF
+// are insert-selects that read the *original* Vd, so it is passed in. Operand
+// naming follows "OP Vd, Vn, Vm": a=Vn, b=Vm, d=Vd(original).
+func simdLogical(vn, vm, vd [2]uint64, size, u uint32) [2]uint64 {
+	var op func(a, b, d uint64) uint64
+	if u == 0 {
+		switch size {
+		case 0b00: // and
+			op = func(a, b, d uint64) uint64 { return a & b }
+		case 0b01: // bic
+			op = func(a, b, d uint64) uint64 { return a &^ b }
+		case 0b10: // orr
+			op = func(a, b, d uint64) uint64 { return a | b }
+		default: // 0b11: orn
+			op = func(a, b, d uint64) uint64 { return a | ^b }
+		}
+	} else {
+		switch size {
+		case 0b00: // eor
+			op = func(a, b, d uint64) uint64 { return a ^ b }
+		case 0b01: // bsl: keep Vn where Vd=1, take Vm where Vd=0
+			op = func(a, b, d uint64) uint64 { return (a & d) | (b &^ d) }
+		case 0b10: // bit: insert Vn where Vm=1, else keep Vd
+			op = func(a, b, d uint64) uint64 { return (a & b) | (d &^ b) }
+		default: // 0b11: bif: insert Vn where Vm=0, else keep Vd
+			op = func(a, b, d uint64) uint64 { return (a &^ b) | (d & b) }
+		}
 	}
-	return [2]uint64{op(vn[0], vm[0]), op(vn[1], vm[1])}
+	return [2]uint64{op(vn[0], vm[0], vd[0]), op(vn[1], vm[1], vd[1])}
 }
