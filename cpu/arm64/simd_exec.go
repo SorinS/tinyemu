@@ -1138,16 +1138,23 @@ func (c *CPU) execSIMDModImm(w uint32) error {
 
 	var esize uint
 	var elem uint64
+	var logical bool // cmode bit0 set (and not 8-bit/64-bit/FMOV): ORR/BIC immediate
 	switch {
 	case cmode == 0b1110 && op == 1: // movi .2d
 		esize, elem = 64, moviExpand2D(imm8)
 	case cmode == 0b1110: // movi byte
 		esize, elem = 8, uint64(imm8)
-	case cmode&0b1101 == 0b1000: // 16-bit (10x0)
+	case cmode&0b1101 == 0b1000: // 16-bit movi/mvni (10x0)
 		esize = 16
 		elem = uint64(imm8) << (uint(cmode>>1&1) * 8)
-	case cmode&0b1001 == 0b0000: // 32-bit (0xx0)
+	case cmode&0b1101 == 0b1001: // 16-bit orr/bic immediate (10x1)
+		esize, logical = 16, true
+		elem = uint64(imm8) << (uint(cmode>>1&1) * 8)
+	case cmode&0b1001 == 0b0000: // 32-bit movi/mvni (0xx0)
 		esize = 32
+		elem = uint64(imm8) << (uint(cmode>>1&3) * 8)
+	case cmode&0b1001 == 0b0001: // 32-bit orr/bic immediate (0xx1)
+		esize, logical = 32, true
 		elem = uint64(imm8) << (uint(cmode>>1&3) * 8)
 	default:
 		return fmt.Errorf("arm64: unsupported modified-immediate cmode %08x at %#x", w, c.PC)
@@ -1159,13 +1166,31 @@ func (c *CPU) execSIMDModImm(w uint32) error {
 	} else {
 		emask = (uint64(1) << esize) - 1
 	}
-	if op == 1 && cmode != 0b1110 { // MVNI inverts the element (not the .2d form)
-		elem = ^elem & emask
-	}
 
+	// Replicate the element across the 64-bit lane.
 	var word uint64
 	for off := uint(0); off < 64; off += esize {
 		word |= (elem & emask) << off
+	}
+
+	if logical { // ORR (op=0) / BIC (op=1) read-modify-write Vd
+		old := c.Vreg[rd]
+		apply := func(v uint64) uint64 {
+			if op == 0 {
+				return v | word
+			}
+			return v &^ word
+		}
+		res := [2]uint64{apply(old[0]), apply(old[1])}
+		if q == 0 { // 64-bit form zeroes the upper half
+			res[1] = 0
+		}
+		c.Vreg[rd] = res
+		return nil
+	}
+
+	if op == 1 && cmode != 0b1110 { // MVNI inverts the element (not the .2d form)
+		word = ^word
 	}
 	res := [2]uint64{word, word}
 	if q == 0 {
