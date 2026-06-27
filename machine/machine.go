@@ -31,6 +31,8 @@ const (
 	HTIFAddr    = 0x40008000
 	HTIFSize    = 0x00001000 // 4KB for HTIF registers
 	UART0Addr   = 0x10000000 // 16550 UART (QEMU "virt" layout; used by bare-metal RTOSes)
+	QEMUVirtPLICAddr = 0x0c000000 // PLIC alias for QEMU "virt"-layout guests (e.g. NuttX)
+	UART0IRQ         = 10         // QEMU "virt" PLIC source for UART0
 	VirtIOAddr  = 0x40010000
 	VirtIOSize  = 0x00001000 // Size per VirtIO device
 	VirtIOIRQ   = 1          // First VirtIO IRQ number
@@ -194,6 +196,14 @@ func New(cfg Config) (*Machine, error) {
 		return nil, fmt.Errorf("failed to register PLIC: %w", err)
 	}
 	m.plicIRQs = m.plic.CreateIRQs()
+	// Alias the PLIC at the QEMU "virt" address so guests built for that map
+	// (NuttX rv-virt) reach the same controller as the FDT-advertised one.
+	if _, err := m.plic.RegisterAt(m.memMap, QEMUVirtPLICAddr); err != nil {
+		return nil, fmt.Errorf("failed to alias PLIC at %#x: %w", uint64(QEMUVirtPLICAddr), err)
+	}
+	if os.Getenv("TINYEMU_PLIC_DEBUG") != "" {
+		devices.DebugPLIC = true
+	}
 
 	// Create and register HTIF
 	var htifConsole devices.Console
@@ -217,6 +227,9 @@ func New(cfg Config) (*Machine, error) {
 		if err := m.uart.Register(m.memMap, UART0Addr); err != nil {
 			return nil, fmt.Errorf("failed to register 16550 UART: %w", err)
 		}
+		// QEMU "virt" wires UART0 to PLIC source 10 (confirmed: NuttX sets PLIC
+		// enable bit 10). Connect it so RX interrupts reach the guest.
+		m.uart.SetIRQLine(m.plicIRQs[UART0IRQ])
 	}
 
 	// Create VirtIO console if console is provided
@@ -510,8 +523,15 @@ func (m *Machine) Close() {
 // Run executes the CPU for up to maxCycles cycles.
 // Reference: riscv_machine.c:1014-1018 (riscv_machine_interp)
 func (m *Machine) Run(maxCycles int) error {
+	if m.uart != nil {
+		m.uart.Poll()
+	}
 	return m.cpu.Run(maxCycles)
 }
+
+// UART returns the 16550 UART so the host stdin reader can push input into it
+// (mirrors the x86 COM1 path), or nil if no console is attached.
+func (m *Machine) UART() *devices.NS16550 { return m.uart }
 
 // GetSleepDuration calculates how long to sleep before the next event.
 // The delay parameter is the maximum sleep time in milliseconds.

@@ -944,6 +944,14 @@ func runEmulator(m machine.Board, console *ConsoleDevice, ethDevs []*virtio.Ethe
 			pcBoard.UART().Push(inputBuf[:n])
 		}
 
+		// For the riscv "virt" board, route stdin into the 16550 UART RX so a
+		// guest using it as its console (e.g. NuttX) receives input.
+		if rvm, ok := m.(*machine.Machine); ok && n > 0 {
+			if u := rvm.UART(); u != nil {
+				u.Push(inputBuf[:n])
+			}
+		}
+
 		// Feed console input to guest if available and guest is ready
 		if virtConsole := m.Console(); virtConsole != nil && virtConsole.CanWriteData() {
 			writeLen := virtConsole.GetWriteLen()

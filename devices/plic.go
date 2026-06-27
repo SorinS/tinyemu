@@ -203,6 +203,10 @@ func (p *PLIC) Write(opaque any, offset uint32, val uint32, sizeLog2 int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if DebugPLIC {
+		println("[PLIC] W off:", offset, "val:", val)
+	}
+
 	switch offset {
 	case PLICHartBase + PLICThresholdOffset:
 		// C code ignores threshold writes at PLIC_HART_BASE
