@@ -10,7 +10,13 @@
 # Usage:
 #   ./run_goboot_serve.sh                 # forward host 8080 -> guest :80
 #   HOSTPORT=9000 ./run_goboot_serve.sh   # forward a different host port
-#   SKIP_BUILD=1 ./run_goboot_serve.sh    # reuse bin/go-boot/go-boot.efi as-is
+#   REBUILD=1 ./run_goboot_serve.sh       # force a rebuild of go-boot.efi
+#
+# The (slow) TamaGo build of go-boot.efi and the FAT ESP image are REUSED if
+# they already exist under bin/go-boot/ — a rerun does not rebuild them. A
+# rebuild happens only when go-boot.efi is missing or REBUILD=1; the ESP is
+# rebuilt only when it's missing or go-boot.efi is newer. SKIP_BUILD=1 forces
+# reuse even of a missing/stale artifact.
 #
 # The full path the request travels:
 #   curl -> slirp hostfwd (host 127.0.0.1:HOSTPORT) -> virtio-net-pci ->
@@ -55,16 +61,24 @@ if ! command -v objcopy >/dev/null 2>&1; then
 fi
 
 # Build go-boot with networking (NET=gvisor → the `net`/`serve` commands and
-# the gVisor stack; CONSOLE=COM1 → the serial console temu drives).
-if [ "${SKIP_BUILD:-0}" != "1" ]; then
+# the gVisor stack; CONSOLE=COM1 → the serial console temu drives). The TamaGo
+# build is slow, so reuse bin/go-boot/go-boot.efi across runs: rebuild only when
+# it is missing or REBUILD=1; SKIP_BUILD=1 always reuses what's there.
+do_build=0
+[ -r "$EFI" ] || do_build=1                 # must build if there's no artifact
+[ "${REBUILD:-0}" = "1" ] && do_build=1     # or when explicitly requested
+[ "${SKIP_BUILD:-0}" = "1" ] && do_build=0  # SKIP_BUILD wins: never build
+if [ "$do_build" = "1" ]; then
     [ -x "$TAMAGO" ] || { echo "missing TamaGo compiler $TAMAGO (set TAMAGO=...)" >&2; exit 1; }
     [ -d "$GOBOOT" ] || { echo "missing go-boot checkout $GOBOOT (set GOBOOT=...)" >&2; exit 1; }
     command -v objcopy >/dev/null 2>&1 || { echo "need GNU objcopy (brew install binutils)" >&2; exit 1; }
     echo "[run_goboot_serve] building go-boot (NET=gvisor) from $GOBOOT"
     make -C "$GOBOOT" CONSOLE=COM1 NET=gvisor TAMAGO="$TAMAGO" >/dev/null
     cp "$GOBOOT/go-boot.efi" "$EFI"
+else
+    echo "[run_goboot_serve] reusing $EFI (REBUILD=1 to rebuild from $GOBOOT)"
 fi
-[ -r "$EFI" ] || { echo "missing $EFI (run without SKIP_BUILD, or build go-boot NET=gvisor)" >&2; exit 1; }
+[ -r "$EFI" ] || { echo "missing $EFI — rerun with REBUILD=1 (needs a working TamaGo build of go-boot NET=gvisor)" >&2; exit 1; }
 
 # Build a FAT EFI System Partition with \EFI\BOOT\BOOTX64.EFI = go-boot.efi.
 build_esp_darwin() {
@@ -87,11 +101,16 @@ build_esp_mtools() {
     mmd -i "$ESP" ::/EFI ::/EFI/BOOT
     mcopy -i "$ESP" "$EFI" ::/EFI/BOOT/BOOTX64.EFI
 }
-echo "[run_goboot_serve] building ESP $ESP"
-case $OS in
-    darwin) build_esp_darwin ;;
-    *)      build_esp_mtools ;;
-esac
+# Reuse the ESP unless it's missing or go-boot.efi is newer than it.
+if [ ! -r "$ESP" ] || [ "$EFI" -nt "$ESP" ]; then
+    echo "[run_goboot_serve] building ESP $ESP"
+    case $OS in
+        darwin) build_esp_darwin ;;
+        *)      build_esp_mtools ;;
+    esac
+else
+    echo "[run_goboot_serve] reusing ESP $ESP"
+fi
 
 echo
 echo "Starting go-boot + Go web server under OVMF (x86_64, ${MEM} MiB)."
