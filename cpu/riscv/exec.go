@@ -27,6 +27,12 @@ func (c *CPU) Step() error {
 	// Save PC before execution to detect if an exception changed it
 	pcBeforeExec := c.PC
 
+	// Optional per-instruction trace (nil tracer in normal runs = one cheap
+	// nil-check; the tracer self-gates on the TraceInstruction event flag).
+	if c.Tracer != nil {
+		c.Tracer.TraceInstruction(c, pcBeforeExec, insn)
+	}
+
 	// Execute 32-bit instruction
 	// Pass insnSize so JAL/JALR can set correct link address (PC + insnSize)
 	if err := c.execute32(insn, insnSize); err != nil {

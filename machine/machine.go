@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/sorins/tinyemu-go/cpu"
@@ -138,6 +139,20 @@ func New(cfg Config) (*Machine, error) {
 
 	// Create CPU
 	m.cpu = riscv.NewCPU(m.memMap, xlen)
+
+	// Optional debug trace: TINYEMU_RISCV_TRACE=1 logs exceptions, illegal
+	// instructions, page faults, invalid-CSR access and privilege changes to
+	// stderr (the cheap way to see where a guest wedges before any console
+	// output). TINYEMU_RISCV_ITRACE=1 additionally traces every instruction
+	// (very verbose).
+	if os.Getenv("TINYEMU_RISCV_TRACE") != "" {
+		ev := riscv.TraceException | riscv.TraceIllegalInsn | riscv.TraceMMUException |
+			riscv.TraceInvalidCSR | riscv.TracePrivChange
+		if os.Getenv("TINYEMU_RISCV_ITRACE") != "" {
+			ev |= riscv.TraceInstruction
+		}
+		m.cpu.SetTracer(riscv.NewDefaultTracer(os.Stderr, ev))
+	}
 
 	// Register RAM regions
 	// Low RAM (64KB at 0x0) - for boot code and FDT
