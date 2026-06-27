@@ -104,9 +104,100 @@ func main() {
 	os.Exit(run())
 }
 
+// canonAsmArch normalizes a -cpu-arch value to its base ISA ("x86"/"riscv"/
+// "arm64") plus, for x86, the forced bit width. forced is false for "" / "auto"
+// / unrecognized (the forcing switch reports unrecognized values). The cases
+// mirror that switch.
+func canonAsmArch(arch string) (base string, bits int, forced bool) {
+	switch strings.ToLower(arch) {
+	case "x86", "x86_64", "amd64":
+		return "x86", 64, true
+	case "x86_32", "x86-32", "i386", "ia32":
+		return "x86", 32, true
+	case "riscv", "riscv64", "rv64":
+		return "riscv", 0, true
+	case "arm64", "aarch64":
+		return "arm64", 0, true
+	}
+	return "", 0, false
+}
+
+// asmDirectiveArch returns the ISA named by an explicit "arch:" directive in the
+// source ("x86"/"riscv"/"arm64"), or "" if none. Mirrors emu.DetectArch's
+// directive scan so the run-asm reject matches what the emulator would pick.
+func asmDirectiveArch(src string) string {
+	for _, raw := range strings.Split(src, "\n") {
+		line := strings.ToLower(raw)
+		if i := strings.Index(line, "arch:"); i >= 0 {
+			rest := line[i+5:]
+			switch {
+			case strings.Contains(rest, "arm64"), strings.Contains(rest, "aarch64"):
+				return "arm64"
+			case strings.Contains(rest, "riscv"), strings.Contains(rest, "rv32"), strings.Contains(rest, "rv64"):
+				return "riscv"
+			case strings.Contains(rest, "x86"), strings.Contains(rest, "amd64"), strings.Contains(rest, "i386"):
+				return "x86"
+			}
+		}
+	}
+	return ""
+}
+
+// asmExplicitBits reports an explicit non-comment "BITS 32|64" directive and its
+// value. Mirrors asm.DetectBits's parsing (strip ';' comment, optional [ ]) but
+// distinguishes "present" from DetectBits's default of 64.
+func asmExplicitBits(src string) (int, bool) {
+	for _, raw := range strings.Split(src, "\n") {
+		line := raw
+		if i := strings.IndexByte(line, ';'); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		line = strings.TrimPrefix(line, "[")
+		line = strings.TrimSuffix(line, "]")
+		fields := strings.Fields(line)
+		if len(fields) == 2 && strings.EqualFold(fields[0], "BITS") {
+			switch fields[1] {
+			case "32":
+				return 32, true
+			case "64":
+				return 64, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// asmArchConflict reports why the source's own ISA/BITS contradicts the forced
+// -cpu-arch (a human-readable reason), or "" if there is no conflict — including
+// when arch is "" / "auto" / unrecognized. Checked on the original source, before
+// any forced directive is prepended.
+func asmArchConflict(src, arch string) string {
+	base, bits, forced := canonAsmArch(arch)
+	if !forced {
+		return ""
+	}
+	if d := asmDirectiveArch(src); d != "" && d != base {
+		return fmt.Sprintf("source declares 'arch: %s', contradicts -cpu-arch=%s", d, arch)
+	}
+	if base != "riscv" && emu.DetectArch(src) == emu.ArchRISCV {
+		return fmt.Sprintf("source looks like RISC-V, contradicts -cpu-arch=%s", arch)
+	}
+	if b, has := asmExplicitBits(src); has {
+		if base != "x86" {
+			return fmt.Sprintf("source has 'BITS %d' (x86-only), contradicts -cpu-arch=%s", b, arch)
+		}
+		if b != bits {
+			return fmt.Sprintf("source declares 'BITS %d', contradicts -cpu-arch=%s", b, arch)
+		}
+	}
+	return ""
+}
+
 // runAssembly assembles a snippet (file path, or "-" for stdin) and runs it in
 // the in-process emulator via asm/emu, printing the final register state. The
-// ISA is auto-detected from the source. This replaces the old run_asm.sh hack
+// ISA is auto-detected from the source, unless -cpu-arch forces it (the per-arch
+// run_asm-<arch>.sh wrappers do). This replaces the old run_asm.sh hack
 // (nasm + a generated go-test runner) with the real assembler + emulator.
 func runAssembly(path string, maxSteps int, arch string) int {
 	var data []byte
@@ -121,6 +212,13 @@ func runAssembly(path string, maxSteps int, arch string) int {
 		return 1
 	}
 	src := string(data)
+	// If -cpu-arch forces an ISA, reject a source whose own arch directive, BITS
+	// directive, or detected ISA contradicts it — rather than silently overriding
+	// it (the force below merely prepends directives the auto-detection honors).
+	if msg := asmArchConflict(src, arch); msg != "" {
+		fmt.Fprintf(os.Stderr, "run-asm: rejected — %s\n", msg)
+		return 1
+	}
 	// An explicit -cpu-arch forces the ISA by prepending the directives the
 	// emulator's auto-detection already honors (no API change needed).
 	switch strings.ToLower(arch) {

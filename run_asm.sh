@@ -9,6 +9,11 @@
 #   ./run_asm.sh -                     # read the source from stdin (a string)
 #
 # This is a thin wrapper around:  temu -run-asm <file> [-asm-steps N]
+#
+# To FORCE a specific ISA (and reject a source whose own BITS / "; arch:"
+# directive / detected ISA contradicts it), use the arch-specific wrappers:
+#   run_asm-x86.sh (32-bit x86)  run_asm-x64.sh (x86-64)
+#   run_asm-arm64.sh (AArch64)   run_asm-riscv.sh (RISC-V)
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="${1:--}"
