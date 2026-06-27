@@ -70,10 +70,22 @@ do_build=0
 [ "${SKIP_BUILD:-0}" = "1" ] && do_build=0  # SKIP_BUILD wins: never build
 if [ "$do_build" = "1" ]; then
     [ -x "$TAMAGO" ] || { echo "missing TamaGo compiler $TAMAGO (set TAMAGO=...)" >&2; exit 1; }
+    # Verify $TAMAGO is really a TamaGo toolchain (its 'go tool dist list' has
+    # tamago/* targets). A stock go — or a TamaGo older than go-boot's go.mod
+    # 'go' directive, which GOTOOLCHAIN=auto would silently replace with a stock
+    # toolchain — produces the cryptic "compile: unknown goos tamago".
+    if ! "$TAMAGO" tool dist list 2>/dev/null | grep -q '^tamago/'; then
+        echo "$TAMAGO is not a TamaGo toolchain (no tamago/ in 'go tool dist list')." >&2
+        echo "Build/install https://github.com/usbarmory/tamago-go and set TAMAGO=<dir>/bin/go." >&2
+        exit 1
+    fi
     [ -d "$GOBOOT" ] || { echo "missing go-boot checkout $GOBOOT (set GOBOOT=...)" >&2; exit 1; }
     command -v objcopy >/dev/null 2>&1 || { echo "need GNU objcopy (brew install binutils)" >&2; exit 1; }
     echo "[run_goboot_serve] building go-boot (NET=gvisor) from $GOBOOT"
-    make -C "$GOBOOT" CONSOLE=COM1 NET=gvisor TAMAGO="$TAMAGO" >/dev/null
+    # GOTOOLCHAIN=local: never let go fetch/switch to a STOCK toolchain to satisfy
+    # go-boot's go.mod 'go' directive — a stock go has no GOOS=tamago. If $TAMAGO
+    # is too old, this fails loudly ("go.mod requires go >= ...") instead.
+    GOTOOLCHAIN=local make -C "$GOBOOT" CONSOLE=COM1 NET=gvisor TAMAGO="$TAMAGO" >/dev/null
     cp "$GOBOOT/go-boot.efi" "$EFI"
 else
     echo "[run_goboot_serve] reusing $EFI (REBUILD=1 to rebuild from $GOBOOT)"
