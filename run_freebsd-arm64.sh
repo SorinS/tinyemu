@@ -8,7 +8,9 @@
 # This boots the pre-installed UFS disk image to a working FreeBSD shell. For an
 # interactive root shell: at the loader's beastie menu press a key, then "2"
 # (Boot Single user); at "Enter full pathname of shell or RETURN for /bin/sh:"
-# press Enter -> root@:/ #. Multiuser autoboot reaches login: in ~40s.
+# press Enter -> root@:/ #. Multiuser autoboot reaches login: in ~40s (log in as
+# root, no password). If the console looks garbled (\U+XXXX echo / ??? output on
+# tcsh's dumb terminal), run: export LC_ALL=C  (sh) / setenv LC_ALL C  (tcsh).
 #
 # Usage:
 #   ./run_freebsd-arm64.sh                 # boot the FreeBSD UFS disk image
