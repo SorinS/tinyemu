@@ -5,6 +5,8 @@
 package machine
 
 import (
+	"bytes"
+	"debug/elf"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -28,6 +30,7 @@ const (
 	CLINTSize   = 0x000C0000
 	HTIFAddr    = 0x40008000
 	HTIFSize    = 0x00001000 // 4KB for HTIF registers
+	UART0Addr   = 0x10000000 // 16550 UART (QEMU "virt" layout; used by bare-metal RTOSes)
 	VirtIOAddr  = 0x40010000
 	VirtIOSize  = 0x00001000 // Size per VirtIO device
 	VirtIOIRQ   = 1          // First VirtIO IRQ number
@@ -90,6 +93,7 @@ type Machine struct {
 	clint *devices.CLINT
 	plic  *devices.PLIC
 	htif  *devices.HTIF
+	uart  *devices.NS16550
 
 	// IRQ signals for PLIC
 	plicIRQs [devices.PLICMaxIRQ]*mem.IRQSignal
@@ -203,6 +207,16 @@ func New(cfg Config) (*Machine, error) {
 	})
 	if _, err := m.htif.Register(m.memMap); err != nil {
 		return nil, fmt.Errorf("failed to register HTIF: %w", err)
+	}
+
+	// 16550 UART at 0x10000000 (QEMU "virt" layout). Linux/OpenSBI use HTIF
+	// above, but bare-metal RTOSes (e.g. NuttX's u16550 driver) talk to this
+	// 16550 directly and otherwise spin forever in UART setup polling LSR.THRE.
+	if cfg.Console != nil {
+		m.uart = devices.NewNS16550(&htifConsoleAdapter{cs: cfg.Console})
+		if err := m.uart.Register(m.memMap, UART0Addr); err != nil {
+			return nil, fmt.Errorf("failed to register 16550 UART: %w", err)
+		}
 	}
 
 	// Create VirtIO console if console is provided
@@ -344,14 +358,60 @@ func (m *Machine) GetShutdownExitCode() int {
 // LoadBIOS loads a BIOS image into RAM at the standard location.
 // Also generates the FDT and boot stub code.
 // Reference: riscv_machine.c lines 754-816 (copy_bios)
+// isELFImage reports whether data begins with the ELF magic.
+func isELFImage(data []byte) bool {
+	return len(data) >= 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F'
+}
+
+// loadELFSegments loads each PT_LOAD segment of an ELF bios image to its physical
+// address within main RAM (ram covers [ramBase, ramBase+ramSize)). The entry is
+// required to be ramBase (true for NuttX and OpenSBI-position firmware) — the
+// boot stub built below jumps there.
+func loadELFSegments(data, ram []byte, ramBase, ramSize uint64) error {
+	f, err := elf.NewFile(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("bios ELF parse: %w", err)
+	}
+	if f.Entry != ramBase {
+		return fmt.Errorf("bios ELF entry %#x != RAM base %#x (unsupported)", f.Entry, ramBase)
+	}
+	loaded := false
+	for _, p := range f.Progs {
+		if p.Type != elf.PT_LOAD || p.Filesz == 0 {
+			continue
+		}
+		if p.Paddr < ramBase || p.Paddr+p.Memsz > ramBase+ramSize {
+			return fmt.Errorf("bios ELF segment %#x..%#x outside RAM [%#x,%#x)", p.Paddr, p.Paddr+p.Memsz, ramBase, ramBase+ramSize)
+		}
+		if p.Off+p.Filesz > uint64(len(data)) {
+			return fmt.Errorf("bios ELF segment file range out of bounds")
+		}
+		copy(ram[p.Paddr-ramBase:], data[p.Off:p.Off+p.Filesz])
+		loaded = true
+	}
+	if !loaded {
+		return fmt.Errorf("bios ELF has no loadable segments")
+	}
+	return nil
+}
+
 func (m *Machine) LoadBIOS(biosData []byte, kernelData []byte, initrdData []byte, cmdLine string) error {
 	if uint64(len(biosData)) > m.ramSize {
 		return ErrBIOSTooLarge
 	}
 
-	// Copy BIOS to main RAM
+	// Load the BIOS into main RAM. A flat binary (e.g. OpenSBI fw_jump.bin) is
+	// copied verbatim and entered at RAMBaseAddr. An ELF image (e.g. NuttX) is
+	// loaded by PT_LOAD segment to its physical address — copying the raw ELF
+	// would leave the ELF header at the entry point and execute it as garbage.
 	ramPtr := m.mainRAM.PhysMem
-	copy(ramPtr, biosData)
+	if isELFImage(biosData) {
+		if err := loadELFSegments(biosData, ramPtr, RAMBaseAddr, m.ramSize); err != nil {
+			return err
+		}
+	} else {
+		copy(ramPtr, biosData)
+	}
 
 	// Calculate kernel base address (page-aligned after BIOS)
 	var kernelBase uint64

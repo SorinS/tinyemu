@@ -45,6 +45,31 @@ func warnUnbackedWrite(paddr, val uint64, size int) {
 	}
 }
 
+// Unbacked-read trace, off by default (reads returning 0 are usually legitimate
+// probing). TINYEMU_MEM_RTRACE=1 logs the first unbacked read per 4 KiB page —
+// the cheap way to find which MMIO address a guest is polling forever.
+var (
+	rtraceOn = os.Getenv("TINYEMU_MEM_RTRACE") == "1"
+	rseenMu  sync.Mutex
+	rseen    = map[uint64]bool{}
+	rcount   int
+)
+
+func warnUnbackedRead(paddr uint64, size int) {
+	if !rtraceOn {
+		return
+	}
+	page := paddr &^ 0xFFF
+	rseenMu.Lock()
+	defer rseenMu.Unlock()
+	if rseen[page] || rcount >= 64 {
+		return
+	}
+	rseen[page] = true
+	rcount++
+	fmt.Fprintf(os.Stderr, "[mem] unbacked READ %#x (%d bytes)\n", paddr, size)
+}
+
 // Memory subsystem constants
 const (
 	MaxRanges        = 32
@@ -383,6 +408,7 @@ func (m *PhysMemoryMap) GetRAMPtr(paddr uint64, isWrite bool) []byte {
 func (m *PhysMemoryMap) Read8(paddr uint64) (uint8, error) {
 	pr := m.GetRange(paddr)
 	if pr == nil {
+		warnUnbackedRead(paddr, 1)
 		return 0, nil // Return 0 for unmapped address (C behavior)
 	}
 	offset := paddr - pr.Addr
