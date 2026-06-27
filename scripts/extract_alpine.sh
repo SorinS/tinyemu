@@ -1,17 +1,17 @@
 #!/bin/sh
-# Pull Alpine's boot files out of bin/alpine.iso. Idempotent — outputs
-# into bin/alpine/.
+# Pull Alpine's boot files out of bin/alpine-x86.iso. Idempotent — outputs
+# into bin/alpine-x86/.
 #
 # Outputs:
-#   bin/alpine/vmlinuz             — boot/vmlinuz-lts from the ISO
-#   bin/alpine/initrd              — boot/initramfs-lts from the ISO
-#   bin/alpine/initrd.nohw         — drop hwdrivers from sysinit
+#   bin/alpine-x86/vmlinuz             — boot/vmlinuz-lts from the ISO
+#   bin/alpine-x86/initrd              — boot/initramfs-lts from the ISO
+#   bin/alpine-x86/initrd.nohw         — drop hwdrivers from sysinit
 #                                    (~55s saved; coldplug modprobe storm).
-#   bin/alpine/initrd.nomodloop    — drop modloop from sysinit
+#   bin/alpine-x86/initrd.nomodloop    — drop modloop from sysinit
 #                                    (~110s saved; openssl RSA-SHA verify
 #                                    over modloop.squashfs).
-#   bin/alpine/initrd.fast         — nohw + nomodloop combined.
-#   bin/alpine/initrd.superfast    — fast + drop syslog/bootmisc/firstboot
+#   bin/alpine-x86/initrd.fast         — nohw + nomodloop combined.
+#   bin/alpine-x86/initrd.superfast    — fast + drop syslog/bootmisc/firstboot
 #                                    from boot and default runlevels.
 #                                    Cuts more userspace init; useful when
 #                                    you just want a login prompt fast.
@@ -24,8 +24,8 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ISO="$ROOT/iso/alpine.iso"; [ -f "$ISO" ] || ISO="$ROOT/bin/alpine.iso"
-OUT="$ROOT/bin/alpine"
+ISO="$ROOT/iso/alpine.iso"; [ -f "$ISO" ] || ISO="$ROOT/bin/alpine-x86.iso"
+OUT="$ROOT/bin/alpine-x86"
 KERNEL="$OUT/vmlinuz"
 INITRD="$OUT/initrd"
 
@@ -83,3 +83,14 @@ build_variant "$OUT/initrd.superfast" \
     /etc/runlevels/boot/syslog \
     /etc/runlevels/boot/bootmisc \
     /etc/runlevels/default/firstboot
+
+# Raw media image for the run script's -drive. Alpine's /init mounts /dev/vda as
+# iso9660 for the modloop (kernel modules) + apk repo. The ISO already IS a raw
+# iso9660 block image, so hardlink it under bin/ (same bytes, no extra storage;
+# attached read-only) — keeping all boot assets self-contained in $OUT.
+IMG="$OUT/media.img"
+if [ ! -f "$IMG" ] || [ "$ISO" -nt "$IMG" ]; then
+    rm -f "$IMG"
+    ln "$ISO" "$IMG" 2>/dev/null || cp -f "$ISO" "$IMG"
+    echo "  $IMG (raw media for the -drive)"
+fi

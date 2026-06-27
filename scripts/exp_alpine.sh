@@ -19,9 +19,9 @@ TEMU="$ROOT/bin/temu.${OS}-${ARCH}.bin"
 
 "$ROOT/scripts/extract_alpine64.sh" >/dev/null
 
-KERNEL="$ROOT/bin/alpine64/vmlinuz"
-INITRD="$ROOT/bin/alpine64/initrd.nonlplug"
-ISO="$ROOT/bin/alpine/alpine-standard-3.23.4-x86_64.iso"
+KERNEL="$ROOT/bin/alpine-x64/vmlinuz"
+INITRD="$ROOT/bin/alpine-x64/initrd.nonlplug"
+ISO="$ROOT/bin/alpine-x86/alpine-standard-3.23.4-x86_64.iso"
 
 EXTRA="${1:-}"
 APPEND="console=ttyS0,115200 pci=noacpi nosmp nokaslr tsc=reliable libata.force=disable ide=disable alpine_dev=vda:iso9660 usbdelay=1 modules=virtio_pci,virtio_blk,virtio_net,loop,squashfs module.sig_enforce=0 modprobe.blacklist=ata_piix,pata_acpi,usb-storage,usbhid $EXTRA"

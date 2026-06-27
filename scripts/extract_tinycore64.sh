@@ -11,12 +11,12 @@
 # when this script's mtime is newer than the cached overlay.
 #
 # Inputs:
-#   bin/tinycore64/corepure64.gz   — upstream cpio.gz initramfs
+#   bin/tinycore-x64/corepure64.gz   — upstream cpio.gz initramfs
 #
 # Outputs:
-#   bin/tinycore64/serial-overlay.gz   — a tiny cpio.gz with just
+#   bin/tinycore-x64/serial-overlay.gz   — a tiny cpio.gz with just
 #                                       /etc/inittab
-#   bin/tinycore64/corepure64-serial.gz — the concatenation of the
+#   bin/tinycore-x64/corepure64-serial.gz — the concatenation of the
 #                                        upstream corepure64.gz and
 #                                        serial-overlay.gz. This is
 #                                        what `-initrd` should point
@@ -35,7 +35,7 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$ROOT/bin/tinycore64"
+OUT="$ROOT/bin/tinycore-x64"
 CORE="$OUT/corepure64.gz"
 OVERLAY="$OUT/serial-overlay.gz"
 INITRD="$OUT/corepure64-serial.gz"

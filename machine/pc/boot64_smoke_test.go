@@ -157,7 +157,7 @@ func tail(s string, n int) string {
 func TestBoot64_TinyCore_ReachesKernelBanner(t *testing.T) {
 	skipIfBootTestsDisabled(t)
 	root := repoRoot(t)
-	kernel := filepath.Join(root, "bin/tinycore64/vmlinux64")
+	kernel := filepath.Join(root, "bin/tinycore-x64/vmlinux64")
 	requireFile(t, kernel)
 	args := []string{
 		"-machine", "x86_64", "-m", "128", "-kernel", kernel, "-append",
@@ -187,8 +187,8 @@ func TestBoot64_TinyCore_ReachesKernelBanner(t *testing.T) {
 func TestBoot64_TinyCore_ReachesUserspace(t *testing.T) {
 	skipIfBootTestsDisabled(t)
 	root := repoRoot(t)
-	kernel := filepath.Join(root, "bin/tinycore64/vmlinux64")
-	initrd := filepath.Join(root, "bin/tinycore64/corepure64.gz")
+	kernel := filepath.Join(root, "bin/tinycore-x64/vmlinux64")
+	initrd := filepath.Join(root, "bin/tinycore-x64/corepure64.gz")
 	requireFile(t, kernel)
 	requireFile(t, initrd)
 	args := []string{
@@ -211,8 +211,8 @@ func TestBoot64_TinyCore_ReachesUserspace(t *testing.T) {
 func TestBoot64_TinyCore_ReachesInitramfs(t *testing.T) {
 	skipIfBootTestsDisabled(t)
 	root := repoRoot(t)
-	kernel := filepath.Join(root, "bin/tinycore64/vmlinux64")
-	initrd := filepath.Join(root, "bin/tinycore64/corepure64.gz")
+	kernel := filepath.Join(root, "bin/tinycore-x64/vmlinux64")
+	initrd := filepath.Join(root, "bin/tinycore-x64/corepure64.gz")
 	requireFile(t, kernel)
 	requireFile(t, initrd)
 	args := []string{
@@ -240,8 +240,8 @@ func TestBoot64_TinyCore_ReachesInitramfs(t *testing.T) {
 func TestBoot64_Alpine_ReachesKernelBanner(t *testing.T) {
 	skipIfBootTestsDisabled(t)
 	root := repoRoot(t)
-	kernel := filepath.Join(root, "bin/alpine64/vmlinuz")
-	initrd := filepath.Join(root, "bin/alpine64/initrd")
+	kernel := filepath.Join(root, "bin/alpine-x64/vmlinuz")
+	initrd := filepath.Join(root, "bin/alpine-x64/initrd")
 	requireFile(t, kernel)
 	requireFile(t, initrd)
 	args := []string{
@@ -274,9 +274,9 @@ func TestBoot64_Alpine_ReachesKernelBanner(t *testing.T) {
 func TestBoot64_Alpine_ReachesUserspace(t *testing.T) {
 	skipIfBootTestsDisabled(t)
 	root := repoRoot(t)
-	kernel := filepath.Join(root, "bin/alpine64/vmlinuz")
-	initrd := filepath.Join(root, "bin/alpine64/initrd.nonlplug")
-	iso := filepath.Join(root, "bin/alpine/alpine-standard-3.23.4-x86_64.iso")
+	kernel := filepath.Join(root, "bin/alpine-x64/vmlinuz")
+	initrd := filepath.Join(root, "bin/alpine-x64/initrd.nonlplug")
+	iso := filepath.Join(root, "bin/alpine-x86/alpine-standard-3.23.4-x86_64.iso")
 	requireFile(t, kernel)
 	requireFile(t, initrd)
 	requireFile(t, iso)

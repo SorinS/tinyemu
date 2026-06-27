@@ -5,7 +5,7 @@ emulator quirks. Two scripts produce the artifacts:
 
 - `scripts/extract_alpine.sh`   — 32-bit, ISO at `bin/alpine.iso` (used by
                                   `run_alpine_iso.sh` against `cpu/x86`).
-- `scripts/extract_alpine64.sh` — 64-bit, ISO at `bin/alpine64/alpine-…iso`
+- `scripts/extract_alpine64.sh` — 64-bit, ISO at `bin/alpine-x64/alpine-…iso`
                                   (used by `run64_iso.sh` against `cpu/x86_64`).
 
 Both are idempotent — re-run safely; nothing changes unless the upstream
@@ -168,7 +168,7 @@ Side effects of the bypass:
 
 For just-get-to-a-shell, both are acceptable.
 
-`nonlplug` outputs `bin/alpine64/initrd.nonlplug` and is **only built for
+`nonlplug` outputs `bin/alpine-x64/initrd.nonlplug` and is **only built for
 64-bit** — `cpu/x86` doesn't need the workaround.
 
 ---
@@ -186,7 +186,7 @@ skip && /^eend /                 { print; skip=0; next }
 !skip { print }
 ```
 
-Result: `bin/alpine64/initrd.nonlplug-fast` — nlplug bypass + `superfast`
+Result: `bin/alpine-x64/initrd.nonlplug-fast` — nlplug bypass + `superfast`
 service-killing in a single initrd. The path we recommend on 64-bit when
 you don't need full-fidelity OpenRC startup.
 
@@ -234,20 +234,20 @@ sweet spot: one awk command per change, no build system, no kernel rebuild.
 ## File map
 
 ```
-scripts/extract_alpine.sh           — 32-bit, builds bin/alpine/initrd*
-scripts/extract_alpine64.sh         — 64-bit, builds bin/alpine64/initrd*
-bin/alpine/initrd                   — upstream, unmodified
-bin/alpine/initrd.nohw              — nohw variant
-bin/alpine/initrd.nomodloop         — nomodloop variant
-bin/alpine/initrd.fast              — fast variant
-bin/alpine/initrd.superfast         — superfast variant
-bin/alpine64/initrd                 — upstream, unmodified
-bin/alpine64/initrd.nohw            — nohw variant
-bin/alpine64/initrd.nomodloop       — nomodloop variant
-bin/alpine64/initrd.fast            — fast variant
-bin/alpine64/initrd.superfast       — superfast variant
-bin/alpine64/initrd.nonlplug        — nlplug bypass only
-bin/alpine64/initrd.nonlplug-fast   — nlplug bypass + superfast
+scripts/extract_alpine.sh           — 32-bit, builds bin/alpine-x86/initrd*
+scripts/extract_alpine64.sh         — 64-bit, builds bin/alpine-x64/initrd*
+bin/alpine-x86/initrd                   — upstream, unmodified
+bin/alpine-x86/initrd.nohw              — nohw variant
+bin/alpine-x86/initrd.nomodloop         — nomodloop variant
+bin/alpine-x86/initrd.fast              — fast variant
+bin/alpine-x86/initrd.superfast         — superfast variant
+bin/alpine-x64/initrd                 — upstream, unmodified
+bin/alpine-x64/initrd.nohw            — nohw variant
+bin/alpine-x64/initrd.nomodloop       — nomodloop variant
+bin/alpine-x64/initrd.fast            — fast variant
+bin/alpine-x64/initrd.superfast       — superfast variant
+bin/alpine-x64/initrd.nonlplug        — nlplug bypass only
+bin/alpine-x64/initrd.nonlplug-fast   — nlplug bypass + superfast
 run_alpine_iso.sh                   — 32-bit launcher, picks variant via arg
 run64_iso.sh                        — 64-bit launcher, picks variant via arg
 ```

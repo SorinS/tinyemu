@@ -30,7 +30,7 @@
 #   MEM=4096                    guest RAM in MiB (default 2048; go-boot
 #                               needs ~960 MiB before the kernel + initrd)
 #   KERNEL=path INITRD=path     override the kernel (bzImage) / initramfs
-#                               (default: TinyCore from bin/tinycore64/)
+#                               (default: TinyCore from bin/tinycore-x64/)
 #   CMDLINE="..."               override the kernel command line
 #   OVMF=bin/ovmf/OVMF.fd       use the release firmware (faster, quiet)
 #   TINYEMU_BIOS_DEBUG=stderr   watch the OVMF boot (off by default = fast)
@@ -51,8 +51,8 @@ ESP="$ROOT/bin/go-boot/esp-linux.img"
 if [ -z "$KERNEL" ] || [ -z "$INITRD" ]; then
 	"$ROOT/scripts/extract_tinycore64.sh" >/dev/null 2>&1 || true
 fi
-KERNEL=${KERNEL:-$ROOT/bin/tinycore64/vmlinuz64}
-INITRD=${INITRD:-$ROOT/bin/tinycore64/corepure64.gz}
+KERNEL=${KERNEL:-$ROOT/bin/tinycore-x64/vmlinuz64}
+INITRD=${INITRD:-$ROOT/bin/tinycore-x64/corepure64.gz}
 CMDLINE=${CMDLINE:-"console=ttyS0,115200 earlyprintk=ttyS0,115200 loglevel=8 noapic nolapic acpi=off pci=noacpi nosmp nokaslr tsc=reliable rdinit=/bin/sh"}
 
 [ -x "$TEMU" ]   || { echo "missing emulator binary $TEMU" >&2; exit 1; }

@@ -1,19 +1,19 @@
 #!/bin/sh
 # Pull TinyCore's boot files out of bin/TinyCore.iso and produce a
 # combined initramfs whose /etc/inittab also spawns an auto-login getty
-# on ttyS0. Idempotent — outputs into bin/tinycore/.
+# on ttyS0. Idempotent — outputs into bin/tinycore-x86/.
 #
 # Outputs:
-#   bin/tinycore/vmlinuz   — kernel from boot/vmlinuz in the ISO
-#   bin/tinycore/core.gz   — initramfs from boot/core.gz in the ISO
-#   bin/tinycore/initrd    — core.gz concatenated with the inittab
+#   bin/tinycore-x86/vmlinuz   — kernel from boot/vmlinuz in the ISO
+#   bin/tinycore-x86/core.gz   — initramfs from boot/core.gz in the ISO
+#   bin/tinycore-x86/initrd    — core.gz concatenated with the inittab
 #                            overlay. This is what -initrd points at.
 
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ISO="$ROOT/iso/TinyCore.iso"; [ -f "$ISO" ] || ISO="$ROOT/bin/TinyCore.iso"
-OUT="$ROOT/bin/tinycore"
+OUT="$ROOT/bin/tinycore-x86"
 KERNEL="$OUT/vmlinuz"
 CORE="$OUT/core.gz"
 OVERLAY="$OUT/overlay.gz"

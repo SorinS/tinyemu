@@ -140,7 +140,7 @@ alpine: ## Extract Alpine x86 (32-bit) boot files (needs the ISO in iso/)
 	sh scripts/extract_alpine.sh
 
 .PHONY: tinycore64
-tinycore64: ## Build the TinyCore64 serial initramfs (needs bin/tinycore64/{vmlinuz64,corepure64.gz})
+tinycore64: ## Build the TinyCore64 serial initramfs (needs bin/tinycore-x64/{vmlinuz64,corepure64.gz})
 	sh scripts/extract_tinycore64.sh
 
 .PHONY: tinycore
@@ -152,7 +152,7 @@ tamago: ## Build a TamaGo UEFI Go app image into bin/tamago/ (TAMAGO_SRC=file.go
 	sh scripts/build_tamago.sh $(TAMAGO_SRC)
 
 .PHONY: alpine-arm64
-alpine-arm64: ## Fetch Alpine aarch64 kernel + build the busybox initramfs into bin/arm64virt/
+alpine-arm64: ## Fetch Alpine aarch64 kernel + build the busybox initramfs into bin/alpine-arm64/
 	sh scripts/extract_alpine_arm64.sh
 
 .PHONY: baremetal

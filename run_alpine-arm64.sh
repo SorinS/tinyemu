@@ -9,8 +9,8 @@
 #   MEM=1024 ./run_alpine-arm64.sh        # guest RAM in MiB (default 512)
 #
 # Assets (fetch/build with `make alpine-arm64`):
-#   bin/arm64virt/Image                       flat arm64 kernel (Alpine aarch64 virt)
-#   bin/arm64virt/alpine-rootfs-initramfs.gz  Alpine minirootfs as an initramfs
+#   bin/alpine-arm64/Image                       flat arm64 kernel (Alpine aarch64 virt)
+#   bin/alpine-arm64/alpine-rootfs-initramfs.gz  Alpine minirootfs as an initramfs
 #
 # (For a tiny busybox-only shell, use run_arm64.sh.)
 
@@ -21,7 +21,7 @@ OS=$(uname -s | tr A-Z a-z)
 ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 TEMU="$ROOT/bin/temu.${OS}-${ARCH}.bin"
 
-DIR="$ROOT/bin/arm64virt"
+DIR="$ROOT/bin/alpine-arm64"
 KERNEL="$DIR/Image"
 INITRD="$DIR/alpine-rootfs-initramfs.gz"
 MEM=${MEM:-512}

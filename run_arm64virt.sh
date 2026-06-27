@@ -11,8 +11,8 @@
 #   MEM=1024 ./run_arm64.sh        # guest RAM in MiB (default 512)
 #
 # Assets (fetch/build with `make alpine-arm64`):
-#   bin/arm64virt/Image                flat arm64 kernel Image (decompressed)
-#   bin/arm64virt/busybox-initramfs.gz minimal busybox initramfs
+#   bin/alpine-arm64/Image                flat arm64 kernel Image (decompressed)
+#   bin/alpine-arm64/busybox-initramfs.gz minimal busybox initramfs
 #
 # The kernel prints over the PL011 UART; `earlycon` shows output from the very
 # first instructions, so even a partial boot is visible on the console.
@@ -24,7 +24,7 @@ OS=$(uname -s | tr A-Z a-z)
 ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 TEMU="$ROOT/bin/temu.${OS}-${ARCH}.bin"
 
-DIR="$ROOT/bin/arm64virt"
+DIR="$ROOT/bin/alpine-arm64"
 KERNEL="$DIR/Image"
 INITRD="$DIR/busybox-initramfs.gz"
 MEM=${MEM:-512}

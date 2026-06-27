@@ -1,24 +1,24 @@
 #!/bin/sh
-# Pull Alpine x86_64 standard boot files out of bin/alpine64.iso.
-# Idempotent — outputs into bin/alpine64/.
+# Pull Alpine x86_64 standard boot files out of bin/alpine-x64.iso.
+# Idempotent — outputs into bin/alpine-x64/.
 #
 # Same shape as extract_alpine.sh (which handles the 32-bit alpine-
 # standard ISO for the x86 emulator). Builds patched-/init variants
 # that skip slow OpenRC services in the post-switch_root rootfs.
 #
 # Outputs:
-#   bin/alpine64/vmlinuz             — boot/vmlinuz-lts from the ISO
-#   bin/alpine64/initrd              — boot/initramfs-lts from the ISO
-#   bin/alpine64/initrd.nohw         — drop hwdrivers from sysinit
-#   bin/alpine64/initrd.nomodloop    — drop modloop from sysinit
-#   bin/alpine64/initrd.fast         — nohw + nomodloop
-#   bin/alpine64/initrd.superfast    — fast + drop syslog/bootmisc/firstboot
+#   bin/alpine-x64/vmlinuz             — boot/vmlinuz-lts from the ISO
+#   bin/alpine-x64/initrd              — boot/initramfs-lts from the ISO
+#   bin/alpine-x64/initrd.nohw         — drop hwdrivers from sysinit
+#   bin/alpine-x64/initrd.nomodloop    — drop modloop from sysinit
+#   bin/alpine-x64/initrd.fast         — nohw + nomodloop
+#   bin/alpine-x64/initrd.superfast    — fast + drop syslog/bootmisc/firstboot
 
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ISO="$ROOT/iso/alpine-standard-3.23.4-x86_64.iso"; [ -f "$ISO" ] || ISO="$ROOT/bin/alpine/alpine-standard-3.23.4-x86_64.iso"
-OUT="$ROOT/bin/alpine64"
+ISO="$ROOT/iso/alpine-standard-3.23.4-x86_64.iso"; [ -f "$ISO" ] || ISO="$ROOT/bin/alpine-x86/alpine-standard-3.23.4-x86_64.iso"
+OUT="$ROOT/bin/alpine-x64"
 KERNEL="$OUT/vmlinuz"
 VMLINUX="$OUT/vmlinux"
 INITRD="$OUT/initrd"
@@ -180,3 +180,14 @@ build_nonlplug_fast() {
 }
 
 build_nonlplug_fast "$OUT/initrd.nonlplug-fast"
+
+# Raw media image for the run script's -drive. Alpine's /init mounts /dev/vda as
+# iso9660 for the modloop (kernel modules) + apk repo. The ISO already IS a raw
+# iso9660 block image, so hardlink it under bin/ (same bytes, no extra storage;
+# attached read-only) — keeping all boot assets self-contained in $OUT.
+IMG="$OUT/media.img"
+if [ ! -f "$IMG" ] || [ "$ISO" -nt "$IMG" ]; then
+    rm -f "$IMG"
+    ln "$ISO" "$IMG" 2>/dev/null || cp -f "$ISO" "$IMG"
+    echo "  $IMG (raw media for the -drive)"
+fi

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fetch/build the arm64 "virt" boot assets into bin/arm64virt/:
+# Fetch/build the arm64 "virt" boot assets into bin/alpine-arm64/:
 #   Image                   flat arm64 Linux kernel (Alpine aarch64 virt, the
 #                           EFI-zboot vmlinuz decompressed to a raw Image)
 #   initramfs-virt          Alpine's own initramfs (for the full-init boot)
@@ -10,7 +10,7 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DIR="$ROOT/bin/arm64virt"
+DIR="$ROOT/bin/alpine-arm64"
 ALPINE_VER="${ALPINE_VER:-v3.21}"
 ARCH=aarch64
 CDN="https://dl-cdn.alpinelinux.org/alpine/$ALPINE_VER"
