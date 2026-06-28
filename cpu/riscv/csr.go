@@ -38,6 +38,21 @@ func (c *CPU) ReadCSR(csr uint32) (uint64, error) {
 		return 0, ErrCSRPrivilege
 	}
 
+	// PMP CSRs: stubbed (stored, not enforced — temu has a single physical
+	// address space). pmpaddr0..63 = 0x3B0..0x3EF, pmpcfg0..15 = 0x3A0..0x3AF.
+	if csr >= 0x3B0 && csr <= 0x3EF {
+		return c.pmpaddr[csr-0x3B0], nil
+	}
+	if csr >= 0x3A0 && csr <= 0x3AF {
+		return c.pmpcfg[csr-0x3A0], nil
+	}
+	if csr == 0x30A { // menvcfg
+		return c.Menvcfg, nil
+	}
+	if csr == 0x14D { // stimecmp (Sstc S-mode timer compare)
+		return c.Stimecmp, nil
+	}
+
 	switch csr {
 	// User-level CSRs
 	// Reference: riscv_cpu.c:714-729 - FP CSRs require FS != 0
@@ -211,6 +226,25 @@ func (c *CPU) WriteCSR(csr uint32, val uint64) error {
 	// Check read-only bit (bits 11:10 = 11 means read-only)
 	if (csr>>10)&3 == 3 {
 		return ErrCSRReadOnly
+	}
+
+	// PMP CSRs: stubbed (stored, not enforced). See ReadCSR.
+	if csr >= 0x3B0 && csr <= 0x3EF {
+		c.pmpaddr[csr-0x3B0] = val
+		return nil
+	}
+	if csr >= 0x3A0 && csr <= 0x3AF {
+		c.pmpcfg[csr-0x3A0] = val
+		return nil
+	}
+	if csr == 0x30A { // menvcfg (bit 63 STCE enables Sstc)
+		c.Menvcfg = val
+		return nil
+	}
+	if csr == 0x14D { // stimecmp (Sstc): (re)arm the S-mode timer
+		c.Stimecmp = val
+		c.ResetMIP(MipSTIP) // deassert the old STIP; CheckTimer re-sets it at the deadline
+		return nil
 	}
 
 	switch csr {

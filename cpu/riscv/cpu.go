@@ -76,6 +76,15 @@ type CPU struct {
 	Mideleg    uint32 // Machine interrupt delegation
 	Mcounteren uint32 // Machine counter enable
 
+	// Physical Memory Protection. Stored but NOT enforced — temu has a single
+	// physical address space. M-mode kernels (xv6, seL4) program these to grant
+	// S-mode access; we accept the writes so the csrrw isn't an illegal insn.
+	pmpcfg  [16]uint64 // pmpcfg0..15  (CSR 0x3A0..0x3AF)
+	pmpaddr [64]uint64 // pmpaddr0..63 (CSR 0x3B0..0x3EF)
+
+	Menvcfg  uint64 // 0x30A machine environment config (bit 63 STCE enables Sstc)
+	Stimecmp uint64 // 0x14D Sstc S-mode timer compare (STIP fires when time >= it)
+
 	// Supervisor-mode CSRs
 	Stvec      uint64 // Supervisor trap vector base
 	Sscratch   uint64 // Supervisor scratch register

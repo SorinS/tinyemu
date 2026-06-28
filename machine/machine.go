@@ -506,6 +506,17 @@ func (m *Machine) GetRTCTime() uint64 {
 // This should be called periodically from the main emulation loop.
 func (m *Machine) CheckTimer() {
 	m.clint.CheckTimer()
+	m.checkSstc()
+}
+
+// checkSstc raises the S-mode timer interrupt (STIP) when the CLINT time has
+// reached the guest's stimecmp deadline. The Sstc extension lets S-mode (e.g.
+// xv6) drive its own timer via the stimecmp CSR instead of the M-mode CLINT
+// mtimecmp; stimecmp==0 means "not armed".
+func (m *Machine) checkSstc() {
+	if m.cpu.Stimecmp != 0 && m.clint.GetMtime() >= m.cpu.Stimecmp {
+		m.cpu.SetMIP(riscv.MipSTIP)
+	}
 }
 
 // PollDevices polls devices for asynchronous I/O.
