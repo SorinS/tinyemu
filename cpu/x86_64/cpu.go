@@ -257,6 +257,7 @@ type CPU struct {
 	// holds the (writable) IA32_APIC_BASE value when enabled.
 	apicEnabled bool
 	msrApicBase uint64
+	apicMSR     APICMSR // routes x2APIC + TSC-deadline MSRs to the local APIC
 
 	// featureProfile controls how aggressively CPUID advertises features
 	// and what happens when an unimplemented (but possibly advertised)
@@ -635,6 +636,17 @@ func (c *CPU) SetAPICEnabled(b bool) {
 		c.msrApicBase = 0xFEE00900
 	}
 }
+
+// APICMSR routes x2APIC register MSRs (0x800-0x8FF, accessed via RDMSR/WRMSR in
+// x2APIC mode) and IA32_TSC_DEADLINE (0x6E0) to a local APIC. The machine wires
+// it via SetAPICMSR when a LocalAPIC is present.
+type APICMSR interface {
+	ReadMSR(num uint32) uint64
+	WriteMSR(num uint32, val uint64)
+}
+
+// SetAPICMSR connects the local APIC's x2APIC/TSC-deadline MSR interface.
+func (c *CPU) SetAPICMSR(a APICMSR) { c.apicMSR = a }
 
 // ===== cpu.Core interface =====
 

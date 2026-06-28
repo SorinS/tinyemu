@@ -1615,7 +1615,7 @@ func (c *CPU) opTwoByte(rex, operandSize uint8, segOverride int, repPrefix uint8
 		// /5 LFENCE, /6 MFENCE, /7 SFENCE. /0..3 are FXSAVE / FXRSTOR
 		// / LDMXCSR / STMXCSR — memory only. /4..7 may be the XSAVE
 		// family with mod != 3.)
-		return c.opGroup15(rex)
+		return c.opGroup15(rex, repPrefix)
 
 	case op2 == 0xBA:
 		// Group 8 — BT/BTS/BTR/BTC r/m, imm8. Sub-op (reg field):
@@ -1850,9 +1850,36 @@ func (c *CPU) opSHxD(rex, operandSize uint8, left, fromCL bool) error {
 //
 // LFENCE/MFENCE/SFENCE are no-ops in our single-threaded model.
 // CLFLUSH is a no-op (no CPU cache modelled).
-func (c *CPU) opGroup15(rex uint8) error {
+func (c *CPU) opGroup15(rex, repPrefix uint8) error {
 	m := c.parseModRM64(rex)
 	if m.isReg {
+		// F3 0F AE /0-3 (reg-form) = FSGSBASE: read/write the FS/GS base from
+		// a GPR. REX.W selects 64-bit, else 32-bit (zero-extended). Used by
+		// modern kernels (e.g. NuttX) for fast per-CPU/TLS base switches.
+		if repPrefix == 1 { // F3
+			size := uint8(4)
+			if rex&0x08 != 0 { // REX.W
+				size = 8
+			}
+			switch m.reg {
+			case 0: // RDFSBASE
+				c.writeReg(m.rm, c.segBase[FS], size)
+				return nil
+			case 1: // RDGSBASE
+				c.writeReg(m.rm, c.segBase[GS], size)
+				return nil
+			case 2: // WRFSBASE
+				v := c.readReg(m.rm, size)
+				c.segBase[FS] = v
+				c.msrFSBase = v
+				return nil
+			case 3: // WRGSBASE
+				v := c.readReg(m.rm, size)
+				c.segBase[GS] = v
+				c.msrGSBase = v
+				return nil
+			}
+		}
 		switch m.reg {
 		case 5: // LFENCE
 			return nil
@@ -2354,6 +2381,10 @@ func (c *CPU) opWRMSR() error {
 }
 
 func (c *CPU) readMSR(num uint32) uint64 {
+	// x2APIC register MSRs + IA32_TSC_DEADLINE route to the local APIC.
+	if c.apicMSR != nil && ((num >= 0x800 && num <= 0x8FF) || num == 0x6E0) {
+		return c.apicMSR.ReadMSR(num)
+	}
 	switch num {
 	case 0x1B: // IA32_APIC_BASE
 		// With a modelled local APIC: the (writable) enabled value, base
@@ -2412,6 +2443,11 @@ func (c *CPU) noteUnknownMSR(write bool, num uint32, v uint64) {
 }
 
 func (c *CPU) writeMSR(num uint32, v uint64) error {
+	// x2APIC register MSRs + IA32_TSC_DEADLINE route to the local APIC.
+	if c.apicMSR != nil && ((num >= 0x800 && num <= 0x8FF) || num == 0x6E0) {
+		c.apicMSR.WriteMSR(num, v)
+		return nil
+	}
 	switch num {
 	case 0x1B: // IA32_APIC_BASE — software may relocate/toggle the APIC
 		if c.apicEnabled {

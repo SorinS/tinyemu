@@ -405,6 +405,11 @@ func New(cfg Config) (*PC, error) {
 		if a, ok := p.cpu.(interface{ SetAPICEnabled(bool) }); ok {
 			a.SetAPICEnabled(true)
 		}
+		// Wire the LAPIC's x2APIC/TSC-deadline MSR interface so RDMSR/WRMSR to
+		// 0x800-0x8FF / 0x6E0 reach it (NuttX and other x2APIC guests).
+		if a, ok := p.cpu.(interface{ SetAPICMSR(x86_64.APICMSR) }); ok {
+			a.SetAPICMSR(p.lapic)
+		}
 		p.pic.SetINTRFunc(p.lapic.SetExtINT)
 		// Real I/O APIC at 0xFEC00000. In APIC mode the kernel masks the 8259
 		// and routes device GSIs through the I/O APIC to the LAPIC; we mirror

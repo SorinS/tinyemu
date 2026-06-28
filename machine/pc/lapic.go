@@ -62,9 +62,10 @@ const (
 	lapicTimerDCR = 0x3E0 // divide config
 
 	// LVT bits.
-	lvtMasked        = 1 << 16
-	lvtTimerPeriodic = 1 << 17
-	lvtVectorMask    = 0xFF
+	lvtMasked           = 1 << 16
+	lvtTimerPeriodic    = 1 << 17
+	lvtTimerTSCDeadline = 1 << 18 // LVT-timer mode: fire when TSC >= IA32_TSC_DEADLINE
+	lvtVectorMask       = 0xFF
 
 	// SVR.
 	svrEnable = 1 << 8
@@ -99,6 +100,7 @@ type LocalAPIC struct {
 	timerDivideCfg uint32
 	timerStart     uint64 // cycle count when the current count was (re)loaded
 	timerRunning   bool
+	tscDeadline    uint64 // IA32_TSC_DEADLINE (in TSC/cycles); 0 = disarmed
 
 	extINT bool // 8259 PIC asserting its INTR (virtual-wire ExtINT)
 }
@@ -120,6 +122,36 @@ func NewLocalAPIC(core cpu.X86Core, cyclesFunc func() uint64) *LocalAPIC {
 }
 
 func (l *LocalAPIC) enabled() bool { return l.svr&svrEnable != 0 }
+
+// ReadMSR/WriteMSR implement x2APIC register access (RDMSR/WRMSR to 0x800-0x8FF
+// when the APIC is in x2APIC mode) plus IA32_TSC_DEADLINE (0x6E0), by mapping
+// each MSR onto the equivalent xAPIC MMIO register. x2APIC numbering: MSR
+// 0x800+n is MMIO offset 0x10*n; the ICR is one 64-bit MSR (0x830) rather than
+// the split ICRLow/ICRHigh MMIO pair. Routing through MMIOWrite reuses the EOI,
+// LVT and timer side effects for free.
+func (l *LocalAPIC) ReadMSR(num uint32) uint64 {
+	switch {
+	case num == 0x6E0: // IA32_TSC_DEADLINE
+		return l.tscDeadline
+	case num == 0x830: // ICR
+		return uint64(l.MMIORead(nil, lapicICRHigh, 2))<<32 | uint64(l.MMIORead(nil, lapicICRLow, 2))
+	case num >= 0x800 && num <= 0x8FF:
+		return uint64(l.MMIORead(nil, (num-0x800)<<4, 2))
+	}
+	return 0
+}
+
+func (l *LocalAPIC) WriteMSR(num uint32, val uint64) {
+	switch {
+	case num == 0x6E0: // IA32_TSC_DEADLINE — arm/disarm the deadline timer
+		l.tscDeadline = val
+	case num == 0x830: // ICR: program destination (high) then command (low, triggers)
+		l.MMIOWrite(nil, lapicICRHigh, uint32(val>>32), 2)
+		l.MMIOWrite(nil, lapicICRLow, uint32(val), 2)
+	case num >= 0x800 && num <= 0x8FF:
+		l.MMIOWrite(nil, (num-0x800)<<4, uint32(val), 2)
+	}
+}
 
 // timerDivisor decodes the divide-config register (bits 0,1,3 form the
 // 1,2,4,...,128 divisor; the encoding is deliberately scrambled).
@@ -162,7 +194,20 @@ func (l *LocalAPIC) currentCount() uint32 {
 // if no timer is armed/deliverable. Used by the board's idle fast-forward to
 // jump straight to the next interrupt instead of crawling tick by tick.
 func (l *LocalAPIC) CyclesToNextTimer() uint64 {
-	if !l.timerRunning || l.timerInitCount == 0 || l.lvtTimer&lvtMasked != 0 {
+	if l.lvtTimer&lvtMasked != 0 {
+		return 0
+	}
+	if l.lvtTimer&lvtTimerTSCDeadline != 0 { // TSC-deadline mode
+		if l.tscDeadline == 0 {
+			return 0
+		}
+		now := l.cyclesFunc()
+		if l.tscDeadline <= now {
+			return 1
+		}
+		return l.tscDeadline - now
+	}
+	if !l.timerRunning || l.timerInitCount == 0 {
 		return 0
 	}
 	target := l.timerStart + uint64(l.timerInitCount)*l.timerDivisor()
@@ -176,6 +221,17 @@ func (l *LocalAPIC) CyclesToNextTimer() uint64 {
 // Tick advances the timer and fires the LVT-timer interrupt on expiry.
 // Called from the machine's CheckTimer loop with the cycle delta.
 func (l *LocalAPIC) Tick(uint64) {
+	if l.lvtTimer&lvtTimerTSCDeadline != 0 { // TSC-deadline mode
+		if l.tscDeadline == 0 || l.cyclesFunc() < l.tscDeadline {
+			return
+		}
+		if l.lvtTimer&lvtMasked == 0 {
+			l.requestVector(uint8(l.lvtTimer & lvtVectorMask))
+		}
+		l.tscDeadline = 0 // one-shot; re-armed by the next IA32_TSC_DEADLINE write
+		l.updateINTR()
+		return
+	}
 	if !l.timerRunning || l.timerInitCount == 0 {
 		return
 	}

@@ -545,6 +545,12 @@ func (c *CPU) opCPUID() error {
 			// implemented opcodes, so they stay advertised even here.
 			cx = 1<<13 | 1<<23
 		}
+		if c.apicEnabled {
+			// x2APIC (21) + TSC-Deadline (24): advertised only when a LocalAPIC
+			// is wired, which models the x2APIC MSR interface + deadline timer.
+			// Required by guests like NuttX qemu-intel64 (it halts otherwise).
+			cx |= 1<<21 | 1<<24
+		}
 		// EDX features (bits): FPU(0), TSC(4), MSR(5), PAE(6), CX8(8),
 		// SEP(11), PGE(13), CMOV(15), PAT(16), PSE36(17),
 		// MMX(23), FXSR(24), SSE(25), SSE2(26).

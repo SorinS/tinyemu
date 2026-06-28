@@ -26,4 +26,6 @@ MEM=${MEM:-128}
 [ -r "$KERNEL" ] || { echo "missing $KERNEL (build NuttX qemu-intel64:nsh — see docs/nuttx_build.md)" >&2; exit 1; }
 
 echo "[run_nuttx-x64] booting NuttX x86_64 (qemu-intel64, ${MEM} MiB) via multiboot"
-exec "$TEMU" -machine x86_64 -m "$MEM" -kernel "$KERNEL"
+# -apic: NuttX requires a local APIC (x2APIC) — its capability check halts the
+# CPU without it.
+exec "$TEMU" -machine x86_64 -m "$MEM" -apic -kernel "$KERNEL"
