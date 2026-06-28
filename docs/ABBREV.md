@@ -83,6 +83,9 @@ Grouped by area; within a group, roughly alphabetical.
 | PIC | Programmable Interrupt Controller | the 8259 pair |
 | PIT | Programmable Interval Timer | the 8254 (IRQ0) |
 | APIC / LAPIC / IOAPIC | Advanced PIC / Local APIC / I/O APIC | modern interrupt routing (`-apic`) |
+| x2APIC | extended LAPIC, MSR-accessed | APIC via MSRs 0x800-0x8FF instead of MMIO; NuttX x86_64 requires it |
+| TSC-deadline | LAPIC one-shot timer mode | write a TSC deadline to MSR 0x6E0 (vs the count-down timer) |
+| FSGSBASE | RD/WR FS/GS-base instructions | `F3 0F AE /0-3`; fast per-CPU / TLS base switches |
 | RTC / CMOS | Real-Time Clock / CMOS NVRAM | IRQ8, time + config bytes |
 | UART / COM1 | serial controller / first serial port | 16550-style at 0x3F8 |
 | FIFO | First-In-First-Out (buffer) | UART RX/TX queues |
@@ -103,6 +106,10 @@ Grouped by area; within a group, roughly alphabetical.
 | CFI | Common Flash Interface | NOR-flash protocol (UEFI pflash) |
 | PSCI | Power State Coordination Interface | ARM64 CPU on/off/reset via SMC |
 | DTB / FDT | Device Tree Blob / Flattened Device Tree | hardware description for ARM64/RISC-V |
+| multiboot / multiboot2 | bootloader↔kernel handoff specs | header magic 0x1BADB002 / 0xE85250D6; NuttX x86_64 boots via multiboot2 |
+| GOP | Graphics Output Protocol | UEFI linear-framebuffer interface |
+| ESP | EFI System Partition | FAT volume holding `\EFI\BOOT\BOOTX64.EFI` |
+| SEC / PEI / DXE / BDS | UEFI boot phases | Security / Pre-EFI Init / Driver Execution Env / Boot Device Select |
 
 ## PCI
 
@@ -149,6 +156,12 @@ Grouped by area; within a group, roughly alphabetical.
 | SBI | Supervisor Binary Interface | firmware call layer |
 | PLIC / CLINT | Platform-Level IC / Core-Local Interruptor | interrupt + timer controllers |
 | MSTATUS / MEPC / MCAUSE | machine status / exc PC / exc cause | trap CSRs |
+| PMP | Physical Memory Protection | M-mode pmpcfg/pmpaddr CSRs; stubbed (stored, not enforced) so M-mode kernels (xv6/seL4) boot |
+| Sstc / stimecmp | S-mode timer-compare extension | stimecmp CSR (0x14D) raises STIP; lets S-mode (xv6) drive its own tick instead of the CLINT |
+| menvcfg | Machine ENVironment ConFiGuration | CSR 0x30A; bit 63 STCE enables Sstc |
+| HTIF | Host-Target InterFace | spike/OpenSBI console channel — temu's "TinyEMU virt" map (vs QEMU-virt's 16550) |
+| Sv39 / Sv48 | Supervisor virtual addressing, 39-/48-bit | RISC-V page-table modes |
+| 16550 / NS16550 | the classic UART chip | QEMU-virt serial @0x10000000 (NuttX/xv6); x86 COM1 is the same family |
 
 ## virtio / Networking
 
@@ -184,6 +197,7 @@ Grouped by area; within a group, roughly alphabetical.
 | GEOM | FreeBSD storage framework | tastes/labels disks |
 | callout | FreeBSD timer-wheel deferred-work mechanism | driven by the timer tick |
 | SEGV | Segmentation Violation (SIGSEGV / signal 11) | process killed for a bad memory access — e.g. dereferencing a corrupted pointer (the FreeBSD arm64 `sh` crash) |
+| NSH | NuttShell | NuttX's interactive shell (the `nsh>` prompt); boots on all three temu ISAs |
 
 ---
 
