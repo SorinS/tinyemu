@@ -70,6 +70,11 @@ func (p *PC) loadMultiboot64(kernelData, initrdData []byte, cmdLine string) erro
 		}
 	}
 
+	// Install ACPI tables (RSDP in the F-segment + an RSDT/FADT/MADT). The MADT
+	// carries a Processor Local-APIC entry, which the guest's ACPI scan needs to
+	// enumerate its CPU — NuttX's x86_64_cpu_init PANICs if acpi_lapic_get fails.
+	installACPIDirect(p)
+
 	// Build the multiboot2 information structure at 0x9000: a u32 total_size +
 	// u32 reserved, then 8-byte-aligned tags terminated by an end tag.
 	const infoAddr uint32 = 0x9000

@@ -20,7 +20,10 @@ TEMU="$ROOT/bin/temu.${OS}-${ARCH}.bin"
 
 DIR="$ROOT/bin/nuttx-x64"
 KERNEL="$DIR/nuttx"
-MEM=${MEM:-128}
+# NuttX qemu-intel64 hard-codes CONFIG_RAM_SIZE=256MiB and lays its heap over the
+# whole range; with less RAM its heap writes hit unbacked memory (dropped) and
+# corrupt the free list. Default to 256.
+MEM=${MEM:-256}
 
 [ -x "$TEMU" ]   || { echo "missing emulator $TEMU (run 'make build')" >&2; exit 1; }
 [ -r "$KERNEL" ] || { echo "missing $KERNEL (build NuttX qemu-intel64:nsh — see docs/nuttx_build.md)" >&2; exit 1; }
