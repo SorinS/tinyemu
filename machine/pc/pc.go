@@ -546,6 +546,11 @@ func (p *PC) LoadBIOS(biosData []byte, kernelData []byte, initrdData []byte, cmd
 			if err := p.loadPVH64(kernelData, initrdData, cmdLine); err == nil {
 				return nil
 			}
+			// Multiboot1 (e.g. NuttX qemu-intel64) — only matches an ELF that
+			// carries a multiboot header, so it's safe ahead of vmlinux64.
+			if err := p.loadMultiboot64(kernelData, initrdData, cmdLine); err == nil {
+				return nil
+			}
 			if err := p.loadVMLinux64(kernelData, initrdData, cmdLine); err == nil {
 				return nil
 			}

@@ -12,6 +12,11 @@ import (
 // drift between the i386 and long-mode backends at build time.
 var _ cpu.X86Core = (*CPU)(nil)
 
+// x64ITrace, when TINYEMU_X64_ITRACE is set, logs the RIP + mode of every
+// executed instruction to stderr (very verbose) — the cheap way to see where a
+// guest wedges before producing any console output.
+var x64ITrace = os.Getenv("TINYEMU_X64_ITRACE") != ""
+
 // ErrNotImplemented wraps every "opcode not yet implemented" error so
 // callers can distinguish "instruction-level missing feature" from
 // other Step failures via errors.Is.
@@ -204,6 +209,9 @@ func (c *CPU) Step() (err error) {
 // stepCore executes one instruction. It may panic with a pageFaultPanic/
 // exceptionPanic on a fault; callers (Step, Run) recover via recoverStep.
 func (c *CPU) stepCore() (err error) {
+	if x64ITrace {
+		fmt.Fprintf(os.Stderr, "x64 rip=%#x mode=%d\n", c.rip, c.mode)
+	}
 	// IP wrapping. Per Intel SDM, real-mode code fetch uses a 16-bit IP:
 	// after an instruction at offset 0xFFFF, IP wraps back to 0x0000 of
 	// the SAME segment rather than spilling into the next linear page.
