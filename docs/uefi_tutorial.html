@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UEFI — From Firmware Volume to ExitBootServices</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=JetBrains+Mono:wght@400;500&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:           #0e1117;
+  --bg-raised:    #141820;
+  --bg-panel:     #1a2030;
+  --bg-hover:     #1f2838;
+  --border:       #2a3448;
+  --border-soft:  #1e2a3a;
+  --text:         #d8d0c4;
+  --text-dim:     #7a8499;
+  --text-faint:   #3d4a5c;
+
+  --amber:        #e8a020;
+  --amber-dim:    #a06010;
+  --green:        #4daa6a;
+  --blue:         #5a9fd4;
+  --rose:         #c46060;
+  --violet:       #8b78d0;
+  --teal:         #4dcfb0;
+
+  --p1:           #e8a020;
+  --p2:           #4daa6a;
+  --p3:           #5a9fd4;
+  --p4:           #8b78d0;
+  --p5:           #c46060;
+  --p6:           #4dcfb0;
+
+  --radius:       6px;
+  --sidebar-w:    300px;
+  --font-serif:   'Libre Baskerville', Georgia, serif;
+  --font-display: 'Crimson Pro', Georgia, serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-behavior: smooth; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: var(--font-serif); font-size: 1rem; line-height: 1.75;
+  min-height: 100vh; display: flex; overflow: hidden;
+}
+
+#sidebar {
+  width: var(--sidebar-w); min-width: var(--sidebar-w);
+  background: var(--bg-raised); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  transition: transform 0.3s ease; z-index: 100;
+}
+#sidebar-header { padding: 24px 20px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#sidebar-header h1 {
+  font-family: var(--font-display); font-size: 1.1rem; font-weight: 600;
+  color: var(--amber); letter-spacing: 0.02em; line-height: 1.3;
+}
+#sidebar-header p {
+  font-family: var(--font-mono); font-size: 0.65rem; color: var(--text-dim);
+  margin-top: 4px; letter-spacing: 0.05em; text-transform: uppercase;
+}
+#progress-bar-wrap { padding: 12px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#progress-label {
+  font-family: var(--font-mono); font-size: 0.65rem; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  margin-bottom: 6px; display: flex; justify-content: space-between;
+}
+#progress-track { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+#progress-fill { height: 100%; background: var(--amber); transition: width 0.4s ease; border-radius: 2px; }
+
+#search-wrap { padding: 10px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#search {
+  width: 100%; background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text);
+  font-family: var(--font-mono); font-size: 0.72rem;
+  padding: 7px 10px; outline: none; transition: border-color 0.2s;
+}
+#search::placeholder { color: var(--text-faint); }
+#search:focus { border-color: var(--amber-dim); }
+
+#lesson-nav { overflow-y: auto; flex: 1; padding: 8px 0 20px; }
+#lesson-nav::-webkit-scrollbar { width: 4px; }
+#lesson-nav::-webkit-scrollbar-track { background: transparent; }
+#lesson-nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.phase-group { margin-bottom: 4px; }
+.phase-header {
+  padding: 10px 20px 6px; font-family: var(--font-mono); font-size: 0.6rem;
+  text-transform: uppercase; letter-spacing: 0.1em; font-weight: 500;
+  display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+}
+.phase-header .phase-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.phase-header .phase-toggle { margin-left: auto; color: var(--text-faint); font-size: 0.7rem; transition: transform 0.2s; }
+.phase-header.collapsed .phase-toggle { transform: rotate(-90deg); }
+.phase-lessons { overflow: hidden; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 20px 7px 28px; cursor: pointer;
+  transition: background 0.15s; border-left: 2px solid transparent;
+  font-size: 0.78rem; color: var(--text-dim); line-height: 1.3;
+}
+.nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.nav-item.active { color: var(--text); background: var(--bg-panel); }
+.nav-item.done .nav-check { opacity: 1; }
+.nav-check {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 1.5px solid var(--border); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.5rem; opacity: 0.4; transition: all 0.2s;
+}
+.nav-item.done .nav-check {
+  opacity: 1; background: var(--green); border-color: var(--green); color: white;
+}
+.nav-num { font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-faint); min-width: 20px; }
+.nav-stub { color: var(--text-faint); font-style: italic; }
+
+#main { flex: 1; overflow-y: auto; height: 100vh; display: flex; flex-direction: column; }
+#main::-webkit-scrollbar { width: 6px; }
+#main::-webkit-scrollbar-track { background: transparent; }
+#main::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+#topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 48px; border-bottom: 1px solid var(--border);
+  background: var(--bg); flex-shrink: 0; position: sticky; top: 0; z-index: 10;
+}
+#topbar-phase { font-family: var(--font-mono); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); }
+#topbar-nav { display: flex; gap: 8px; }
+.nav-btn {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  color: var(--text-dim); padding: 5px 14px; border-radius: var(--radius);
+  cursor: pointer; font-family: var(--font-mono); font-size: 0.7rem;
+  transition: all 0.15s;
+}
+.nav-btn:hover { background: var(--bg-hover); color: var(--text); border-color: var(--text-dim); }
+.nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+#lesson-content {
+  max-width: 820px; width: 100%; margin: 0 auto;
+  padding: 52px 48px 80px; flex: 1; animation: fadeSlide 0.3s ease;
+}
+@keyframes fadeSlide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.lesson-eyebrow {
+  font-family: var(--font-mono); font-size: 0.65rem;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  margin-bottom: 14px; display: flex; align-items: center; gap: 12px;
+}
+.lesson-eyebrow .phase-badge { padding: 2px 8px; border-radius: 3px; font-size: 0.6rem; }
+.lesson-eyebrow .stub-badge {
+  padding: 2px 8px; border-radius: 3px; font-size: 0.6rem;
+  background: #1e1400; color: var(--amber-dim);
+}
+.lesson-number { color: var(--text-faint); }
+.lesson-title {
+  font-family: var(--font-display); font-size: 2.6rem; font-weight: 600;
+  line-height: 1.1; color: #eee; margin-bottom: 8px; letter-spacing: -0.01em;
+}
+.lesson-subtitle {
+  font-family: var(--font-display); font-size: 1.2rem; font-style: italic;
+  color: var(--text-dim); margin-bottom: 36px; line-height: 1.4;
+}
+.lesson-divider { height: 1px; background: linear-gradient(to right, var(--border), transparent); margin-bottom: 36px; }
+
+.lesson-body h2 {
+  font-family: var(--font-display); font-size: 1.5rem; font-weight: 600;
+  color: #ddd; margin: 40px 0 14px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border-soft);
+}
+.lesson-body h3 {
+  font-family: var(--font-display); font-size: 1.15rem; font-weight: 600;
+  color: var(--amber); margin: 28px 0 10px; font-style: italic;
+}
+.lesson-body p { margin-bottom: 16px; color: var(--text); }
+.lesson-body p:last-child { margin-bottom: 0; }
+.lesson-body ul, .lesson-body ol { margin: 8px 0 16px 22px; color: var(--text); }
+.lesson-body li { margin-bottom: 6px; }
+
+.lesson-body code {
+  font-family: var(--font-mono); font-size: 0.82em;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 5px; color: #a8d0f0;
+}
+
+pre {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-left: 3px solid var(--amber-dim); border-radius: var(--radius);
+  padding: 20px 22px; overflow-x: auto; margin: 20px 0;
+  position: relative; font-family: var(--font-mono);
+  font-size: 0.82rem; line-height: 1.65;
+}
+pre::-webkit-scrollbar { height: 4px; }
+pre::-webkit-scrollbar-track { background: transparent; }
+pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+pre .lang-tag {
+  position: absolute; top: 8px; right: 10px;
+  font-size: 0.58rem; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-faint);
+}
+
+.kw  { color: #c792ea; }
+.rg  { color: #82aaff; }
+.fn  { color: #82cfda; }
+.cm  { color: #546e7a; font-style: italic; }
+.st  { color: #c3e88d; }
+.nm  { color: #f78c6c; }
+.op  { color: #89ddff; }
+.dc  { color: #ffcb6b; }
+.ct  { color: #ff5572; }
+.ty  { color: #82aaff; }
+
+.box {
+  border-radius: var(--radius); padding: 16px 20px; margin: 24px 0;
+  border-left: 3px solid; font-size: 0.92rem;
+}
+.box-note   { background: #0d1e2e; border-color: var(--blue);   color: #a8c8e8; }
+.box-think  { background: #1a1400; border-color: var(--amber);  color: #c8a060; }
+.box-key    { background: #0d1e18; border-color: var(--green);  color: #90c8a0; }
+.box-warn   { background: #1e100d; border-color: var(--rose);   color: #c88080; }
+.box-stub   { background: #1a1408; border-color: var(--amber-dim); color: #c8a060; font-style: italic; }
+.box strong { font-weight: 700; display: block; margin-bottom: 4px; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.corr-table {
+  width: 100%; border-collapse: collapse;
+  margin: 20px 0; font-size: 0.88rem;
+}
+.corr-table th {
+  text-align: left; font-family: var(--font-mono);
+  font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-dim); border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+}
+.corr-table td { padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+.corr-table td:first-child { color: var(--blue); font-family: var(--font-mono); font-size: 0.8rem; }
+.corr-table td:last-child  { color: var(--green); font-family: var(--font-mono); font-size: 0.8rem; }
+.corr-table td:nth-child(2){ color: var(--text-dim); }
+.corr-table tr:last-child td { border-bottom: none; }
+
+.exercises { margin-top: 40px; border-top: 1px solid var(--border); padding-top: 28px; }
+.exercises h2 {
+  font-family: var(--font-display); font-size: 1.3rem; color: var(--amber);
+  margin-bottom: 18px; border: none !important; padding: 0 !important;
+}
+.exercise {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 20px; margin-bottom: 14px;
+  position: relative; transition: border-color 0.2s;
+}
+.exercise:hover { border-color: var(--amber-dim); }
+.exercise-num {
+  font-family: var(--font-mono); font-size: 0.65rem; color: var(--amber);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
+}
+.exercise p { font-size: 0.9rem; margin-bottom: 0; }
+
+.complete-wrap { margin-top: 44px; display: flex; align-items: center; gap: 14px; }
+.btn-complete {
+  background: transparent; border: 1.5px solid var(--border); color: var(--text-dim);
+  padding: 10px 24px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem;
+  text-transform: uppercase; letter-spacing: 0.06em; transition: all 0.2s;
+}
+.btn-complete:hover { border-color: var(--green); color: var(--green); }
+.btn-complete.done  { border-color: var(--green); color: var(--green); background: #0d1e18; }
+.btn-next {
+  background: var(--amber); border: none; color: var(--bg);
+  padding: 10px 24px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.06em; transition: all 0.2s;
+}
+.btn-next:hover { background: #f0b848; }
+
+#welcome { max-width: 720px; margin: 60px auto; padding: 0 48px; animation: fadeSlide 0.4s ease; }
+#welcome h1 {
+  font-family: var(--font-display); font-size: 3.2rem; font-weight: 300;
+  line-height: 1.1; color: #eee; margin-bottom: 6px;
+}
+#welcome h1 em { color: var(--amber); font-style: italic; }
+#welcome .tagline {
+  font-family: var(--font-display); font-size: 1.2rem; font-style: italic;
+  color: var(--text-dim); margin-bottom: 36px;
+}
+#welcome .welcome-body { font-size: 0.95rem; }
+#welcome .welcome-body p { margin-bottom: 16px; }
+.phase-overview { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 28px 0; }
+.phase-card {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px;
+  cursor: pointer; transition: all 0.2s;
+}
+.phase-card:hover { border-color: var(--amber-dim); background: var(--bg-hover); }
+.phase-card-num {
+  font-family: var(--font-mono); font-size: 0.6rem;
+  text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 6px;
+}
+.phase-card h3 { font-family: var(--font-display); font-size: 1rem; font-weight: 600; color: #ddd; margin-bottom: 4px; }
+.phase-card p  { font-size: 0.8rem; color: var(--text-dim); margin: 0; }
+.btn-start {
+  background: var(--amber); border: none; color: var(--bg);
+  padding: 12px 32px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.8rem; font-weight: 500;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  transition: background 0.2s; margin-top: 8px;
+}
+.btn-start:hover { background: #f0b848; }
+
+#sidebar-toggle {
+  display: none; position: fixed; bottom: 20px; left: 20px; z-index: 200;
+  background: var(--amber); color: var(--bg); border: none;
+  border-radius: 50%; width: 44px; height: 44px;
+  cursor: pointer; font-size: 1.2rem;
+  align-items: center; justify-content: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+@media (max-width: 900px) {
+  #sidebar { position: fixed; top: 0; left: 0; transform: translateX(-100%); }
+  #sidebar.open { transform: translateX(0); }
+  #sidebar-toggle { display: flex; }
+  #lesson-content { padding: 36px 24px 60px; }
+  #topbar { padding: 12px 24px; }
+  .lesson-title { font-size: 2rem; }
+  .phase-overview { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<nav id="sidebar">
+  <div id="sidebar-header">
+    <h1>UEFI Internals</h1>
+    <p>From Firmware to ExitBootServices</p>
+  </div>
+  <div id="progress-bar-wrap">
+    <div id="progress-label">
+      <span>Progress</span>
+      <span id="progress-text">0 / 39</span>
+    </div>
+    <div id="progress-track"><div id="progress-fill" style="width:0%"></div></div>
+  </div>
+  <div id="search-wrap">
+    <input type="text" id="search" placeholder="Search lessons…" autocomplete="off">
+  </div>
+  <div id="lesson-nav"></div>
+</nav>
+
+<main id="main">
+  <div id="topbar">
+    <span id="topbar-phase">Overview</span>
+    <div id="topbar-nav">
+      <button class="nav-btn" id="btn-prev" disabled>← Prev</button>
+      <button class="nav-btn" id="btn-next-top">Next →</button>
+    </div>
+  </div>
+  <div id="content-area"></div>
+</main>
+
+<button id="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+
+<script>
+const PHASE_META = {
+  1: { name: "UEFI vs the BIOS",          short: "Phase I",   color: "var(--p1)", lessons: "1–3"   },
+  2: { name: "The Boot-Time Environment", short: "Phase II",  color: "var(--p2)", lessons: "4–7"   },
+  3: { name: "Booting an Operating System", short: "Phase III", color: "var(--p3)", lessons: "8–10" },
+  4: { name: "UEFI on tinyemu-go",        short: "Phase IV",  color: "var(--p4)", lessons: "11–14" },
+};
+
+const LESSONS = [
+
+// ============================================================
+// PHASE 1 — UEFI vs the BIOS
+// ============================================================
+{
+  id: 1, phase: 1,
+  title: "Why UEFI Replaced the BIOS",
+  subtitle: "The same cold-boot problem, solved with a richer model",
+  content: `
+<h2>The cold-boot problem, again</h2>
+<p>UEFI solves exactly the problem the legacy BIOS solves: take a machine from "raw CPU at the reset vector" to "an operating system is running." What changed is <em>how</em>. The BIOS is a pile of 16-bit real-mode interrupt handlers (<code>INT 10h</code>, <code>INT 13h</code>…) that a bootloader pokes from the first 1&nbsp;MiB of memory. UEFI is a small, structured, mostly-64-bit operating environment with a typed API, a driver model, a filesystem, and a boot manager — all before your OS loads.</p>
+
+<h2>What the BIOS couldn't do</h2>
+<ul>
+  <li><strong>16-bit real mode.</strong> Bootloaders run in real mode with a 1&nbsp;MiB ceiling; reaching protected/long mode is the loader's problem.</li>
+  <li><strong>MBR partitioning.</strong> 32-bit LBA in the partition table caps disks at 2&nbsp;TiB.</li>
+  <li><strong>512-byte boot sector.</strong> All the loader's first-stage code must fit in one sector at <code>0x7C00</code>.</li>
+  <li><strong>No standard API past boot.</strong> Once the OS takes over, the BIOS services are gone.</li>
+</ul>
+
+<h2>What UEFI brings</h2>
+<ul>
+  <li><strong>Native 32/64-bit.</strong> Firmware and applications run in flat protected or long mode — no real-mode gymnastics.</li>
+  <li><strong>GPT.</strong> 64-bit LBA, many partitions, redundant headers.</li>
+  <li><strong>A driver + protocol model.</strong> Functionality is discovered at runtime by GUID, not hard-wired interrupt numbers.</li>
+  <li><strong>A boot manager + variables.</strong> Non-volatile <code>BootOrder</code>/<code>Boot####</code> entries decide what to launch; an EFI app on a FAT partition is the boot target.</li>
+  <li><strong>Runtime services.</strong> A handful of calls (variables, time, reset) survive into the running OS.</li>
+</ul>
+
+<div class="box box-note"><strong>Where this fits</strong>Read this alongside <code>bios_tutorial.html</code> (the legacy path) and <code>x64_tutorial.html</code> (what the CPU does). UEFI sits between silicon and the OS loader, just like the BIOS — but it hands the OS a far richer starting state.</div>
+
+<p>In <code>tinyemu-go</code> the UEFI firmware is <strong>OVMF</strong> (the edk2 build for virtual machines) on x86_64 and <strong>edk2 AArch64</strong> on arm64. The emulator's job is to host that firmware faithfully enough that it reaches its boot manager and launches a guest — which, as Phase IV shows, surfaced a string of real device bugs.</p>
+`,
+  exercises: [
+    "List three things a UEFI application can do that a legacy boot sector cannot, and tie each to a concrete UEFI facility (mode, partitioning, API).",
+    "The BIOS hands off with a single jump to 0x7C00 and DL set. Describe, at a high level, how UEFI's handoff differs — what does the firmware give the OS loader instead?",
+  ],
+},
+{
+  id: 2, phase: 1,
+  title: "The Firmware Image & Boot Phases",
+  subtitle: "SEC → PEI → DXE → BDS, and where the code lives",
+  content: `
+<h2>One flash image, several phases</h2>
+<p>UEFI firmware is a single image in NOR flash mapped just below 4&nbsp;GiB. The CPU still starts at the reset vector (<code>0xFFFFFFF0</code> on x86); the very first code (<strong>SEC</strong>, the security phase) sets up a temporary stack and finds the main firmware volume. From there the phases run in order:</p>
+<ol>
+  <li><strong>SEC</strong> — Security. Reset-vector code; establishes a call stack (often in cache-as-RAM) and locates the boot firmware volume.</li>
+  <li><strong>PEI</strong> — Pre-EFI Initialization. Tiny modules (PEIMs) that initialize just enough RAM and chipset to proceed, then describe the platform via HOBs (hand-off blocks).</li>
+  <li><strong>DXE</strong> — Driver Execution Environment. The bulk of the firmware: the DXE core publishes Boot Services, then dispatches drivers that produce <em>protocols</em> (disk, console, network, the FAT driver…).</li>
+  <li><strong>BDS</strong> — Boot Device Selection. Reads the boot variables, connects the devices each entry needs, and launches the boot target (an OS loader or the UEFI shell).</li>
+</ol>
+
+<h2>Firmware volumes</h2>
+<p>The image is a set of <strong>firmware volumes</strong> (FVs) containing <strong>files</strong> (FFS), each holding sections (PE32 executables, raw data, compressed sub-volumes). The DXE dispatcher walks the FV, finds drivers whose dependencies are satisfied, and runs them. This is why UEFI is "modular": adding a capability is adding a driver file, not patching a monolith.</p>
+
+<div class="box box-key"><strong>The mental model</strong>SEC/PEI get you to RAM + a platform description. DXE turns that into a world of protocols. BDS uses those protocols to find and launch an OS. Your guest only ever sees the tail end of DXE + BDS.</div>
+
+<p>OVMF collapses some of this for virtual machines (memory is already there; PEI is thin), but the DXE→BDS structure is exactly what you watch on temu's serial console: a stream of driver-connect messages, then the boot manager.</p>
+`,
+  exercises: [
+    "Match each phase (SEC/PEI/DXE/BDS) to its one-sentence job. Which phase publishes Boot Services?",
+    "Why is a 'firmware volume of driver files' easier to extend than a monolithic BIOS ROM? Give a concrete example (e.g. adding network boot).",
+  ],
+},
+{
+  id: 3, phase: 1,
+  title: "Protocols, Handles & GUIDs",
+  subtitle: "UEFI's runtime object model",
+  content: `
+<h2>Everything is a handle with protocols</h2>
+<p>UEFI has no fixed interrupt numbers. Instead it keeps a <strong>handle database</strong>: each device or service is a <em>handle</em>, and on each handle sit one or more <strong>protocols</strong> — interface structs identified by a 128-bit <strong>GUID</strong>. A protocol is just a vtable of function pointers plus data.</p>
+
+<pre><span class="lang-tag">c</span><span class="cm">// Find the Graphics Output Protocol on any handle</span>
+<span class="ty">EFI_GRAPHICS_OUTPUT_PROTOCOL</span> *gop;
+<span class="ty">EFI_STATUS</span> s = BS-&gt;<span class="fn">LocateProtocol</span>(
+    &amp;gEfiGraphicsOutputProtocolGuid, <span class="kw">NULL</span>, (<span class="ty">void</span>**)&amp;gop);
+<span class="kw">if</span> (s == <span class="dc">EFI_SUCCESS</span>)
+    gop-&gt;<span class="fn">SetMode</span>(gop, mode);   <span class="cm">// call through the protocol's vtable</span></pre>
+
+<h2>How you reach a capability</h2>
+<ul>
+  <li><strong>LocateProtocol</strong> — give me any handle that exposes this GUID (e.g. "a graphics output").</li>
+  <li><strong>HandleProtocol / OpenProtocol</strong> — give me this GUID <em>on this specific handle</em> (e.g. the block I/O on <em>that</em> disk).</li>
+  <li><strong>LocateHandleBuffer</strong> — give me every handle exposing this GUID, so I can iterate (all disks, all NICs).</li>
+</ul>
+
+<h2>Device paths</h2>
+<p>Handles are also addressable by a <strong>device path</strong> — a binary breadcrumb like <code>PciRoot(0x0)/Pci(0x1,0x0)/Sata(0,0,0)/HD(1,GPT,…)/\\EFI\\BOOT\\BOOTX64.EFI</code>. Boot variables store device paths so the firmware can re-find the same boot file across reboots.</p>
+
+<div class="box box-think"><strong>Why GUIDs?</strong>A GUID-keyed registry lets independent vendors add interfaces without colliding and lets the OS loader ask "is there a console? a disk? a network?" without knowing the hardware. It's late binding instead of the BIOS's hard-coded INT numbers.</div>
+`,
+  exercises: [
+    "You want to read a file from the first FAT volume. Which protocol GUIDs do you need, and would you LocateProtocol or LocateHandleBuffer + OpenProtocol? Why?",
+    "Explain a device path in one sentence and say why boot variables store them rather than a drive number.",
+  ],
+},
+
+// ============================================================
+// PHASE 2 — The Boot-Time Environment
+// ============================================================
+{
+  id: 4, phase: 2,
+  title: "The EFI System Table",
+  subtitle: "The one pointer every UEFI program is handed",
+  content: `
+<h2>The entry point</h2>
+<p>Every UEFI application (and OS loader) is a PE/COFF executable with this signature:</p>
+<pre><span class="lang-tag">c</span><span class="ty">EFI_STATUS</span> <span class="fn">efi_main</span>(<span class="ty">EFI_HANDLE</span> ImageHandle, <span class="ty">EFI_SYSTEM_TABLE</span> *SystemTable);</pre>
+<p><code>ImageHandle</code> identifies <em>you</em> (your loaded image). <code>SystemTable</code> is the root of everything: from it you reach the console, Boot Services, Runtime Services, and the configuration tables (ACPI, SMBIOS).</p>
+
+<h2>What's in the table</h2>
+<ul>
+  <li><strong>ConIn / ConOut / StdErr</strong> — Simple Text Input/Output protocols (the console).</li>
+  <li><strong>BootServices</strong> — the big table of functions usable only before <code>ExitBootServices</code>.</li>
+  <li><strong>RuntimeServices</strong> — the small table that survives into the OS.</li>
+  <li><strong>ConfigurationTable[]</strong> — GUID→pointer pairs: the ACPI RSDP, SMBIOS entry point, the device-tree (on arm), etc.</li>
+</ul>
+
+<pre><span class="lang-tag">c</span>SystemTable-&gt;ConOut-&gt;<span class="fn">OutputString</span>(SystemTable-&gt;ConOut, L<span class="st">"Hello, UEFI\\r\\n"</span>);
+<span class="ty">EFI_BOOT_SERVICES</span> *BS = SystemTable-&gt;BootServices;
+<span class="ty">EFI_RUNTIME_SERVICES</span> *RT = SystemTable-&gt;RuntimeServices;</pre>
+
+<div class="box box-note"><strong>How the OS finds ACPI</strong>The OS loader scans <code>ConfigurationTable[]</code> for the ACPI 2.0 GUID to get the RSDP — it doesn't scan the legacy <code>0xE0000–0xFFFFF</code> F-segment. On temu, <code>installACPIDirect</code> lays the RSDP down and the PVH/UEFI paths point the guest at it.</div>
+`,
+  exercises: [
+    "Name the four most important fields of EFI_SYSTEM_TABLE and what each gives you access to.",
+    "An OS loader needs the ACPI tables. Trace, in two steps, how it gets the RSDP physical address from the System Table.",
+  ],
+},
+{
+  id: 5, phase: 2,
+  title: "Boot Services",
+  subtitle: "Memory, events, images — the firmware as a tiny OS",
+  content: `
+<h2>The pre-OS API</h2>
+<p>Boot Services are the functions available <em>only</em> while the firmware still owns the machine. The big groups:</p>
+<ul>
+  <li><strong>Memory.</strong> <code>AllocatePages</code> / <code>FreePages</code> (page-granular, typed), <code>AllocatePool</code> / <code>FreePool</code> (byte-granular). Every allocation has an <em>EFI memory type</em> (e.g. <code>EfiLoaderData</code>, <code>EfiBootServicesCode</code>) that tells the OS what it can reclaim later.</li>
+  <li><strong>Memory map.</strong> <code>GetMemoryMap</code> returns the descriptor array the OS will inherit — and the <em>map key</em> you must pass to <code>ExitBootServices</code>.</li>
+  <li><strong>Protocols.</strong> <code>InstallProtocolInterface</code>, <code>LocateProtocol</code>, <code>OpenProtocol</code> — the handle-database operations from Lesson 3.</li>
+  <li><strong>Events &amp; timers.</strong> <code>CreateEvent</code>, <code>SetTimer</code>, <code>WaitForEvent</code> — a cooperative, single-threaded event model (the timer tick drives polling).</li>
+  <li><strong>Images.</strong> <code>LoadImage</code> (parse a PE/COFF from a buffer or device path), <code>StartImage</code> (run it), <code>Exit</code>.</li>
+</ul>
+
+<pre><span class="lang-tag">c</span><span class="ty">UINTN</span> mapSize = 0, mapKey, descSize; <span class="ty">UINT32</span> descVer;
+BS-&gt;<span class="fn">GetMemoryMap</span>(&amp;mapSize, <span class="kw">NULL</span>, &amp;mapKey, &amp;descSize, &amp;descVer); <span class="cm">// size probe</span>
+<span class="ty">EFI_MEMORY_DESCRIPTOR</span> *map; BS-&gt;<span class="fn">AllocatePool</span>(<span class="dc">EfiLoaderData</span>, mapSize, (<span class="ty">void</span>**)&amp;map);
+BS-&gt;<span class="fn">GetMemoryMap</span>(&amp;mapSize, map, &amp;mapKey, &amp;descSize, &amp;descVer);   <span class="cm">// real read</span></pre>
+
+<div class="box box-warn"><strong>The map-key dance</strong>Allocating the buffer for the map can <em>change</em> the map, invalidating the key. Loaders call GetMemoryMap immediately before ExitBootServices, and retry if the key is stale. Get this wrong and ExitBootServices returns <code>EFI_INVALID_PARAMETER</code>.</div>
+`,
+  exercises: [
+    "Why does every Boot Services allocation carry an EFI memory type? What does the OS do with that information after boot?",
+    "Describe the two-call GetMemoryMap idiom and explain why the second call can still fail with a stale map key.",
+  ],
+},
+{
+  id: 6, phase: 2,
+  title: "Runtime Services & Variables",
+  subtitle: "What survives into the running OS",
+  content: `
+<h2>The services that don't go away</h2>
+<p>After <code>ExitBootServices</code>, Boot Services are gone — but Runtime Services remain callable by the OS (the OS even maps them into its own address space via <code>SetVirtualAddressMap</code>). The set is deliberately tiny:</p>
+<ul>
+  <li><strong>Variables.</strong> <code>GetVariable</code> / <code>SetVariable</code> / <code>GetNextVariableName</code> — the non-volatile key/value store (per-vendor GUID + name).</li>
+  <li><strong>Time.</strong> <code>GetTime</code> / <code>SetTime</code> — the real-time clock.</li>
+  <li><strong>Reset.</strong> <code>ResetSystem</code> — cold/warm reset, shutdown.</li>
+  <li><strong>Capsules.</strong> Firmware-update delivery (rarely used by guests).</li>
+</ul>
+
+<h2>The variable store</h2>
+<p>UEFI variables back the boot manager: <code>BootOrder</code> (a list of <code>Boot####</code> ids), each <code>Boot####</code> (a description + device path + optional load options), plus <code>Boot</code>/<code>SecureBoot</code> state. They live in a dedicated <strong>flash bank</strong> so they persist across reboots.</p>
+
+<div class="box box-key"><strong>Why this matters for an emulator</strong>The variable store is real writable flash, driven with flash command sequences — not plain RAM. On temu this was a concrete bug: edk2's <code>VirtNorFlashDxe</code> drove the variable bank with Intel CFI commands and polled a status bit; modeling it as RAM stalled edk2's BDS. Lesson 12 covers the fix (<code>devices/cfiflash.go</code>).</div>
+`,
+  exercises: [
+    "List the Runtime Services and explain why the set is so small compared to Boot Services.",
+    "Where do BootOrder/Boot#### live, and why must that storage behave like flash rather than RAM in an emulator?",
+  ],
+},
+{
+  id: 7, phase: 2,
+  title: "Console & Graphics",
+  subtitle: "Text output, input, and the GOP framebuffer",
+  content: `
+<h2>Text first</h2>
+<p>The simplest console is <strong>Simple Text Output</strong> (<code>ConOut</code>) and <strong>Simple Text Input</strong> (<code>ConIn</code>) — Unicode strings out, keystrokes in. On a virtual machine the firmware usually mirrors this to a serial port, which is exactly what you watch scroll by on temu's console.</p>
+
+<h2>Graphics: the GOP</h2>
+<p>For pixels, UEFI publishes the <strong>Graphics Output Protocol</strong> (GOP). You query available modes, set one, and get back a linear framebuffer base address + pitch + pixel format. The OS loader can keep using that same framebuffer after ExitBootServices (no driver needed) — this is how a UEFI OS shows a splash before its real GPU driver loads.</p>
+
+<pre><span class="lang-tag">c</span>gop-&gt;<span class="fn">QueryMode</span>(gop, modeNum, &amp;sizeOfInfo, &amp;info);
+gop-&gt;<span class="fn">SetMode</span>(gop, modeNum);
+<span class="ty">UINT32</span> *fb = (<span class="ty">UINT32</span>*)gop-&gt;Mode-&gt;FrameBufferBase;   <span class="cm">// write pixels directly</span>
+fb[y * (gop-&gt;Mode-&gt;Info-&gt;PixelsPerScanLine) + x] = 0x00FF00; <span class="cm">// green</span></pre>
+
+<div class="box box-note"><strong>On temu</strong>Booting a GOP-using guest (BareMetal-OS's Pure64 loader) needs the emulator to expose a framebuffer device the firmware's GOP driver binds to — temu's <code>TINYEMU_STDVGA=1</code> provides one. Without it, the loader's GOP probe fails and the payload only speaks over serial.</div>
+`,
+  exercises: [
+    "What does GOP hand back that lets an OS keep drawing after ExitBootServices without a GPU driver?",
+    "Why is the firmware console usually mirrored to a serial port on a VM, and how does that help when debugging a boot hang?",
+  ],
+},
+
+// ============================================================
+// PHASE 3 — Booting an Operating System
+// ============================================================
+{
+  id: 8, phase: 3,
+  title: "The ESP & the Boot Manager",
+  subtitle: "FAT, \\EFI\\BOOT\\BOOTX64.EFI, and BootOrder",
+  content: `
+<h2>The EFI System Partition</h2>
+<p>UEFI reads boot files from a <strong>FAT</strong> filesystem — the <em>EFI System Partition</em> (ESP), a GPT partition with a known type GUID. The firmware ships a FAT driver, so any ESP is readable without OS help.</p>
+
+<h2>How the firmware decides what to launch</h2>
+<ol>
+  <li>BDS reads <code>BootOrder</code> (an ordered list of <code>Boot####</code> ids).</li>
+  <li>For each entry, it parses the device path, <em>connects</em> the drivers needed to reach it, and tries to <code>LoadImage</code> + <code>StartImage</code> the target.</li>
+  <li>If no variable points anywhere bootable, it falls back to the <strong>removable-media path</strong>: <code>\\EFI\\BOOT\\BOOTX64.EFI</code> (or <code>BOOTAA64.EFI</code> on arm64) on each ESP.</li>
+</ol>
+
+<div class="box box-key"><strong>The fallback path is the universal target</strong>This is why a freshly-built image "just boots": put your EFI app at <code>\\EFI\\BOOT\\BOOTX64.EFI</code> on a FAT volume and the firmware will run it with no variables set. temu's <code>run_go-boot_serve.sh</code> builds exactly such an ESP (a 64&nbsp;MiB FAT image with the TamaGo app at that path).</div>
+
+<pre><span class="lang-tag">text</span>ESP (FAT, GPT type C12A7328-F81F-11D2-BA4B-00A0C93EC93B)
+└─ EFI/
+   └─ BOOT/
+      └─ BOOTX64.EFI      &lt;- firmware fallback target</pre>
+`,
+  exercises: [
+    "Why FAT and not ext4/NTFS for the ESP? What does the firmware have to ship to read it?",
+    "Your image has no boot variables set. Exactly which file will the firmware try, and what must its filesystem type and partition type be?",
+  ],
+},
+{
+  id: 9, phase: 3,
+  title: "Loading & Launching an Image",
+  subtitle: "PE/COFF, LoadImage/StartImage, the loaded-image protocol",
+  content: `
+<h2>EFI apps are PE/COFF</h2>
+<p>A UEFI executable is a PE32+ image (the same container as a Windows <code>.exe</code>), subsystem type <em>EFI Application</em>. The firmware's loader maps the sections, applies relocations, and calls the entry point with <code>(ImageHandle, SystemTable)</code>.</p>
+
+<h2>The launch flow</h2>
+<ol>
+  <li><code>LoadImage</code> — read the PE from a device path or memory buffer, map + relocate it, create a handle for it that carries the <strong>Loaded Image Protocol</strong> (image base, size, the device it came from, the command line).</li>
+  <li><code>StartImage</code> — transfer control to the entry point. The image runs until it returns or calls <code>Exit</code>.</li>
+  <li>An OS loader (GRUB, systemd-boot, or a kernel's own EFI stub) is itself just such an image; it then loads the kernel and ultimately calls <code>ExitBootServices</code>.</li>
+</ol>
+
+<div class="box box-note"><strong>The EFI stub</strong>Linux/arm64, FreeBSD's loader, and many kernels are themselves valid EFI applications — the firmware <code>StartImage</code>s the kernel directly, no separate bootloader required. That's why <code>-bios OVMF</code> + a kernel-on-an-ESP is a complete boot.</div>
+
+<p>Because images are PE/COFF with relocations, they're position-independent: the firmware can place them anywhere in the memory it allocated. (Contrast the BIOS, which jumps to a fixed <code>0x7C00</code>.)</p>
+`,
+  exercises: [
+    "What container format are EFI applications, and what does LoadImage do that a BIOS boot-sector load (read 512 bytes to 0x7C00) does not?",
+    "Explain how a kernel with an 'EFI stub' removes the need for a separate bootloader.",
+  ],
+},
+{
+  id: 10, phase: 3,
+  title: "ExitBootServices — the Handoff",
+  subtitle: "When the OS takes the machine",
+  content: `
+<h2>The point of no return</h2>
+<p><code>ExitBootServices</code> is the moment the OS takes ownership. The loader:</p>
+<ol>
+  <li>Calls <code>GetMemoryMap</code> one last time to get the current map + its key.</li>
+  <li>Calls <code>BS-&gt;ExitBootServices(ImageHandle, mapKey)</code>.</li>
+  <li>On success, <strong>Boot Services no longer exist</strong> — no allocations, no protocols, no timer events. The firmware's drivers stop. Only Runtime Services remain.</li>
+</ol>
+
+<pre><span class="lang-tag">c</span>BS-&gt;<span class="fn">GetMemoryMap</span>(&amp;mapSize, map, &amp;mapKey, &amp;descSize, &amp;descVer);
+<span class="ty">EFI_STATUS</span> s = BS-&gt;<span class="fn">ExitBootServices</span>(ImageHandle, mapKey);
+<span class="kw">if</span> (s == <span class="ct">EFI_INVALID_PARAMETER</span>) { <span class="cm">/* map changed: re-get + retry once */</span> }
+<span class="cm">// past here: set up our own paging/GDT/IDT, own the framebuffer, run the kernel</span></pre>
+
+<h2>What the OS inherits</h2>
+<ul>
+  <li>The <strong>memory map</strong> — which ranges are free, which are firmware/ACPI/runtime-reserved.</li>
+  <li>The <strong>GOP framebuffer</strong> (still valid memory) and the ACPI/SMBIOS tables (from the config table).</li>
+  <li>The <strong>Runtime Services</strong> table — variables, time, reset.</li>
+</ul>
+
+<div class="box box-think"><strong>Why a clean handoff matters</strong>Everything the OS needs to be self-sufficient is captured <em>before</em> ExitBootServices: the memory map, the framebuffer, the ACPI pointer. After it, the OS is on its own — it builds its own paging, IDT, and drivers. A bug here (stale map key, forgetting to read ACPI first) strands the OS with no way back.</div>
+`,
+  exercises: [
+    "After a successful ExitBootServices, which of these still work: AllocatePool, GetVariable, the GOP framebuffer, a timer event? Explain each.",
+    "Why must the loader capture the memory map and ACPI pointer before calling ExitBootServices rather than after?",
+  ],
+},
+
+// ============================================================
+// PHASE 4 — UEFI on tinyemu-go
+// ============================================================
+{
+  id: 11, phase: 4,
+  title: "Hosting OVMF / edk2",
+  subtitle: "How temu maps the firmware and starts it",
+  content: `
+<h2>-bios is the firmware</h2>
+<p>On temu you boot UEFI by passing the firmware image as the BIOS: <code>-bios bin/ovmf/OVMF.fd</code> (x86_64) or the edk2 AArch64 build (arm64). The emulator maps it just below 4&nbsp;GiB so the reset vector lands in it, and execution begins exactly as a BIOS would — except the code is edk2's SEC phase.</p>
+
+<h2>The flash window</h2>
+<ul>
+  <li>The firmware image is mapped at the top of the 32-bit address space; on x86 the reset vector at <code>0xFFFFFFF0</code> aliases into it, and the low shadow (<code>0xF0000–0xFFFFF</code>) mirrors the tail.</li>
+  <li>OVMF expects a writable region for its <strong>variable store</strong> (Lesson 12) — a separate flash bank, not ROM.</li>
+  <li>arm64 edk2 starts at the RAM base with the firmware at a fixed flash address; the CFI flash bank carries the variables.</li>
+</ul>
+
+<div class="box box-note"><strong>What you see</strong>A successful OVMF/edk2 boot streams DXE driver-connect messages over serial, then the BDS boot manager. On temu the bring-up went "edk2 firmware spins" → DXE → BDS → launching a guest, one device fix at a time (Phase IV lessons 12–14).</div>
+
+<pre><span class="lang-tag">sh</span><span class="cm"># x86_64 UEFI guest</span>
+temu -machine x86_64 -m 1024 -apic -bios bin/ovmf/OVMF.fd -drive esp.img
+
+<span class="cm"># arm64 UEFI guest (edk2)</span>
+temu -machine virt -m 2048 -bios bin/freebsd-arm64/edk2-code.fd -drive disk.raw</pre>
+`,
+  exercises: [
+    "Where in the address space is the firmware mapped, and why does that make the reset vector land in it on both x86 and arm64?",
+    "Name the two distinct flash regions UEFI firmware needs and what each is for.",
+  ],
+},
+{
+  id: 12, phase: 4,
+  title: "The Flash & Variable Store (CFI)",
+  subtitle: "Why a RAM stub wasn't enough",
+  content: `
+<h2>Flash is not RAM</h2>
+<p>The UEFI variable store lives in NOR flash, and edk2's flash driver (<code>VirtNorFlashDxe</code>) talks to it with a <strong>CFI command set</strong>, not plain loads/stores: to write, it issues an Intel command sequence and then <em>polls a status bit</em> (bit 7, the ready/busy flag) until the program/erase completes.</p>
+
+<div class="box box-warn"><strong>The bug</strong>temu originally mapped the variable bank (<code>0x04000000</code>) as ordinary RAM. edk2 wrote a CFI command, then spun forever waiting for a status bit that plain RAM never produced — BDS hung. The fix was a real flash model: <code>devices/cfiflash.go</code> implements the Intel/<code>pflash_cfi01</code> command set (read-array, program, block-erase, status register). That unblocked edk2's BDS and is what lets FreeBSD/arm64 reach its loader.</div>
+
+<h2>What the model has to do</h2>
+<ul>
+  <li>Default to <strong>read-array</strong> mode: reads return the stored bytes.</li>
+  <li>On a <strong>program</strong>/<strong>erase</strong> command, perform the write and flip the <strong>status register</strong> to "ready" so the driver's poll terminates.</li>
+  <li>Persist writes to the variable bank so <code>SetVariable</code> survives a warm reset.</li>
+</ul>
+
+<div class="box box-key"><strong>The general lesson</strong>Firmware drives flash as a state machine. An emulator that treats it as memory passes reads but deadlocks on the first write's status poll — a class of "silent hang" bugs that only a faithful device model fixes.</div>
+`,
+  exercises: [
+    "Trace what edk2 does on a variable write and pinpoint exactly where a RAM-backed flash bank deadlocks.",
+    "List the minimum CFI states a flash model must implement to satisfy a status-polling driver.",
+  ],
+},
+{
+  id: 13, phase: 4,
+  title: "fw_cfg & Platform Discovery",
+  subtitle: "How the firmware learns the machine's shape",
+  content: `
+<h2>Firmware has to discover RAM, ACPI, the clock…</h2>
+<p>OVMF doesn't hard-code the VM's memory size or device list — it asks the platform. On QEMU-style machines that channel is <strong>fw_cfg</strong>: a tiny port/DMA interface the firmware reads to learn RAM size, the e820 map, ACPI tables, kernel/initrd blobs, and more. The firmware also publishes the <strong>ACPI RSDP</strong> into the UEFI configuration table so the OS can find ACPI without scanning memory.</p>
+
+<div class="box box-warn"><strong>The bring-up wall</strong>During OVMF bring-up on temu, OVMF read <em>neither</em> the CMOS memory registers <em>nor</em> fw_cfg the way it expected, and ended up believing in a phantom 4&nbsp;GiB memory region — stalling DXE. Getting memory discovery right (CMOS/fw_cfg + the e820/memory map the firmware consumes) is what lets DXE complete and BDS run.</div>
+
+<h2>Pieces temu provides</h2>
+<ul>
+  <li><strong>fw_cfg</strong> (port + DMA) — debuggable with <code>TINYEMU_FWCFG_DEBUG=1</code> / <code>TINYEMU_FWCFG_DMA</code>.</li>
+  <li><strong>CMOS/RTC</strong> — memory-size registers + the clock for Runtime <code>GetTime</code>.</li>
+  <li><strong>ACPI direct</strong> — <code>installACPIDirect</code> lays the RSDP + tables at fixed addresses and reports the RSDP physical address into the boot path.</li>
+</ul>
+
+<p>The recurring theme: the firmware is a <em>client</em> of these discovery channels. If the channel lies (or is missing), the firmware's model of the machine is wrong and it wedges far from the real cause — the same "look upstream of the symptom" discipline the rest of temu's bring-up demanded.</p>
+`,
+  exercises: [
+    "Name three things OVMF discovers via fw_cfg/CMOS rather than hard-coding, and what breaks if memory discovery is wrong.",
+    "How does an OS loader get the ACPI RSDP under UEFI, and what does temu do to make that work (vs the legacy F-segment scan)?",
+  ],
+},
+{
+  id: 14, phase: 4,
+  title: "UEFI Guests on temu",
+  subtitle: "A catalog of what boots, and what it taught us",
+  content: `
+<h2>The guests</h2>
+<table class="corr-table">
+  <tr><th>Guest</th><th>What it is</th><th>Key enabler</th></tr>
+  <tr><td>go-boot</td><td>A TamaGo (bare-metal Go) UEFI app running a net/http server</td><td>virtio-net BAR reloc + header size + slirp hostfwd fd-bridge</td></tr>
+  <tr><td>BareMetal-OS</td><td>64-bit OS booted by the Pure64 UEFI loader under OVMF</td><td>GOP framebuffer (TINYEMU_STDVGA=1)</td></tr>
+  <tr><td>FreeBSD/arm64</td><td>FreeBSD 14.3 under edk2 AArch64</td><td>CFI flash + WFI timer fast-forward + AT/PAR_EL1 + NEON fixes</td></tr>
+</table>
+
+<h2>What they exercised</h2>
+<ul>
+  <li><strong>go-boot</strong> proved the full network path: <code>curl</code> on the host reaching a Go <code>net/http</code> server inside a UEFI guest — through slirp hostfwd → virtio-net → OVMF's SNP/VirtioNetDxe → the guest's gVisor stack.</li>
+  <li><strong>BareMetal-OS</strong> exercised the GOP path: without a framebuffer device the Pure64 loader's GOP probe fails and the payload only speaks serial.</li>
+  <li><strong>FreeBSD/arm64</strong> drove edk2 all the way to its loader, surfacing the CFI-flash deadlock (Lesson 12), a WFI/timer interaction, the <code>AT S1E1R</code>/<code>PAR_EL1</code> address-translation instruction, and several NEON gaps.</li>
+</ul>
+
+<div class="box box-key"><strong>The pattern</strong>Every UEFI guest is a different stress test of the same firmware path, and each one surfaced a distinct latent device bug — flash, framebuffer, timer, network, an unimplemented instruction. Booting diverse firmware-based guests is, in practice, a bug-finding strategy: the firmware is demanding and unforgiving, so a guest that reaches its boot manager has validated a deep slice of the emulator.</div>
+
+<p>That's the throughline of this whole tutorial: UEFI is a small operating system that runs before yours, and hosting it faithfully means modeling real flash, real discovery channels, and real devices — not stubs.</p>
+`,
+  exercises: [
+    "Pick one temu UEFI guest and trace the single capability whose absence would stop it from booting (flash? framebuffer? a device?).",
+    "Why is 'boot a UEFI guest' a stronger emulator test than 'boot a Linux bzImage directly'? What extra layers does it exercise?",
+  ],
+},
+
+];
+
+
+// ============================================================
+// APP STATE
+// ============================================================
+let currentLesson = null;
+let completed = JSON.parse(localStorage.getItem('uefi_done') || '[]');
+
+function isComplete(id) { return completed.includes(id); }
+function markComplete(id) {
+  if (!completed.includes(id)) completed.push(id);
+  localStorage.setItem('uefi_done', JSON.stringify(completed));
+  updateProgress(); renderNav();
+}
+function unmarkComplete(id) {
+  completed = completed.filter(x => x !== id);
+  localStorage.setItem('uefi_done', JSON.stringify(completed));
+  updateProgress(); renderNav();
+}
+function updateProgress() {
+  const pct = LESSONS.length ? Math.round(completed.length / LESSONS.length * 100) : 0;
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('progress-text').textContent = `${completed.length} / ${LESSONS.length}`;
+}
+
+let collapsedPhases = new Set(JSON.parse(localStorage.getItem('uefi_collapsed') || '[]'));
+
+function renderNav(filter = '') {
+  const nav = document.getElementById('lesson-nav');
+  nav.innerHTML = '';
+  const f = filter.toLowerCase();
+  for (let ph = 1; ph <= 6; ph++) {
+    const meta = PHASE_META[ph];
+    const lessons = LESSONS.filter(l => l.phase === ph && (
+      !f || l.title.toLowerCase().includes(f) || l.subtitle.toLowerCase().includes(f)
+    ));
+    if (lessons.length === 0) continue;
+    const collapsed = collapsedPhases.has(ph);
+    const group = document.createElement('div');
+    group.className = 'phase-group';
+    group.innerHTML = `
+      <div class="phase-header ${collapsed ? 'collapsed' : ''}" data-phase="${ph}"
+           style="color:${meta.color}">
+        <span class="phase-dot" style="background:${meta.color}"></span>
+        ${meta.short}: ${meta.name}
+        <span class="phase-toggle">▾</span>
+      </div>
+      <div class="phase-lessons" ${collapsed ? 'style="display:none"' : ''}>
+        ${lessons.map(l => `
+          <div class="nav-item ${currentLesson === l.id ? 'active' : ''} ${isComplete(l.id) ? 'done' : ''}"
+               data-id="${l.id}"
+               style="${currentLesson === l.id ? `border-left-color:${meta.color}` : ''}">
+            <span class="nav-check">${isComplete(l.id) ? '✓' : ''}</span>
+            <span class="nav-num">${l.id}</span>
+            <span class="${l.stub ? 'nav-stub' : ''}">${l.title}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+    nav.appendChild(group);
+  }
+  nav.querySelectorAll('.phase-header').forEach(h => {
+    h.addEventListener('click', () => {
+      const ph = parseInt(h.dataset.phase);
+      const lessons = h.nextElementSibling;
+      if (collapsedPhases.has(ph)) {
+        collapsedPhases.delete(ph);
+        h.classList.remove('collapsed');
+        lessons.style.display = '';
+      } else {
+        collapsedPhases.add(ph);
+        h.classList.add('collapsed');
+        lessons.style.display = 'none';
+      }
+      localStorage.setItem('uefi_collapsed', JSON.stringify([...collapsedPhases]));
+    });
+  });
+  nav.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', () => showLesson(parseInt(item.dataset.id)));
+  });
+}
+
+function showLesson(id) {
+  const lesson = LESSONS.find(l => l.id === id);
+  if (!lesson) return;
+  currentLesson = id;
+  const phase = PHASE_META[lesson.phase];
+  const prev = LESSONS.find(l => l.id === id - 1);
+  const next = LESSONS.find(l => l.id === id + 1);
+
+  document.getElementById('topbar-phase').textContent = `${phase.short} — ${phase.name}`;
+  const prevBtn = document.getElementById('btn-prev');
+  const nextBtn = document.getElementById('btn-next-top');
+  prevBtn.disabled = !prev;
+  nextBtn.disabled = !next;
+  prevBtn.onclick = () => prev && showLesson(prev.id);
+  nextBtn.onclick = () => next && showLesson(next.id);
+
+  const done = isComplete(id);
+  const stubBadge = lesson.stub ? `<span class="stub-badge">STUB</span>` : '';
+  document.getElementById('content-area').innerHTML = `
+    <div id="lesson-content">
+      <div class="lesson-eyebrow">
+        <span class="phase-badge" style="background:${phase.color}22;color:${phase.color}">${phase.short}</span>
+        <span class="lesson-number">Lesson ${lesson.id} of ${LESSONS.length}</span>
+        ${stubBadge}
+      </div>
+      <h1 class="lesson-title">${lesson.title}</h1>
+      <p class="lesson-subtitle">${lesson.subtitle}</p>
+      <div class="lesson-divider"></div>
+      <div class="lesson-body">${lesson.content}</div>
+      <div class="exercises">
+        <h2>Exercises</h2>
+        ${lesson.exercises.map((ex, i) => `
+          <div class="exercise">
+            <div class="exercise-num">Exercise ${i + 1}</div>
+            <p>${ex}</p>
+          </div>
+        `).join('')}
+      </div>
+      <div class="complete-wrap">
+        <button class="btn-complete ${done ? 'done' : ''}" id="btn-done">
+          ${done ? '✓ Completed' : 'Mark Complete'}
+        </button>
+        ${next ? `<button class="btn-next" id="btn-next-lesson">Next: ${next.title} →</button>` : ''}
+      </div>
+    </div>
+  `;
+  document.getElementById('btn-done').onclick = () => {
+    if (isComplete(id)) unmarkComplete(id); else markComplete(id);
+    renderNav();
+    document.getElementById('btn-done').className = `btn-complete ${isComplete(id) ? 'done' : ''}`;
+    document.getElementById('btn-done').textContent = isComplete(id) ? '✓ Completed' : 'Mark Complete';
+  };
+  const nl = document.getElementById('btn-next-lesson');
+  if (nl) nl.onclick = () => showLesson(next.id);
+  renderNav();
+  document.getElementById('main').scrollTo(0, 0);
+  if (window.innerWidth < 900) document.getElementById('sidebar').classList.remove('open');
+}
+
+function showWelcome() {
+  currentLesson = null;
+  document.getElementById('topbar-phase').textContent = 'Overview';
+  document.getElementById('btn-prev').disabled = true;
+  document.getElementById('btn-next-top').disabled = false;
+  document.getElementById('btn-next-top').onclick = () => showLesson(1);
+  const stubsCount = LESSONS.filter(l => l.stub).length;
+  const filledCount = LESSONS.length - stubsCount;
+  document.getElementById('content-area').innerHTML = `
+    <div id="welcome">
+      <h1>UEFI <em>Internals</em></h1>
+      <p class="tagline">From firmware volume to ExitBootServices — what UEFI does before your OS, how OVMF/edk2 implements it, and how we host it in tinyemu-go.</p>
+      <div class="welcome-body">
+        <p>This course covers the small operating environment that runs <em>before</em> your OS on a modern machine: UEFI. It uses <strong>OVMF / edk2</strong> (the open-source firmware) as the concrete implementation and <code>tinyemu-go</code> as the emulator hosting it. The final phase is a string of real device bugs — flash, framebuffer, timer, discovery — each surfaced by a real UEFI guest, with a real fix.</p>
+        <p>Read this alongside <code>bios_tutorial.html</code> (the legacy path it replaced) and <code>x64_tutorial.html</code> (what the CPU does). UEFI sits between silicon and the OS loader — like the BIOS, but it hands the OS a far richer starting state.</p>
+        <p>${LESSONS.length} lessons across four phases. Progress is saved in your browser.</p>
+        <div class="phase-overview">
+          ${[1,2,3,4].map(ph => {
+            const m = PHASE_META[ph];
+            const done = LESSONS.filter(l => l.phase === ph && isComplete(l.id)).length;
+            const total = LESSONS.filter(l => l.phase === ph).length;
+            return `
+              <div class="phase-card" onclick="showLesson(${(LESSONS.find(l=>l.phase===ph)||{id:1}).id})">
+                <div class="phase-card-num" style="color:${m.color}">${m.short} — Lessons ${m.lessons}</div>
+                <h3>${m.name}</h3>
+                <p>${done}/${total} complete</p>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <button class="btn-start" onclick="showLesson(${completed.length > 0 ? Math.max(...completed) + 1 : 1})">
+          ${completed.length > 0 ? 'Continue →' : 'Start from Lesson 1 →'}
+        </button>
+      </div>
+    </div>
+  `;
+  renderNav();
+}
+
+document.getElementById('search').addEventListener('input', e => renderNav(e.target.value));
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowRight' || e.key === 'j') {
+    const next = currentLesson && LESSONS.find(l => l.id === currentLesson + 1);
+    if (next) showLesson(next.id);
+  }
+  if (e.key === 'ArrowLeft' || e.key === 'k') {
+    const prev = currentLesson && LESSONS.find(l => l.id === currentLesson - 1);
+    if (prev) showLesson(prev.id);
+  }
+  if (e.key === 'h') showWelcome();
+});
+
+function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
+document.getElementById('sidebar-header').style.cursor = 'pointer';
+document.getElementById('sidebar-header').onclick = showWelcome;
+
+updateProgress();
+showWelcome();
+</script>
+</body>
+</html>
