@@ -207,7 +207,7 @@ func NewDeviceCore(memMap *mem.PhysMemoryMap, irq *mem.IRQSignal,
 		MemMap:          memMap,
 		IRQ:             irq,
 		DeviceID:        deviceID,
-		VendorID:        0xffff, // Default vendor ID
+		VendorID:        0x554d4551, // "QEMU" — some guests (xv6) require this exact value
 		ConfigSpaceSize: configSpaceSize,
 		DeviceRecv:      recvFunc,
 	}

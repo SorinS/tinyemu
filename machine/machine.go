@@ -292,6 +292,18 @@ func (m *Machine) AddVirtIODevice(dev *virtio.Device) (int, error) {
 	return irqNum, nil
 }
 
+// AttachBlockDevice satisfies machine.BlockDeviceAttacher: it wires a virtio-blk
+// at the QEMU-"virt" VIRTIO0 slot (0x10001000, PLIC IRQ 1) where unmodified
+// guests built for that board (xv6-riscv) hard-code their disk. It is placed at
+// this fixed address rather than the next sequential slot (and is not added to
+// the FDT virtio list) so it doesn't disturb the virtio console / Linux layout;
+// Linux riscv here boots from initramfs/9p, not virtio-blk.
+func (m *Machine) AttachBlockDevice(bd devices.BlockDevice) error {
+	const qemuVirtVirtIO0 = 0x10001000
+	_, err := virtio.NewBlockDevice(m.memMap, qemuVirtVirtIO0, m.plicIRQs[VirtIOIRQ], bd)
+	return err
+}
+
 // GetVirtIOAddr returns the address for the next VirtIO device slot.
 func (m *Machine) GetVirtIOAddr() uint64 {
 	return uint64(VirtIOAddr + m.virtioCount*VirtIOSize)
