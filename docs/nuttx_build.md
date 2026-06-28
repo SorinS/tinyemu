@@ -5,7 +5,8 @@ How the NuttX guest images are built and run on temu. Two targets:
 | Script | Board | Status |
 |--------|-------|--------|
 | `run_nuttx-riscv.sh` | `rv-virt` (riscv64) | **interactive NSH** |
-| `run_nuttx-x64.sh`   | `qemu-intel64` (x86_64) | builds + boots via multiboot2 to the CPU-capability gate (needs x2APIC — see below) |
+| `run_nuttx-x64.sh`   | `qemu-intel64` (x86_64) | **interactive NSH** (multiboot2 + x2APIC; see below) |
+| `run_nuttx-arm64.sh` | `qemu-armv8a` (arm64) | **interactive NSH** (no temu changes) |
 
 NuttX is **not distributed as a binary** — it is built from source (Apache NuttX
 + the matching `nuttx-apps`). The repos used here:
@@ -67,16 +68,47 @@ it via `machine/pc/multiboot64.go` (added for this): it loads the PT_LOAD segmen
 by physical address and enters 32-bit protected mode with `EAX=0x36D76289`,
 `EBX`=multiboot2 info struct, then NuttX brings up long mode itself.
 
-### Current wall: CPU capability gate
+### The five walls to NSH (all fixed)
 
-`x86_64_check_and_enable_capability` requires CPUID.1.ECX bits and `cli; hlt`s if
-any are missing. temu advertises RDRAND but not **PCID(17) / x2APIC(21) /
-TSC-Deadline(24) / XSAVE(26)**. In NuttX's `intel64_check_capability.c` only
-**x2APIC is unconditional**; PCID / TSC-Deadline / XSAVE are `#ifdef`-gated and can
-be turned off in the board config (NuttX then uses fxsave, which temu has, and the
-periodic LAPIC timer). So reaching NSH needs an **x2APIC MSR interface** on temu's
-existing (xAPIC/MMIO) LAPIC — NuttX talks to the APIC only via x2APIC MSRs (EOI on
-every interrupt, ICR for IPIs, the timer). Debug knob: `TINYEMU_X64_ITRACE=1`.
+NuttX boots multiboot2 → page-table init → long mode → kernel init → NSH. Each
+wall was a "guest expects more than temu provides", found by tracing to the
+faulting RIP (`TINYEMU_X64_ITRACE=1`; mode 2 = PM32, 4 = long64) and reading the
+NuttX source assertion:
+
+1. **multiboot2 loader** — `machine/pc/multiboot64.go`.
+2. **CPU capability gate** — `x86_64_check_and_enable_capability` `cli;hlt`s
+   unless CPUID.1.ECX has its required bits. Only **x2APIC(21) is unconditional**
+   (PCID/XSAVE/TSC-deadline are `#ifdef`-gated → turned off in the config; temu
+   has fxsave). Implemented **x2APIC** (MSR front-end over temu's LocalAPIC) +
+   **TSC-deadline** timer + **FSGSBASE**; `run_nuttx-x64.sh` passes `-apic`.
+3. **FSGSBASE** — `F3 0F AE /0-3` (RD/WR FS/GS base), added to opGroup15.
+4. **ACPI** — `x86_64_cpu_init` reads the ACPI MADT (`acpi_lapic_get`) and PANICs
+   if absent → `loadMultiboot64` now calls `installACPIDirect`.
+5. **RAM size** — NuttX hard-codes `CONFIG_RAM_SIZE=256MiB`; with less, heap
+   writes hit unbacked memory and corrupt the free list → `run_nuttx-x64.sh`
+   defaults to `MEM=256`.
+
+## arm64 (qemu-armv8a)
+
+```sh
+brew install aarch64-elf-gcc aarch64-elf-binutils      # bottled cross toolchain
+# NuttX's gcc.cmake hard-codes the aarch64-none-elf- prefix; symlink it:
+mkdir -p /tmp/arm-tc
+for t in gcc g++ ld ar as objcopy objdump nm strip ranlib gcc-ar cpp; do
+  ln -sf /opt/homebrew/bin/aarch64-elf-$t /tmp/arm-tc/aarch64-none-elf-$t
+done
+export PATH=/tmp/arm-tc:/tmp/nxvenv/bin:/opt/homebrew/bin:$PATH
+# The nsh_gicv2 defconfig defaults to Clang (wants libclang_rt); use GNU instead:
+sed -i '' 's/^CONFIG_ARM64_TOOLCHAIN_CLANG=y/CONFIG_ARM64_TOOLCHAIN_GNU_EABI=y/' \
+  boards/arm64/qemu/qemu-armv8a/configs/nsh_gicv2/defconfig
+cmake -B /tmp/nxbuild-arm -DBOARD_CONFIG=qemu-armv8a:nsh_gicv2 -GNinja .
+ninja -C /tmp/nxbuild-arm
+cp /tmp/nxbuild-arm/nuttx <repo>/bin/nuttx-arm64/nuttx
+```
+
+`nsh_gicv2` (not plain `nsh`) matches temu's GICv2. temu ELF-loads the kernel
+(PT_LOAD by paddr, PC=entry 0x40280000, X0=DTB) — **no emulator changes needed**;
+its PL011/GICv2/timer/PSCI already match qemu-armv8a.
 
 ## riscv64 (rv-virt)
 
