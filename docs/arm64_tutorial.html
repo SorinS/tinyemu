@@ -1,0 +1,1364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The ARM64 CPU — AArch64 from Reset to Userspace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=JetBrains+Mono:wght@400;500&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:           #0e1117;
+  --bg-raised:    #141820;
+  --bg-panel:     #1a2030;
+  --bg-hover:     #1f2838;
+  --border:       #2a3448;
+  --border-soft:  #1e2a3a;
+  --text:         #d8d0c4;
+  --text-dim:     #7a8499;
+  --text-faint:   #3d4a5c;
+
+  --amber:        #e8a020;
+  --amber-dim:    #a06010;
+  --green:        #4daa6a;
+  --blue:         #5a9fd4;
+  --rose:         #c46060;
+  --violet:       #8b78d0;
+
+  --p1:           #e8a020;
+  --p2:           #4daa6a;
+  --p3:           #5a9fd4;
+  --p4:           #8b78d0;
+  --p5:           #c46060;
+
+  --radius:       6px;
+  --sidebar-w:    300px;
+  --font-serif:   'Libre Baskerville', Georgia, serif;
+  --font-display: 'Crimson Pro', Georgia, serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 1rem;
+  line-height: 1.75;
+  min-height: 100vh;
+  display: flex;
+  overflow: hidden;
+}
+
+#sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--bg-raised);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  transition: transform 0.3s ease;
+  z-index: 100;
+}
+#sidebar-header {
+  padding: 24px 20px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#sidebar-header h1 {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--amber);
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+}
+#sidebar-header p {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  margin-top: 4px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+#progress-bar-wrap {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#progress-label {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+}
+#progress-track {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+#progress-fill {
+  height: 100%;
+  background: var(--amber);
+  transition: width 0.4s ease;
+  border-radius: 2px;
+}
+
+#search-wrap {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#search {
+  width: 100%;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 7px 10px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+#search::placeholder { color: var(--text-faint); }
+#search:focus { border-color: var(--amber-dim); }
+
+#lesson-nav { overflow-y: auto; flex: 1; padding: 8px 0 20px; }
+#lesson-nav::-webkit-scrollbar { width: 4px; }
+#lesson-nav::-webkit-scrollbar-track { background: transparent; }
+#lesson-nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.phase-group { margin-bottom: 4px; }
+.phase-header {
+  padding: 10px 20px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.phase-header .phase-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.phase-header .phase-toggle { margin-left: auto; color: var(--text-faint); font-size: 0.7rem; transition: transform 0.2s; }
+.phase-header.collapsed .phase-toggle { transform: rotate(-90deg); }
+.phase-lessons { overflow: hidden; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 20px 7px 28px; cursor: pointer;
+  transition: background 0.15s;
+  border-left: 2px solid transparent;
+  font-size: 0.78rem; color: var(--text-dim); line-height: 1.3;
+}
+.nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.nav-item.active { color: var(--text); background: var(--bg-panel); }
+.nav-item.done .nav-check { opacity: 1; }
+.nav-check {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 1.5px solid var(--border); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.5rem; opacity: 0.4; transition: all 0.2s;
+}
+.nav-item.done .nav-check {
+  opacity: 1; background: var(--green); border-color: var(--green); color: white;
+}
+.nav-num { font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-faint); min-width: 20px; }
+
+#main { flex: 1; overflow-y: auto; height: 100vh; display: flex; flex-direction: column; }
+#main::-webkit-scrollbar { width: 6px; }
+#main::-webkit-scrollbar-track { background: transparent; }
+#main::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+#topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 48px; border-bottom: 1px solid var(--border);
+  background: var(--bg); flex-shrink: 0; position: sticky; top: 0; z-index: 10;
+}
+#topbar-phase { font-family: var(--font-mono); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); }
+#topbar-nav { display: flex; gap: 8px; }
+.nav-btn {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  color: var(--text-dim); padding: 5px 14px; border-radius: var(--radius);
+  cursor: pointer; font-family: var(--font-mono); font-size: 0.7rem;
+  transition: all 0.15s;
+}
+.nav-btn:hover { background: var(--bg-hover); color: var(--text); border-color: var(--text-dim); }
+.nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+#lesson-content {
+  max-width: 820px; width: 100%; margin: 0 auto;
+  padding: 52px 48px 80px; flex: 1; animation: fadeSlide 0.3s ease;
+}
+@keyframes fadeSlide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.lesson-eyebrow {
+  font-family: var(--font-mono); font-size: 0.65rem;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  margin-bottom: 14px; display: flex; align-items: center; gap: 12px;
+}
+.lesson-eyebrow .phase-badge { padding: 2px 8px; border-radius: 3px; font-size: 0.6rem; }
+.lesson-number { color: var(--text-faint); }
+.lesson-title {
+  font-family: var(--font-display); font-size: 2.6rem; font-weight: 600;
+  line-height: 1.1; color: #eee; margin-bottom: 8px; letter-spacing: -0.01em;
+}
+.lesson-subtitle {
+  font-family: var(--font-display); font-size: 1.2rem; font-style: italic;
+  color: var(--text-dim); margin-bottom: 36px; line-height: 1.4;
+}
+.lesson-divider { height: 1px; background: linear-gradient(to right, var(--border), transparent); margin-bottom: 36px; }
+
+.lesson-body h2 {
+  font-family: var(--font-display); font-size: 1.5rem; font-weight: 600;
+  color: #ddd; margin: 40px 0 14px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border-soft);
+}
+.lesson-body h3 {
+  font-family: var(--font-display); font-size: 1.15rem; font-weight: 600;
+  color: var(--amber); margin: 28px 0 10px; font-style: italic;
+}
+.lesson-body p { margin-bottom: 16px; color: var(--text); }
+.lesson-body p:last-child { margin-bottom: 0; }
+.lesson-body ul, .lesson-body ol { margin: 8px 0 16px 22px; color: var(--text); }
+.lesson-body li { margin-bottom: 6px; }
+
+.lesson-body code {
+  font-family: var(--font-mono); font-size: 0.82em;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 5px; color: #a8d0f0;
+}
+
+pre {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-left: 3px solid var(--amber-dim); border-radius: var(--radius);
+  padding: 20px 22px; overflow-x: auto; margin: 20px 0;
+  position: relative; font-family: var(--font-mono);
+  font-size: 0.82rem; line-height: 1.65;
+}
+pre::-webkit-scrollbar { height: 4px; }
+pre::-webkit-scrollbar-track { background: transparent; }
+pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+pre .lang-tag {
+  position: absolute; top: 8px; right: 10px;
+  font-size: 0.58rem; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-faint);
+}
+
+/* x86 / asm syntax highlighting */
+.kw  { color: #c792ea; }  /* mnemonics */
+.rg  { color: #82aaff; }  /* registers */
+.fn  { color: #82cfda; }  /* labels / function names */
+.cm  { color: #546e7a; font-style: italic; }
+.st  { color: #c3e88d; }  /* strings */
+.nm  { color: #f78c6c; }  /* numbers */
+.op  { color: #89ddff; }  /* operators / punctuation */
+.dc  { color: #ffcb6b; }  /* directives */
+.ct  { color: #ff5572; }  /* constants / labels */
+
+.box {
+  border-radius: var(--radius); padding: 16px 20px; margin: 24px 0;
+  border-left: 3px solid; font-size: 0.92rem;
+}
+.box-note   { background: #0d1e2e; border-color: var(--blue);   color: #a8c8e8; }
+.box-think  { background: #1a1400; border-color: var(--amber);  color: #c8a060; }
+.box-key    { background: #0d1e18; border-color: var(--green);  color: #90c8a0; }
+.box-warn   { background: #1e100d; border-color: var(--rose);   color: #c88080; }
+.box strong { font-weight: 700; display: block; margin-bottom: 4px; font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.corr-table {
+  width: 100%; border-collapse: collapse;
+  margin: 20px 0; font-size: 0.88rem;
+}
+.corr-table th {
+  text-align: left; font-family: var(--font-mono);
+  font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-dim); border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+}
+.corr-table td { padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+.corr-table td:first-child { color: var(--blue); font-family: var(--font-mono); font-size: 0.8rem; }
+.corr-table td:last-child  { color: var(--green); font-family: var(--font-mono); font-size: 0.8rem; }
+.corr-table td:nth-child(2){ color: var(--text-dim); }
+.corr-table tr:last-child td { border-bottom: none; }
+
+.exercises { margin-top: 40px; border-top: 1px solid var(--border); padding-top: 28px; }
+.exercises h2 {
+  font-family: var(--font-display); font-size: 1.3rem; color: var(--amber);
+  margin-bottom: 18px; border: none !important; padding: 0 !important;
+}
+.exercise {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 20px; margin-bottom: 14px;
+  position: relative; transition: border-color 0.2s;
+}
+.exercise:hover { border-color: var(--amber-dim); }
+.exercise-num {
+  font-family: var(--font-mono); font-size: 0.65rem; color: var(--amber);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
+}
+.exercise p { font-size: 0.9rem; margin-bottom: 0; }
+
+.complete-wrap { margin-top: 44px; display: flex; align-items: center; gap: 14px; }
+.btn-complete {
+  background: transparent; border: 1.5px solid var(--border); color: var(--text-dim);
+  padding: 10px 24px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem;
+  text-transform: uppercase; letter-spacing: 0.06em; transition: all 0.2s;
+}
+.btn-complete:hover { border-color: var(--green); color: var(--green); }
+.btn-complete.done  { border-color: var(--green); color: var(--green); background: #0d1e18; }
+.btn-next {
+  background: var(--amber); border: none; color: var(--bg);
+  padding: 10px 24px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.75rem; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.06em; transition: all 0.2s;
+}
+.btn-next:hover { background: #f0b848; }
+
+#welcome { max-width: 720px; margin: 60px auto; padding: 0 48px; animation: fadeSlide 0.4s ease; }
+#welcome h1 {
+  font-family: var(--font-display); font-size: 3.2rem; font-weight: 300;
+  line-height: 1.1; color: #eee; margin-bottom: 6px;
+}
+#welcome h1 em { color: var(--amber); font-style: italic; }
+#welcome .tagline {
+  font-family: var(--font-display); font-size: 1.2rem; font-style: italic;
+  color: var(--text-dim); margin-bottom: 36px;
+}
+#welcome .welcome-body { font-size: 0.95rem; }
+#welcome .welcome-body p { margin-bottom: 16px; }
+.phase-overview { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 28px 0; }
+.phase-card {
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 18px;
+  cursor: pointer; transition: all 0.2s;
+}
+.phase-card:hover { border-color: var(--amber-dim); background: var(--bg-hover); }
+.phase-card-num {
+  font-family: var(--font-mono); font-size: 0.6rem;
+  text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 6px;
+}
+.phase-card h3 { font-family: var(--font-display); font-size: 1rem; font-weight: 600; color: #ddd; margin-bottom: 4px; }
+.phase-card p  { font-size: 0.8rem; color: var(--text-dim); margin: 0; }
+.btn-start {
+  background: var(--amber); border: none; color: var(--bg);
+  padding: 12px 32px; border-radius: var(--radius); cursor: pointer;
+  font-family: var(--font-mono); font-size: 0.8rem; font-weight: 500;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  transition: background 0.2s; margin-top: 8px;
+}
+.btn-start:hover { background: #f0b848; }
+
+#sidebar-toggle {
+  display: none; position: fixed; bottom: 20px; left: 20px; z-index: 200;
+  background: var(--amber); color: var(--bg); border: none;
+  border-radius: 50%; width: 44px; height: 44px;
+  cursor: pointer; font-size: 1.2rem;
+  align-items: center; justify-content: center;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+@media (max-width: 900px) {
+  #sidebar { position: fixed; top: 0; left: 0; transform: translateX(-100%); }
+  #sidebar.open { transform: translateX(0); }
+  #sidebar-toggle { display: flex; }
+  #lesson-content { padding: 36px 24px 60px; }
+  #topbar { padding: 12px 24px; }
+  .lesson-title { font-size: 2rem; }
+  .phase-overview { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<nav id="sidebar">
+  <div id="sidebar-header">
+    <h1>The ARM64 CPU</h1>
+    <p>AArch64 — Reset to Userspace</p>
+  </div>
+  <div id="progress-bar-wrap">
+    <div id="progress-label">
+      <span>Progress</span>
+      <span id="progress-text">0 / 14</span>
+    </div>
+    <div id="progress-track"><div id="progress-fill" style="width:0%"></div></div>
+  </div>
+  <div id="search-wrap">
+    <input type="text" id="search" placeholder="Search lessons…" autocomplete="off">
+  </div>
+  <div id="lesson-nav"></div>
+</nav>
+
+<main id="main">
+  <div id="topbar">
+    <span id="topbar-phase">Overview</span>
+    <div id="topbar-nav">
+      <button class="nav-btn" id="btn-prev" disabled>← Prev</button>
+      <button class="nav-btn" id="btn-next-top">Next →</button>
+    </div>
+  </div>
+  <div id="content-area"></div>
+</main>
+
+<button id="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+
+<script>
+const PHASE_META = {
+  1: { name: "The AArch64 Machine Model",  short: "Phase I",   color: "var(--p1)", lessons: "1–3"   },
+  2: { name: "Privilege & Exceptions",     short: "Phase II",  color: "var(--p2)", lessons: "4–6"   },
+  3: { name: "The Memory System",          short: "Phase III", color: "var(--p3)", lessons: "7–9"   },
+  4: { name: "FP, SIMD & the Rest",        short: "Phase IV",  color: "var(--p4)", lessons: "10–11" },
+  5: { name: "Booting & the temu Board",   short: "Phase V",   color: "var(--p5)", lessons: "12–14" },
+};
+
+const LESSONS = [
+
+// ============================================================
+// PHASE 1 — The AArch64 Machine Model
+// ============================================================
+{
+  id: 1, phase: 1,
+  title: "Why AArch64?",
+  subtitle: "A clean-sheet ISA that learned from x86's decades of accretion",
+  content: `
+<h2>The setup</h2>
+<p>If you have toured x86 — real mode, protected mode, the REX prefix, the five operating modes a 64-bit CPU shuffles through before it can run a kernel — you have seen what backwards compatibility costs over forty years. Every x86_64 chip still boots in 16-bit real mode pretending it is an 8086 from 1978, then walks through protected mode to reach long mode. The instruction encoding is variable length (1 to 15 bytes), riddled with prefixes, and the ModR/M byte is its own small language.</p>
+<p>ARM took a different path. The 64-bit execution state, called <strong>AArch64</strong> (and its instruction set <strong>A64</strong>), was introduced with ARMv8 in 2011. It is not an extension bolted onto the older 32-bit ARM (now called AArch32). It is a separate, parallel execution state with its own register file, its own exception model, and its own — completely new — instruction encoding. A chip can support both, but A64 code never sees the legacy baggage.</p>
+
+<h2>What AArch64 gets right that x86 got wrong</h2>
+<ul>
+  <li><strong>Fixed-width instructions.</strong> Every A64 instruction is exactly 32 bits. No prefixes, no ModR/M, no length-decode dependency chain. The fetch unit always reads four bytes and always knows where the next instruction starts.</li>
+  <li><strong>A flat, large register file.</strong> 31 general-purpose registers (X0–X30), all 64 bits, all symmetric. No "AX is special, CX is the count register" legacy roles baked into the encoding.</li>
+  <li><strong>No segmentation. At all.</strong> There is no CS/DS/SS, no descriptor tables, no GDT. A virtual address is just a number that the MMU translates. The entire <em>concept</em> that consumed half the x86 tutorial simply does not exist here.</li>
+  <li><strong>Privilege as a clean ladder.</strong> Four numbered Exception Levels (EL0–EL3) instead of x86's four rings tangled together with V8086 mode, SMM, and the long-mode/compat-mode submode matrix.</li>
+  <li><strong>A load/store architecture.</strong> Arithmetic instructions only touch registers. Memory is reached <em>only</em> through explicit load and store instructions. There is no <code>add [mem], reg</code>.</li>
+</ul>
+
+<h2>The cost it pays</h2>
+<p>Fixed 32-bit instructions cannot hold a full 64-bit immediate, so building a large constant takes several instructions (<code>MOVZ</code> + a few <code>MOVK</code>s). Load/store-only means more instructions for memory-heavy code. ARM bets that simpler decode and more registers more than pay this back — and on modern wide superscalar cores, it does.</p>
+
+<h2>In this emulator</h2>
+<p>tinyemu-go models AArch64 as a fourth CPU backend in <code>cpu/arm64/</code>, alongside the existing <code>cpu/x86/</code> (i386), <code>cpu/x86_64/</code>, and the RISC-V core. The structure mirrors them: a <code>CPU</code> struct in <code>cpu/arm64/cpu.go</code>, an instruction loop in <code>run.go</code>, and a decode/dispatch function in <code>exec.go</code>. The board it runs on lives in <code>machine/arm64.go</code> — the QEMU-compatible <code>virt</code> machine.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+AArch64 is not "ARM with 64-bit registers." It is a separate execution state designed from scratch in 2011, free to discard everything that did not work. The single biggest simplification over x86 is the complete removal of segmentation and the collapse of x86's mode soup into a clean four-rung privilege ladder. Almost every lesson in this course is shorter than its x86 equivalent for exactly that reason.
+</div>
+`,
+  exercises: [
+    "If you are on an Apple Silicon Mac, run <code>uname -m</code>. It reports <code>arm64</code> — the same architecture this course teaches. Your machine has no real mode, no segments, and boots firmware directly at an Exception Level.",
+    "Disassemble any function on an arm64 system: <code>objdump -d /bin/ls | head -40</code>. Note that every instruction address advances by exactly 4 bytes. Contrast with the same command on an x86_64 box, where instruction lengths vary.",
+    "List the four CPU backends under <code>cpu/</code> in this repo. Which architectural feature (present in three of them) is entirely absent from <code>cpu/arm64/</code>? (Hint: it is the thing the x86 tutorial spent the most time on.)"
+  ]
+},
+
+{
+  id: 2, phase: 1,
+  title: "The Register File",
+  subtitle: "X0–X30, the W aliases, SP, PC, and the zero register that isn't a register",
+  content: `
+<h2>Thirty-one general-purpose registers</h2>
+<p>AArch64 gives you <strong>X0 through X30</strong> — thirty-one 64-bit general-purpose registers. Each one has a 32-bit "view" named <strong>W0 through W30</strong>: WN is simply the low 32 bits of XN. There is no separate storage; W and X are two windows onto the same 64-bit slot.</p>
+<p>In the emulator the file is a plain array:</p>
+<pre><span class="cm">// cpu/arm64/cpu.go</span>
+<span class="kw">type</span> CPU <span class="kw">struct</span> {
+    X  [<span class="nm">31</span>]<span class="ty">uint64</span>  <span class="cm">// X0..X30 (X30 = the link register, LR)</span>
+    SP <span class="ty">uint64</span>      <span class="cm">// the live stack pointer</span>
+    PC <span class="ty">uint64</span>      <span class="cm">// program counter</span>
+    <span class="cm">// ...</span>
+}<span class="lang-tag">go</span></pre>
+
+<h2>The crucial W-write rule</h2>
+<p>Writing a W register <em>zeroes the upper 32 bits</em> of the enclosing X register. This is the AArch64 analogue of x86_64's "writing EAX clears the top of RAX" rule, and it exists for the same reason: it breaks the false dependency on the old high bits, which helps the pipeline. The emulator enforces it in one place:</p>
+<pre><span class="cm">// cpu/arm64/cpu.go — writeX</span>
+<span class="cm">// is64 == false means a 32-bit (W) write:</span>
+<span class="kw">if</span> !is64 {
+    v = v &amp; <span class="nm">0xFFFFFFFF</span>   <span class="cm">// the X slot is overwritten with the zero-extended W value</span>
+}
+c.X[n] = v<span class="lang-tag">go</span></pre>
+
+<h2>The zero register — reg 31 in disguise</h2>
+<p>Here is the elegant trick. Most instruction encodings have a 5-bit register field, so they can name 0–31 — but the X array only has 31 entries (0–30). Register number <strong>31</strong> is special, and what it means depends on the instruction:</p>
+<ul>
+  <li>In most data-processing instructions, register 31 is the <strong>zero register</strong>: <code>XZR</code> (64-bit) / <code>WZR</code> (32-bit). Reading it yields 0; writing it discards the value. This gives you a free constant zero and a "compute and throw away" destination (how <code>CMP</code> is just <code>SUBS</code> to XZR).</li>
+  <li>In a handful of memory and arithmetic-with-stack instructions, register 31 instead means the <strong>stack pointer</strong>, <code>SP</code>.</li>
+</ul>
+<p>The emulator threads a single boolean — <code>sp</code> — through register access to pick the interpretation:</p>
+<pre><span class="cm">// cpu/arm64/cpu.go — readX(n, is64, sp)</span>
+<span class="kw">if</span> n == <span class="nm">31</span> {
+    <span class="kw">if</span> sp {
+        <span class="kw">return</span> c.SP        <span class="cm">// register 31 == SP for this encoding</span>
+    }
+    <span class="kw">return</span> <span class="nm">0</span>            <span class="cm">// register 31 == XZR: reads as zero</span>
+}<span class="lang-tag">go</span></pre>
+<p>The matching <code>writeX</code> discards writes to register 31 when <code>sp</code> is false. Each decoded instruction knows, from its encoding class, whether its operands use the SP or ZR interpretation, and passes the right <code>sp</code> flag.</p>
+
+<h2>PC is not in the file</h2>
+<p>Unlike 32-bit ARM (where R15 <em>was</em> the PC and you could do arithmetic on it), AArch64 removes PC from the general-purpose file. You cannot name it as an operand. It changes only through branches, exceptions, and <code>ERET</code>. The emulator keeps it as its own field, <code>c.PC</code>, and <code>Step</code> advances it by 4 unless a branch overrides the computed next address.</p>
+
+<div class="box box-note">
+<strong>Note</strong>
+X30 is the <strong>link register (LR)</strong> — <code>BL</code> (branch-with-link) writes the return address there, and <code>RET</code> branches to it. It is an ordinary register otherwise; the architecture just gives it a conventional role. There is no dedicated frame pointer in hardware either, though X29 is the software convention.
+</div>
+
+<div class="box box-think">
+<strong>Design rule</strong>
+The zero register is one of AArch64's best ideas. It collapses a whole family of instructions into existing ones: no separate <code>CMP</code> (it's <code>SUBS XZR, ...</code>), no separate <code>TST</code> (it's <code>ANDS XZR, ...</code>), no separate <code>MOV reg, #0</code> (it's <code>ORR reg, XZR, XZR</code>). Fewer opcodes, smaller decoder. When you see register 31 in a disassembly, always ask which of its two faces — ZR or SP — this instruction is wearing.
+</div>
+`,
+  exercises: [
+    "In <code>cpu/arm64/cpu.go</code>, read <code>readX</code> and <code>writeX</code> end to end. Confirm that a 32-bit write to W5 leaves the upper 32 bits of X5 as zero, and that a write to register 31 (with sp=false) is silently dropped.",
+    "AArch64 has no <code>MOV X0, #0</code> as a distinct instruction — it is an alias. Which real instruction, using the zero register, does an assembler emit for it? (Hint: think of a logical OR with XZR.)",
+    "Why can <code>CMP X0, X1</code> set the flags without needing a destination register? Express <code>CMP X0, X1</code> as a <code>SUBS</code> instruction and identify which register receives the (discarded) difference."
+  ]
+},
+
+{
+  id: 3, phase: 1,
+  title: "PSTATE and the 32-bit Encoding",
+  subtitle: "Processor state without a flags register, and instructions of exactly four bytes",
+  content: `
+<h2>PSTATE: the flags, scattered on purpose</h2>
+<p>x86 has a single EFLAGS/RFLAGS register that holds everything. AArch64 has no such register. Instead it has <strong>PSTATE</strong> — Process State — which is a conceptual collection of fields, several of which are read and written through dedicated special registers rather than one monolithic word.</p>
+<p>The pieces that matter most:</p>
+<ul>
+  <li><strong>NZCV</strong> — the four condition flags: <strong>N</strong>egative, <strong>Z</strong>ero, <strong>C</strong>arry, o<strong>V</strong>erflow. Only the <code>S</code>-suffixed instructions (<code>ADDS</code>, <code>SUBS</code>, <code>ANDS</code>) update them; plain <code>ADD</code> does not touch the flags. This is another contrast with x86, where almost every ALU op clobbers EFLAGS.</li>
+  <li><strong>DAIF</strong> — four interrupt-mask bits: <strong>D</strong>ebug, <strong>A</strong>bort (SError), <strong>I</strong>RQ, <strong>F</strong>IQ. Setting a bit masks that exception class.</li>
+  <li><strong>EL</strong> — the current Exception Level (0–3), and <strong>SPSel</strong> — whether the current EL uses its own stack pointer or EL0's.</li>
+</ul>
+<p>In the emulator these live as separate fields, exactly because PSTATE is not one register:</p>
+<pre><span class="cm">// cpu/arm64/cpu.go</span>
+N, Z, C, V <span class="ty">bool</span>     <span class="cm">// the NZCV condition flags</span>
+DAIF       <span class="ty">uint8</span>    <span class="cm">// D/A/I/F interrupt masks in bits 3:0</span>
+EL         <span class="ty">uint8</span>    <span class="cm">// current Exception Level: 0 or 1 in temu</span>
+SPSel      <span class="ty">uint8</span>    <span class="cm">// 0 = use SP_EL0, 1 = use SP_ELx</span>
+SPEL0      <span class="ty">uint64</span>   <span class="cm">// banked stack pointers</span>
+SPEL1      <span class="ty">uint64</span><span class="lang-tag">go</span></pre>
+<p>When code needs the whole thing as a word — on exception entry, to save it — the helper <code>pstate()</code> packs NZCV into bits 31:28, DAIF into bits 9:6, and <code>EL&lt;&lt;2 | SPSel</code> into bits 4:0. <code>setPstate()</code> unpacks it on exception return. We will see those in Phase II.</p>
+
+<h2>Reading NZCV through a system register</h2>
+<p>Because there is no flags register you can <code>PUSH</code>, software reads the condition flags via <code>MRS Xt, NZCV</code>. The emulator recognises that system-register field and assembles the four booleans on the fly:</p>
+<pre><span class="cm">// cpu/arm64/cpu.go — nzcv() packs the booleans into bits 31:28</span>
+<span class="kw">var</span> v <span class="ty">uint64</span>
+<span class="kw">if</span> c.N { v |= <span class="nm">1</span> &lt;&lt; <span class="nm">31</span> }
+<span class="kw">if</span> c.Z { v |= <span class="nm">1</span> &lt;&lt; <span class="nm">30</span> }
+<span class="kw">if</span> c.C { v |= <span class="nm">1</span> &lt;&lt; <span class="nm">29</span> }
+<span class="kw">if</span> c.V { v |= <span class="nm">1</span> &lt;&lt; <span class="nm">28</span> }<span class="lang-tag">go</span></pre>
+
+<h2>Every instruction is 32 bits</h2>
+<p>A64 instructions are a fixed 32 bits, little-endian in memory. There is no prefix, no escape byte, no variable length. Decode is therefore just <em>bit-field extraction and matching</em>. The emulator fetches four bytes and dispatches on subfields of the word:</p>
+<pre><span class="cm">// cpu/arm64/exec.go — exec(w uint32, next *uint64)</span>
+<span class="cm">// Classify by extracting fixed bit ranges from the 32-bit word:</span>
+<span class="kw">switch</span> {
+<span class="kw">case</span> (w&gt;&gt;<span class="nm">23</span>)&amp;<span class="nm">0x3F</span> == <span class="nm">0x22</span>:   <span class="fn">execAddSubImm</span>(w)        <span class="cm">// ADD/SUB immediate</span>
+<span class="kw">case</span> (w&gt;&gt;<span class="nm">24</span>)&amp;<span class="nm">0xFF</span> == <span class="nm">0xD4</span>:  <span class="fn">execException</span>(w, next)  <span class="cm">// SVC/HVC/BRK</span>
+<span class="kw">case</span> (w&gt;&gt;<span class="nm">24</span>)&amp;<span class="nm">0xFF</span> == <span class="nm">0xD5</span>:  <span class="fn">execSystem</span>(w, next)     <span class="cm">// MRS/MSR/barriers/AT/TLBI</span>
+<span class="cm">// ...one arm per encoding group...</span>
+}<span class="lang-tag">go</span></pre>
+
+<h2>Conditional execution, the AArch64 way</h2>
+<p>32-bit ARM famously let almost <em>any</em> instruction be conditional (a 4-bit condition field on everything). AArch64 dropped that — it wasted encoding space. What remains is a small, deliberate set: conditional branches (<code>B.cond</code>), conditional selects (<code>CSEL</code>, <code>CSINC</code>), conditional compares (<code>CCMP</code>), and conditional set (<code>CSET</code>). The condition is evaluated against NZCV. This is enough to make branchless code easy without paying the per-instruction tax.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+Two design choices define the AArch64 front end. First, flags are <em>opt-in</em>: only S-form instructions write NZCV, so the compiler controls exactly when a comparison result survives. Second, instructions are <em>fixed width</em>, so the decoder is a switch over bit-fields — no length prediction, no prefix soup. Put together, decode in <code>cpu/arm64/exec.go</code> is dramatically simpler than the prefix-and-ModR/M machinery in <code>cpu/x86_64/</code>.
+</div>
+`,
+  exercises: [
+    "In <code>cpu/arm64/exec.go</code>, find the dispatch switch in <code>exec</code>. Pick three arms and write down which bit range each one tests. Why can the decoder never be ambiguous about instruction length?",
+    "Plain <code>ADD X0, X1, X2</code> does not change the flags, but <code>ADDS X0, X1, X2</code> does. Why is making flag-setting opt-in good for an optimizing compiler? (Think about reordering independent instructions.)",
+    "<code>MRS X0, NZCV</code> reads the condition flags into a register. Using the bit positions in <code>nzcv()</code>, what value would X0 hold immediately after a comparison that set Z=1 and C=1 with N=V=0?"
+  ]
+},
+
+// ============================================================
+// PHASE 2 — Privilege & Exceptions
+// ============================================================
+{
+  id: 4, phase: 2,
+  title: "The Four Exception Levels",
+  subtitle: "EL0 user, EL1 kernel, EL2 hypervisor, EL3 firmware — a clean privilege ladder",
+  content: `
+<h2>Rings, done right</h2>
+<p>x86 has four privilege rings (0–3) but in practice uses only two, plus a tangle of orthogonal special modes (SMM, V8086, the long/compat submodes). AArch64 replaces all of that with a single numbered ladder of <strong>Exception Levels</strong>, where higher number means more privilege:</p>
+<table class="corr-table">
+<tr><th>Level</th><th>Runs</th><th>Typical occupant</th></tr>
+<tr><td>EL0</td><td>unprivileged</td><td>application / user code</td></tr>
+<tr><td>EL1</td><td>privileged OS</td><td>the kernel (Linux, FreeBSD, NuttX)</td></tr>
+<tr><td>EL2</td><td>hypervisor</td><td>KVM, Xen, a type-1 hypervisor</td></tr>
+<tr><td>EL3</td><td>secure monitor</td><td>firmware / TrustZone secure world gatekeeper</td></tr>
+</table>
+<p>The name "Exception Level" is the key conceptual move: <strong>you change privilege only by taking or returning from an exception.</strong> There is no "call into ring 0" instruction the way x86 has call gates. To go up a level you cause a synchronous exception (e.g. <code>SVC</code> traps EL0→EL1); to go down you execute <code>ERET</code>. Privilege transitions and the exception mechanism are the same machinery.</p>
+
+<h2>What each level owns</h2>
+<p>Each level (except EL0) has its own banked copies of the control registers it needs: its own stack pointer (<code>SP_ELx</code>), vector base (<code>VBAR_ELx</code>), exception syndrome and link registers (<code>ESR_ELx</code>, <code>ELR_ELx</code>), translation control, and so on. A kernel at EL1 cannot see or touch EL2's registers; the suffix in the name <em>is</em> the access-control boundary.</p>
+
+<h2>What temu actually models</h2>
+<p>Here is where the emulator is deliberately narrower than the architecture. tinyemu-go is a single-core machine that boots an OS kernel directly. It implements <strong>EL0 and EL1 only</strong>. The current level is a single byte:</p>
+<pre><span class="cm">// cpu/arm64/cpu.go</span>
+EL <span class="ty">uint8</span>   <span class="cm">// holds 0 (EL0) or 1 (EL1). EL2/EL3 are not modeled.</span><span class="lang-tag">go</span></pre>
+<p>All three boot paths (Lesson 12) drop the guest straight into <strong>EL1h</strong> — EL1 using its own stack pointer — with the MMU off and interrupts masked. There is no EL3 secure-monitor handoff and no EL2 hypervisor. Reading <code>CurrentEL</code> via <code>MRS</code> returns <code>uint64(c.EL) &lt;&lt; 2</code> (the architecture stores the level in bits 3:2 of that register).</p>
+
+<div class="box box-warn">
+<strong>What temu does NOT do</strong>
+Real hardware powers on at the highest implemented level (often EL3), and firmware performs an <strong>EL3 → EL2 → EL1</strong> descent, configuring each level's registers and dropping privilege with <code>ERET</code> as it goes. temu skips this entirely: it constructs the post-firmware EL1 state directly. That is fine for booting a kernel that expects to start at EL1 (the normal Linux/FreeBSD/NuttX contract on the <code>virt</code> board), but it means temu cannot run a hypervisor at EL2 or secure-world firmware at EL3. Keep the four-level model in your head as the architecture; remember temu lives on the bottom two rungs.
+</div>
+
+<div class="box box-note">
+<strong>Note</strong>
+This is exactly why the NuttX bring-up needed <em>zero</em> emulator changes (Lesson 14): NuttX's <code>qemu-armv8a</code> configuration expects to start at EL1 on a QEMU <code>virt</code> board, which is precisely the state temu hands it. An OS that insisted on starting at EL2 to install a hypervisor would not boot here without new work.
+</div>
+`,
+  exercises: [
+    "Map the four AArch64 Exception Levels onto x86's four rings. Which two ELs does a normal Linux system actually use in steady state, and which two x86 rings does it use?",
+    "In <code>cpu/arm64/cpu.go</code>, find where <code>CurrentEL</code> is produced for an <code>MRS</code> read. Why is the stored byte shifted left by 2? (Look up the CurrentEL register layout.)",
+    "temu enters every guest at EL1h. Explain in one sentence why an OS designed to launch a hypervisor (and therefore wanting to begin at EL2) would fail to come up correctly on this board."
+  ]
+},
+
+{
+  id: 5, phase: 2,
+  title: "The Vector Table",
+  subtitle: "VBAR_EL1, sixteen entries, and how an exception finds its handler",
+  content: `
+<h2>One table, many doors</h2>
+<p>When an exception is taken to EL1, the CPU jumps to an address derived from <strong>VBAR_EL1</strong> (Vector Base Address Register) plus an offset that encodes <em>what kind</em> of exception it is and <em>where it came from</em>. Unlike x86's IDT — a 256-entry table of gate descriptors, one per vector number — AArch64's vector table is a fixed layout of <strong>16 entries</strong>, each entry being 0x80 bytes of actual handler code (room for a short prologue before branching away).</p>
+
+<h2>The 4 × 4 grid</h2>
+<p>The 16 entries are a grid of four <em>groups</em> (by exception source) times four <em>types</em>:</p>
+<table class="corr-table">
+<tr><th>Group offset</th><th>Source of the exception</th></tr>
+<tr><td>0x000</td><td>Current EL, using SP_EL0 (SPSel=0)</td></tr>
+<tr><td>0x200</td><td>Current EL, using SP_ELx (SPSel=1)</td></tr>
+<tr><td>0x400</td><td>Lower EL, the lower EL was AArch64</td></tr>
+<tr><td>0x600</td><td>Lower EL, the lower EL was AArch32</td></tr>
+</table>
+<p>Within each group, the four types are spaced 0x80 apart:</p>
+<pre><span class="cm">// cpu/arm64/exception.go</span>
+<span class="kw">const</span> (
+    excSync   = <span class="nm">0x000</span>   <span class="cm">// synchronous: SVC, data/instruction abort, BRK</span>
+    excIRQ    = <span class="nm">0x080</span>   <span class="cm">// IRQ</span>
+    excFIQ    = <span class="nm">0x100</span>   <span class="cm">// FIQ</span>
+    excSError = <span class="nm">0x180</span>   <span class="cm">// SError (asynchronous abort)</span>
+)<span class="lang-tag">go</span></pre>
+<p>So the final handler address is <code>VBAR_EL1 + groupBase + typeOffset</code>. An IRQ taken while the kernel is already at EL1 (using SP_ELx) lands at <code>VBAR_EL1 + 0x200 + 0x080</code>. A system call from a user process (lower EL, AArch64) lands at <code>VBAR_EL1 + 0x400 + 0x000</code> (the synchronous slot).</p>
+
+<h2>How temu computes the offset</h2>
+<p>The delivery routine <code>takeException</code> picks the group base from the <em>pre-exception</em> EL and SPSel, then adds the type offset:</p>
+<pre><span class="cm">// cpu/arm64/exception.go — takeException (group selection)</span>
+<span class="kw">switch</span> {
+<span class="kw">case</span> c.EL == <span class="nm">0</span>:                <span class="cm">// came from EL0 (a lower EL, AArch64)</span>
+    base = <span class="nm">0x400</span>
+<span class="kw">case</span> c.SPSel == <span class="nm">1</span>:           <span class="cm">// current EL, using SP_ELx</span>
+    base = <span class="nm">0x200</span>
+<span class="kw">default</span>:                      <span class="cm">// current EL, using SP_EL0</span>
+    base = <span class="nm">0x000</span>
+}
+c.PC = c.VBAR + base + typeOffset<span class="lang-tag">go</span></pre>
+
+<div class="box box-warn">
+<strong>What temu does NOT do</strong>
+Architecturally the table has all <strong>16</strong> entries, including the 0x600 group for exceptions from a lower EL that was running <em>AArch32</em>. temu never runs 32-bit guests — every lower EL is AArch64 — so it only ever vectors into <strong>three</strong> of the four groups (0x000, 0x200, 0x400). The 0x600 group exists in the address-space layout but is never the target. Say "16-entry table" when describing the architecture, but know that temu's delivery only reaches three groups.
+</div>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+AArch64 folds the entire "which vector?" decision into a fixed 16-slot geometry: source EL and SP choice pick the row, exception type picks the column. There is no per-interrupt descriptor table to walk and no privilege check on a gate — the geometry itself encodes the context. This is far less machinery than the x86 IDT, and it means a kernel's entire exception entry path is one aligned 2 KiB (16 × 0x80) blob of code pointed at by a single register.
+</div>
+`,
+  exercises: [
+    "A user process at EL0 executes <code>SVC #0</code>. Using the grid, compute the offset (relative to VBAR_EL1) of the handler the CPU jumps to. Now do the same for an IRQ that arrives while the kernel is running at EL1 with SP_ELx.",
+    "In <code>cpu/arm64/exception.go</code>, read the group-selection logic in <code>takeException</code>. Which group base does it choose when <code>c.EL == 1</code> and <code>c.SPSel == 0</code>, and when is a kernel actually in that state?",
+    "Why does temu never vector into the 0x600 group? What would have to be true of a guest for that group to be used, and why can't this board produce such a guest?"
+  ]
+},
+
+{
+  id: 6, phase: 2,
+  title: "Taking and Returning from Exceptions",
+  subtitle: "ESR_EL1, ELR_EL1, SPSR_EL1, SVC, and ERET",
+  content: `
+<h2>The three save registers</h2>
+<p>When an exception is delivered to EL1, three banked registers capture everything the handler needs to understand and later undo it:</p>
+<ul>
+  <li><strong>ELR_EL1</strong> (Exception Link Register) — the address to resume at. For a synchronous fault it is the faulting instruction (so it can be retried); for <code>SVC</code> it is the instruction <em>after</em> the SVC (so the syscall returns past it).</li>
+  <li><strong>SPSR_EL1</strong> (Saved Program Status Register) — a snapshot of PSTATE at the moment of the exception: NZCV, DAIF, and the EL/SPSel the CPU was in. <code>ERET</code> restores it.</li>
+  <li><strong>ESR_EL1</strong> (Exception Syndrome Register) — <em>why</em> the exception happened, encoded as a 6-bit Exception Class (EC) in bits 31:26 plus a class-specific instruction-specific syndrome (ISS) in the low bits. The handler reads EC to decide what kind of exception it is dispatching.</li>
+</ul>
+<p>For faults that involve a memory address, a fourth register, <strong>FAR_EL1</strong> (Fault Address Register), holds the offending virtual address.</p>
+
+<h2>takeException in temu</h2>
+<p>The single delivery routine fills these in, switches state, and jumps:</p>
+<pre><span class="cm">// cpu/arm64/exception.go — takeException</span>
+c.SPSR = c.<span class="fn">pstate</span>()       <span class="cm">// snapshot NZCV/DAIF/EL/SPSel</span>
+c.ELR  = elr               <span class="cm">// where to resume</span>
+c.ESR  = esr               <span class="cm">// EC | ISS — the "why"</span>
+<span class="kw">if</span> useFar { c.FAR = far }  <span class="cm">// faulting address, for aborts</span>
+c.<span class="fn">switchEL</span>(<span class="nm">1</span>, <span class="nm">1</span>)         <span class="cm">// enter EL1h (banks the old SP)</span>
+c.DAIF = <span class="nm">0xF</span>             <span class="cm">// mask all interrupts on entry</span>
+c.exclMonitor = <span class="kw">false</span>    <span class="cm">// drop any pending exclusive reservation</span>
+c.PC = c.VBAR + base + typeOffset<span class="lang-tag">go</span></pre>
+<p>Note <code>DAIF = 0xF</code>: entering a handler masks IRQ/FIQ/SError/Debug so the handler runs to a known point before re-enabling them. And the exclusive monitor is cleared — an exception breaks any in-flight <code>LDXR</code>/<code>STXR</code> pair (more in Lesson 11).</p>
+
+<h2>SVC — the system-call door</h2>
+<p>A system call is just a synchronous exception. <code>SVC #imm</code> traps from EL0 to EL1's synchronous-from-lower-EL vector. temu decodes it in <code>execException</code> and builds the syndrome with Exception Class 0x15 (SVC from AArch64):</p>
+<pre><span class="cm">// cpu/arm64/exception.go</span>
+<span class="kw">func</span> <span class="fn">esrSVC</span>(imm <span class="ty">uint16</span>) <span class="ty">uint64</span> {
+    <span class="kw">return</span> <span class="nm">0x15</span>&lt;&lt;<span class="nm">26</span> | <span class="ty">uint64</span>(imm)   <span class="cm">// EC=0x15, ISS=the SVC immediate</span>
+}<span class="lang-tag">go</span></pre>
+<p>The ELR is set to the instruction after the SVC, so when the kernel finishes the syscall and executes <code>ERET</code>, the user program continues at the next instruction. The Linux syscall ABI on AArch64 puts the syscall number in X8 and arguments in X0–X5 — but that is OS convention, not architecture; the CPU just delivers the trap.</p>
+
+<h2>BRK vs SVC — a subtle ELR difference</h2>
+<p>A breakpoint (<code>BRK #imm</code>, EC 0x3C) sets ELR to the <code>BRK</code> instruction <em>itself</em>, not the next one — a debugger wants to re-examine or step that instruction. <code>SVC</code> sets ELR past itself. The emulator gets this distinction right in <code>execException</code>; mixing them up would make every syscall re-execute its own SVC forever.</p>
+
+<h2>ERET — coming back down</h2>
+<p>Returning is one instruction. <code>ERET</code> restores PSTATE from SPSR_EL1 and PC from ELR_EL1 atomically:</p>
+<pre><span class="cm">// cpu/arm64/exception.go — eret</span>
+c.<span class="fn">setPstate</span>(c.SPSR)   <span class="cm">// restores NZCV, DAIF, and crucially EL/SPSel</span>
+c.PC = c.ELR<span class="lang-tag">go</span></pre>
+<p>Because SPSR carried the old EL, <code>ERET</code> is also how the CPU drops from EL1 back to EL0 — the same instruction that returns from an interrupt is the instruction that launches a user process. There is no separate "iret" and "sysret"; <code>ERET</code> is both.</p>
+
+<div class="box box-think">
+<strong>Design rule</strong>
+The whole privilege/exception system reduces to a tiny set of moving parts: three save registers (ELR/SPSR/ESR), a vector table base (VBAR), and two instructions (the exception-causing one, and <code>ERET</code>). Compare the x86 path — IDT gate descriptors, DPL checks, IST stacks, the SYSCALL/SYSRET MSR dance, separate IRET semantics for different stack switches. AArch64 expresses the same capability with an order of magnitude fewer concepts, and temu's <code>exception.go</code> is small enough to read in one sitting.
+</div>
+`,
+  exercises: [
+    "Trace a full syscall round trip in <code>cpu/arm64/</code>: user <code>SVC #0</code> → <code>execException</code> → <code>takeException</code> → kernel handler → <code>eret</code>. At which step is ELR_EL1 set, and to what value relative to the SVC instruction?",
+    "Why does <code>BRK</code> set ELR to its own address while <code>SVC</code> sets it to the following instruction? What would go wrong if SVC used the BRK convention?",
+    "<code>ERET</code> restores EL from SPSR. Explain how this single instruction serves both 'return from interrupt to the kernel' and 'first entry into a user process at EL0'."
+  ]
+},
+
+// ============================================================
+// PHASE 3 — The Memory System
+// ============================================================
+{
+  id: 7, phase: 3,
+  title: "The Stage-1 MMU",
+  subtitle: "Two table bases, a multi-level walk, and a TLB — all in cpu/arm64/mmu.go",
+  content: `
+<h2>Translation without segments</h2>
+<p>With no segmentation, the AArch64 MMU has exactly one job: turn a 64-bit virtual address into a physical address by walking page tables. The control surface is a handful of system registers, all suffixed <code>_EL1</code> because the kernel owns translation for EL0 and EL1.</p>
+
+<h2>Two halves, two table bases</h2>
+<p>The 64-bit virtual address space is split into a low half and a high half, each with its own translation-table base register. The selector is simply the top bit of the address:</p>
+<pre><span class="cm">// cpu/arm64/mmu.go — translate / walk</span>
+<span class="kw">if</span> vaddr&amp;(<span class="nm">1</span>&lt;&lt;<span class="nm">63</span>) == <span class="nm">0</span> {
+    base = c.TTBR0 &amp; descAddrMask   <span class="cm">// low half  -> TTBR0_EL1</span>
+} <span class="kw">else</span> {
+    base = c.TTBR1 &amp; descAddrMask   <span class="cm">// high half -> TTBR1_EL1</span>
+}<span class="lang-tag">go</span></pre>
+<p>This is the hardware basis for the classic kernel/user split: user space lives in the low half (TTBR0), the kernel maps itself in the high half (TTBR1, addresses beginning <code>0xFFFF...</code>). On a context switch the kernel swaps only TTBR0 — the high-half kernel mapping is shared across all processes and never reloaded.</p>
+
+<h2>The multi-level walk</h2>
+<p>With a 4 KiB granule, a virtual address is sliced into 9-bit indices, one per table level, plus a 12-bit page offset. The walker reads a descriptor at each level; the descriptor either points to the next-level table or is a <em>block/page</em> leaf that yields the physical base:</p>
+<pre><span class="cm">// cpu/arm64/mmu.go — walk, per level</span>
+shift := <span class="nm">12</span> + <span class="nm">9</span>*(<span class="nm">3</span>-level)          <span class="cm">// L0:39  L1:30  L2:21  L3:12</span>
+idx   := (vaddr &gt;&gt; shift) &amp; <span class="nm">0x1FF</span>   <span class="cm">// 9-bit index into this level</span>
+descAddr := table + idx*<span class="nm">8</span>           <span class="cm">// each descriptor is 8 bytes</span><span class="lang-tag">go</span></pre>
+<p>The number of levels depends on the configured VA width. <code>TCR_EL1</code> holds <strong>T0SZ</strong> (bits 5:0) and <strong>T1SZ</strong> (bits 21:16) — the number of leading address bits <em>not</em> translated. A smaller TnSZ means a wider VA and one more table level. The helper <code>startLevel(t0sz)</code> computes the initial level from this. Block descriptors at L1/L2 give 1 GiB and 2 MiB large pages; L3 descriptors give ordinary 4 KiB pages.</p>
+
+<h2>The leaf: permissions and execute-never</h2>
+<p>At the leaf, <code>leaf(...)</code> extracts the output address and the protection bits:</p>
+<ul>
+  <li><strong>AP[2]</strong> (bit 7) — read-only when set; writable when clear.</li>
+  <li><strong>UXN</strong> (bit 54) — Unprivileged eXecute-Never: code at EL0 cannot fetch from this page.</li>
+  <li><strong>PXN</strong> (bit 53) — Privileged eXecute-Never: code at EL1 cannot fetch from this page (this is what stops the kernel executing user pages — the AArch64 equivalent of SMEP).</li>
+  <li><strong>AF</strong> (bit 10) — the Access Flag. temu models the hardware-managed flavour: a cleared AF is set on use rather than faulting.</li>
+</ul>
+<p><code>execNever(uxn, pxn)</code> picks UXN or PXN based on the current EL when checking an instruction fetch.</p>
+
+<h2>The TLB</h2>
+<p>Walking four levels for every access would be ruinously slow, so translations are cached. temu's TLB is set-associative — <code>tlbSets = 512</code>, <code>tlbWays = 8</code> — with round-robin replacement:</p>
+<pre><span class="cm">// cpu/arm64/mmu.go</span>
+<span class="kw">type</span> tlbEntry <span class="kw">struct</span> {
+    valid             <span class="ty">bool</span>
+    vpn, ppn          <span class="ty">uint64</span>
+    writable, uxn, pxn <span class="ty">bool</span>
+}<span class="lang-tag">go</span></pre>
+<p><code>tlbLookup(vpn)</code> is on the hot path of every fetch and data access; <code>tlbInsert</code> caches a fresh walk; <code>flushTLB()</code> and <code>flushTLBPage(vpn)</code> back the <code>TLBI</code> (TLB Invalidate) instructions. Writing <code>SCTLR_EL1</code>, <code>TTBR0/1</code>, or <code>TCR</code> also flushes the TLB in <code>writeSysreg</code> — otherwise stale mappings would survive a page-table change.</p>
+
+<div class="box box-warn">
+<strong>What temu does NOT model</strong>
+<code>MAIR_EL1</code> (Memory Attribute Indirection Register) is stored and read/written like a normal system register, but its memory <em>attributes</em> (cacheable vs device, ordering) are never consulted during the walk — temu has a single flat, coherent memory, so "this page is Device-nGnRnE" has no behavioural effect. Real hardware uses MAIR to decide caching and ordering for every access. Keep MAIR in your mental model of the architecture; just know it is inert here.
+</div>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+The top bit of the virtual address chooses between two completely independent translation regimes (TTBR0 for user, TTBR1 for kernel). That single architectural decision is what makes the kernel/user address split cheap: a context switch reloads one base register and flushes (or, with ASIDs, doesn't even flush) — the kernel's high-half mapping is permanent. Everything else — levels, page sizes, permissions — is conventional radix-tree paging.
+</div>
+`,
+  exercises: [
+    "Given a 4 KiB granule and a 48-bit VA (T0SZ=16), how many table levels does the walk use, and how many bits index each level? Verify against the <code>shift = 12 + 9*(3-level)</code> formula in <code>walk</code>.",
+    "In <code>cpu/arm64/mmu.go</code>, find every place that calls <code>flushTLB</code>. Why must a write to TTBR0_EL1 flush the TLB, and what bug would appear if it didn't?",
+    "PXN exists to stop the kernel from executing user-controlled pages. Which x86 protection feature is its direct analogue, and which leaf bit does <code>execNever</code> consult when the CPU is at EL1?"
+  ]
+},
+
+{
+  id: 8, phase: 3,
+  title: "AT and PAR_EL1",
+  subtitle: "Asking the MMU a question without taking a fault — a real FreeBSD bring-up fix",
+  content: `
+<h2>The address-translation instructions</h2>
+<p>Sometimes privileged software wants to know the physical address a virtual address <em>would</em> translate to — without actually accessing memory and without risking a fault. AArch64 provides a family of <strong>AT</strong> (Address Translate) system instructions for exactly this. The one temu implements is <code>AT S1E1R</code> / <code>AT S1E1W</code>: "perform Stage-1 translation as it would happen for a read (or write) at EL1."</p>
+<p>The result does not go into a general register. It lands in a dedicated system register, <strong>PAR_EL1</strong> (Physical Address Register), which the caller then reads with <code>MRS</code>.</p>
+
+<h2>The PAR_EL1 format</h2>
+<p>PAR_EL1 is a small structured word:</p>
+<ul>
+  <li><strong>Bit 0 (F)</strong> — the fault bit. 0 means success, 1 means the translation faulted.</li>
+  <li><strong>On success</strong> — the physical address sits in bits [47:12], with the low offset bits coming from the original VA.</li>
+  <li><strong>On failure</strong> — bit 0 is 1 and a fault status code (the same DFSC encoding used in abort syndromes) describes why.</li>
+</ul>
+<p>temu builds exactly this in <code>atS1E1</code>:</p>
+<pre><span class="cm">// cpu/arm64/mmu.go — atS1E1(va, write) returns a PAR_EL1 value</span>
+pa, ab := c.<span class="fn">walkForAT</span>(va, write)
+<span class="kw">if</span> ab != <span class="kw">nil</span> {
+    <span class="kw">return</span> <span class="nm">1</span> | <span class="fn">dfscForAbort</span>(ab)&lt;&lt;<span class="nm">1</span>   <span class="cm">// F=1, fault status in bits 6:1</span>
+}
+<span class="kw">return</span> pa &amp; descAddrMask           <span class="cm">// F=0, PA in bits 47:12</span><span class="lang-tag">go</span></pre>
+<p>And the system-instruction dispatch stores it where <code>MRS PAR_EL1</code> will find it:</p>
+<pre><span class="cm">// cpu/arm64/exec.go — execSystem, AT arm</span>
+c.Sys[a64PARField] = c.<span class="fn">atS1E1</span>(c.<span class="fn">readX</span>(rt, <span class="kw">true</span>, <span class="kw">false</span>), write)<span class="lang-tag">go</span></pre>
+
+<h2>Why this was a FreeBSD bring-up fix</h2>
+<p>This instruction is rarely exercised by Linux early boot, so it went unimplemented at first. FreeBSD's <code>pmap_bootstrap</code> uses it: while building the kernel's direct map, it freshly maps a page-table page and then issues <code>AT S1E1R</code> + reads <code>PAR_EL1</code> to discover that page's physical address rather than recomputing it. With AT unimplemented (or PAR_EL1 left zero), FreeBSD read back a garbage physical address and wired its page tables to nowhere — the kernel died early in bring-up. Implementing <code>atS1E1</code> and routing its result into <code>PAR_EL1</code> was one of the four fixes that got FreeBSD 14.3 booting through UEFI on this board.</p>
+
+<div class="box box-note">
+<strong>Note</strong>
+AT is a translation <em>query</em>, not an <em>access</em>. It reuses the same walk logic as a real memory reference (so it sees the same tables, permissions, and faults), but it never reads or writes the target memory and never delivers an exception — a fault is reported quietly through PAR_EL1's F bit. That is what makes it safe for the kernel to probe a mapping it is not yet sure about. temu's <code>walkForAT</code> deliberately shares code with the fault-delivering <code>walk</code> so the two can never disagree.
+</div>
+
+<div class="box box-think">
+<strong>Design rule — bring-up by diverse workloads</strong>
+AT/PAR_EL1 is a perfect example of how this emulator matured. Linux never touched it, so it could be wrong for a long time without anyone noticing. Booting a <em>different</em> OS — FreeBSD — exercised a corner Linux did not, and the latent gap surfaced as a real, debuggable crash. Each new guest hardens a different slice of the ISA. The fix is always the same shape: implement the real instruction correctly and let the demanding workload validate it, never special-case the caller.
+</div>
+`,
+  exercises: [
+    "Read <code>atS1E1</code> in <code>cpu/arm64/mmu.go</code>. After a successful translation of a VA whose page offset is 0x123, where in the returned PAR_EL1 value do those low offset bits come from — the walk, or the original VA?",
+    "FreeBSD used AT to discover a physical address it had just mapped. Why could it not simply compute the PA arithmetically? (Think about why a kernel might trust the MMU's view over its own bookkeeping during early bring-up.)",
+    "<code>walkForAT</code> shares its core logic with the normal faulting <code>walk</code>. Argue why sharing that code is safer than writing a second, AT-only walker, citing the failure mode if the two implementations drifted apart."
+  ]
+},
+
+{
+  id: 9, phase: 3,
+  title: "System Registers and Barriers",
+  subtitle: "MRS/MSR, the encoded register name, and the barrier no-ops",
+  content: `
+<h2>System registers are addressed by an encoded name</h2>
+<p>AArch64 has hundreds of system (control) registers, far too many to give each a dedicated opcode. Instead, <code>MRS</code> (read system register into Xt) and <code>MSR</code> (write Xt into system register) carry a <em>name</em> encoded as five subfields — op0, op1, CRn, CRm, op2 — packed into the instruction word. The assembler syntax <code>S3_0_C2_C0_1</code> spells those fields out directly, and the friendly name <code>TTBR1_EL1</code> is just an alias for that encoding.</p>
+<p>temu decodes <code>MRS</code>/<code>MSR</code> in <code>execSystem</code> and uses the encoded field bits as the lookup key:</p>
+<pre><span class="cm">// cpu/arm64/exec.go — execSystem</span>
+<span class="kw">switch</span> w &gt;&gt; <span class="nm">20</span> {
+<span class="kw">case</span> <span class="nm">0xD53</span>:   <span class="cm">// MRS Xt, sysreg</span>
+    c.<span class="fn">writeX</span>(rt, <span class="kw">true</span>, <span class="kw">false</span>, c.<span class="fn">readSysreg</span>(w&amp;<span class="nm">0x000FFFE0</span>))
+<span class="kw">case</span> <span class="nm">0xD51</span>:   <span class="cm">// MSR sysreg, Xt</span>
+    c.<span class="fn">writeSysreg</span>(w&amp;<span class="nm">0x000FFFE0</span>, c.<span class="fn">readX</span>(rt, <span class="kw">true</span>, <span class="kw">false</span>))
+}<span class="lang-tag">go</span></pre>
+
+<h2>Two storage strategies</h2>
+<p>The registers the CPU cares about on the hot path get dedicated struct fields; everything else falls into a catch-all map. <code>readSysreg</code>/<code>writeSysreg</code> route accordingly:</p>
+<ul>
+  <li><strong>Dedicated fields</strong> — the ones read every instruction or every translation: <code>SCTLR</code>, <code>TTBR0</code>, <code>TTBR1</code>, <code>TCR</code>, <code>MAIR</code>, <code>VBAR</code>, <code>ESR</code>, <code>ELR</code>, <code>SPSR</code>, <code>FAR</code>, plus NZCV/DAIF/SPSel/CurrentEL which assemble from PSTATE fields.</li>
+  <li><strong>The <code>Sys map[uint32]uint64</code></strong> — a generic backing store keyed by the encoded field bits, for the long tail of registers a guest writes and reads back but that have no behavioural effect in temu (ID registers, MPIDR, and so on). PAR_EL1 also lives here.</li>
+</ul>
+<p>The matching encoding constants are named for what they are, e.g.:</p>
+<pre><span class="cm">// cpu/arm64/cpu.go — a few of the encoded field constants</span>
+a64SCTLRField = <span class="nm">1</span>&lt;&lt;<span class="nm">19</span> | <span class="nm">1</span>&lt;&lt;<span class="nm">12</span>                 <span class="cm">// SCTLR_EL1  = S3_0_C1_C0_0</span>
+a64TTBR0Field = <span class="nm">1</span>&lt;&lt;<span class="nm">19</span> | <span class="nm">2</span>&lt;&lt;<span class="nm">12</span>                 <span class="cm">// TTBR0_EL1  = S3_0_C2_C0_0</span>
+a64TTBR1Field = <span class="nm">1</span>&lt;&lt;<span class="nm">19</span> | <span class="nm">2</span>&lt;&lt;<span class="nm">12</span> | <span class="nm">1</span>&lt;&lt;<span class="nm">5</span>          <span class="cm">// TTBR1_EL1  = S3_0_C2_C0_1</span>
+a64VBARField  = <span class="nm">1</span>&lt;&lt;<span class="nm">19</span> | <span class="nm">12</span>&lt;&lt;<span class="nm">12</span>                <span class="cm">// VBAR_EL1   = S3_0_C12_C0_0</span><span class="lang-tag">go</span></pre>
+
+<h2>Side effects on write</h2>
+<p>Some system-register writes do more than store a value. <code>writeSysreg</code> flushes the TLB when the guest changes <code>SCTLR_EL1</code> (the M bit enables/disables the MMU), <code>TTBR0/1</code>, or <code>TCR</code> — because those redefine translation and any cached mapping is now suspect. This mirrors the TLB-flush call sites in the x86_64 backend on CR3/CR0/CR4 writes.</p>
+
+<h2>The barriers — correct as no-ops</h2>
+<p>AArch64's memory model is weakly ordered, so real software is peppered with barrier instructions: <code>DMB</code> (Data Memory Barrier), <code>DSB</code> (Data Synchronization Barrier), and <code>ISB</code> (Instruction Synchronization Barrier). temu is a single-threaded, in-order interpreter with one coherent memory — there is no reordering and no second observer to order against — so these are correctly implemented as <strong>no-ops</strong> that simply retire and advance the PC. The decode arm sits in <code>execSystem</code>; it recognises the barrier encodings and does nothing, which is the architecturally legal behaviour for a machine that never reorders.</p>
+
+<div class="box box-note">
+<strong>Note</strong>
+"No-op" here is not a shortcut — it is correct. A barrier's only job is to constrain the order in which memory effects become visible. An interpreter that performs every memory effect immediately, in program order, to a single coherent store has already satisfied any ordering a barrier could request. The same reasoning makes <code>LDAR</code>/<code>STLR</code> (load-acquire / store-release) behave as plain loads and stores here.
+</div>
+
+<div class="box box-think">
+<strong>Design rule</strong>
+The split between dedicated fields and the catch-all <code>Sys</code> map is the same hot-path-vs-cold-path judgement the x86_64 mode cache makes. Registers consulted on every fetch (SCTLR, TTBR, VBAR) earn a struct field and direct access; registers a guest only round-trips earn a map entry. Promote a register from the map to a field the moment it starts influencing the inner loop — not before.
+</div>
+`,
+  exercises: [
+    "Take the constant <code>a64TTBR1Field</code> and decode it back into op0/op1/CRn/CRm/op2. Confirm it spells S3_0_C2_C0_1 (the encoding of TTBR1_EL1).",
+    "In <code>writeSysreg</code>, list every system-register write that triggers a TLB flush. For each, explain in one line why a stale TLB would be incorrect after that write.",
+    "temu treats <code>DMB</code>/<code>DSB</code>/<code>ISB</code> as no-ops. Construct the argument for why this is correct here but would be a serious bug in an emulator that executed guest threads on multiple host cores concurrently."
+  ]
+},
+
+// ============================================================
+// PHASE 4 — FP, SIMD & the Rest
+// ============================================================
+{
+  id: 10, phase: 4,
+  title: "Scalar FP and the NEON Register File",
+  subtitle: "V0–V31, the S/D/Q views, and where FPCR/FPSR stop short",
+  content: `
+<h2>One register file for float and vector</h2>
+<p>AArch64 has a second register file, completely separate from X0–X30: thirty-two <strong>128-bit</strong> registers, V0–V31. They serve double duty. Used as scalars they hold a single floating-point value; used as vectors (NEON / Advanced SIMD) they hold several packed lanes. The naming reflects the width you are using:</p>
+<table class="corr-table">
+<tr><th>Name</th><th>Width</th><th>Used for</th></tr>
+<tr><td>Bn</td><td>8 bits</td><td>scalar byte</td></tr>
+<tr><td>Hn</td><td>16 bits</td><td>half-precision float</td></tr>
+<tr><td>Sn</td><td>32 bits</td><td>single-precision float</td></tr>
+<tr><td>Dn</td><td>64 bits</td><td>double-precision float</td></tr>
+<tr><td>Qn</td><td>128 bits</td><td>full vector</td></tr>
+</table>
+<p>Like the W/X relationship, these are nested views of the same storage. And like a W write, writing a narrower view <strong>zeroes the upper bits</strong> of the 128-bit register. temu stores each V register as two 64-bit halves:</p>
+<pre><span class="cm">// cpu/arm64/cpu.go</span>
+Vreg [<span class="nm">32</span>][<span class="nm">2</span>]<span class="ty">uint64</span>   <span class="cm">// V0..V31; [0]=low 64, [1]=high 64</span>
+FPCR <span class="ty">uint64</span>          <span class="cm">// floating-point control</span>
+FPSR <span class="ty">uint64</span>          <span class="cm">// floating-point status</span><span class="lang-tag">go</span></pre>
+<p>The scalar accessors keep the zero-extension rule honest: <code>writeVS(n, v)</code> writes an S value and clears the upper 96 bits; <code>writeVD(n, v)</code> writes a D value and clears the upper 64. Reads (<code>readVS</code>, <code>readVD</code>) just take the low bits.</p>
+
+<h2>Scalar floating point</h2>
+<p>The scalar FP instructions are decoded in <code>fp_exec.go</code>. <code>execFPDataProc</code> dispatches; <code>execFPArith2</code> handles two-source operations (<code>FADD</code>, <code>FSUB</code>, <code>FMUL</code>, <code>FDIV</code>, <code>FMAX</code>, <code>FMIN</code>, and the IEEE-NaN-aware <code>FMAXNM</code>/<code>FMINNM</code>), <code>execFPArith1</code> the one-source ones, and <code>execFPCompare</code> the comparisons (which set NZCV, not a vector result). Whether the operation is single or double precision comes from bits 23:22, decoded by <code>fpIsDouble</code>.</p>
+
+<div class="box box-warn">
+<strong>What temu does NOT model</strong>
+<code>FPCR</code> and <code>FPSR</code> are declared as struct fields, but they are <em>not</em> wired into the system-register decoder — an <code>MRS</code>/<code>MSR</code> on them falls through to the generic <code>Sys</code> map, and the FP execution paths do not consult them. So <strong>FPCR rounding-mode control</strong> and <strong>FPSR exception/sticky flags</strong> are not modeled: temu computes in the host's default round-to-nearest and never raises inexact/overflow/invalid flags. NaN <em>payload</em> propagation is likewise not bit-exact. These were knowingly left out — the validation oracle compares results against native Apple Silicon for the common cases, which is enough to boot real kernels, but a guest that depends on a non-default rounding mode would diverge.
+</div>
+
+<h2>Why a separate file at all</h2>
+<p>Keeping FP/SIMD in its own register bank means integer code and floating-point code never contend for the same registers, and the kernel can lazily save/restore the (large) V file only for processes that use it. <code>CPACR_EL1</code> bits 21:20 (FPEN) gate access to the whole file — if a process touches V registers while FPEN traps are armed, it takes an exception and the kernel enables FP for it on demand. temu honours the FPEN gate (there is a dedicated test, <code>fpen_test.go</code>).</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+The 128-bit V file is the single most code-heavy part of the AArch64 backend — NEON has hundreds of encodings — but it rests on one tidy rule that mirrors the integer side: narrow writes zero the rest of the register. Get <code>writeVS</code>/<code>writeVD</code> right once, store every V register as <code>[2]uint64</code>, and the entire scalar-and-vector edifice in <code>fp_exec.go</code> and <code>simd_exec.go</code> stands on that foundation.
+</div>
+`,
+  exercises: [
+    "Writing S5 zeroes the upper 96 bits of V5; writing D5 zeroes the upper 64. In <code>cpu/arm64/cpu.go</code>, confirm <code>writeVS</code> and <code>writeVD</code> implement exactly this. Why does this rule (like W-zeroes-X) help the hardware pipeline?",
+    "temu does not model FPCR rounding modes. Describe a computation whose result would differ between temu (round-to-nearest only) and real hardware configured for round-toward-zero. Why does this not stop Linux or FreeBSD from booting?",
+    "The FPEN bits in CPACR_EL1 let a kernel trap the first FP use by a process. What is the performance reason a kernel would want to lazily enable FP rather than always saving/restoring all 32 V registers on every context switch?"
+  ]
+},
+
+{
+  id: 11, phase: 4,
+  title: "NEON, Exclusives, and the Bugs They Found",
+  subtitle: "Vector arithmetic, reductions, and atomic LDXR/STXR pairs",
+  content: `
+<h2>Advanced SIMD in one file</h2>
+<p>The bulk of the vector ISA lives in <code>cpu/arm64/simd_exec.go</code>. The big dispatch families:</p>
+<ul>
+  <li><strong>Three-same</strong> (<code>execSIMD3</code>) — element-wise <code>ADD</code>/<code>SUB</code>/<code>MUL</code>, the bitwise logicals (<code>AND</code>/<code>ORR</code>/<code>EOR</code>), and integer compares (<code>CMGT</code>/<code>CMGE</code>/<code>CMEQ</code>/<code>CMTST</code>) across every lane.</li>
+  <li><strong>Float three-same</strong> (<code>execSIMD3F</code>) — vectorised <code>FADD</code>/<code>FSUB</code>/<code>FMUL</code>/<code>FDIV</code>/<code>FMAX</code>/<code>FMIN</code>.</li>
+  <li><strong>FP compares</strong> (<code>execSIMD3FCmp</code>) — <code>FCMEQ</code>/<code>FCMGE</code>/<code>FCMGT</code>, producing an all-ones or all-zeros mask per lane.</li>
+  <li><strong>Across-lane reductions</strong> (<code>execSIMDAcross</code>) — fold every lane into one scalar: <code>ADDV</code> (sum), <code>UADDLV</code>/<code>SADDLV</code> (widening sum, result twice the element width), <code>UMAXV</code>/<code>SMAXV</code>, <code>UMINV</code>/<code>SMINV</code>.</li>
+  <li><strong>Two-register misc</strong> (<code>execSIMD2RegMisc</code>) — per-lane <code>CLZ</code> (count leading zeros) and <code>CLS</code> (count leading sign bits), via <code>clzLane</code>/<code>clsLane</code>.</li>
+  <li><strong>By-element, pairwise, permute, ld1/st1</strong> — the long tail of NEON, each with its own handler.</li>
+</ul>
+
+<h2>How NEON gaps surfaced</h2>
+<p>The vector ISA is enormous, so it was built out workload-first: implement what a booting kernel actually executes, validate each against a native Apple Silicon oracle, and let each new guest reveal the next gap. Several specific encodings — <code>UADDLV</code> (widening reduction), the compare-against-zero forms, <code>CLZ</code>/<code>CLS</code> — were among the four FreeBSD bring-up fixes: FreeBSD's hand-written assembly in early boot used them, hit <code>ErrNotImplemented</code>, and that pinpointed exactly which encoding to add next. The discipline (from the project's debugging notes) is to disassemble the failing instruction and add the real encoding with a test, never to skip it.</p>
+
+<h2>Exclusives — atomics without a lock prefix</h2>
+<p>x86 bolts atomicity onto ordinary instructions with a <code>LOCK</code> prefix. AArch64 uses a load-linked / store-conditional pair instead, handled in <code>cpu/arm64/exclusive.go</code> by <code>execLoadStoreExclusive</code>:</p>
+<ul>
+  <li><strong>LDXR</strong> (Load Exclusive) arms a reservation: it records the address in <code>c.exclAddr</code> and sets <code>c.exclMonitor = true</code>.</li>
+  <li><strong>STXR</strong> (Store Exclusive) succeeds only if the monitor is still armed for the same address — it writes the value and returns 0 in its status register. If the reservation was lost, it writes nothing and returns 1, and the software loop retries.</li>
+  <li>The acquire/release variants (<code>LDAXR</code>/<code>STLXR</code>) and the pair forms (<code>LDXP</code>/<code>STXP</code>) ride the same monitor.</li>
+</ul>
+<p>What breaks a reservation? On real hardware, another core writing the line. On temu — single-core — the reservation is broken by <strong>taking an exception</strong>: recall from Lesson 6 that <code>takeException</code> sets <code>c.exclMonitor = false</code>. That correctly models the architectural rule that a context switch (which always goes through an exception) clears the local monitor, so a compare-and-swap loop interrupted mid-sequence retries instead of completing on stale data.</p>
+
+<div class="box box-note">
+<strong>Note</strong>
+On a one-core, non-preemptive interpreter, the simplest correct exclusive monitor is "armed by LDXR, disarmed by an exception, otherwise STXR to the same address always succeeds." There is no other observer to invalidate the line. The subtle correctness point is that the exception clear must be reliable — which is why it lives in <code>takeException</code> alongside the other state changes, not scattered across handlers.
+</div>
+
+<div class="box box-think">
+<strong>Design rule — diverse workloads surface bugs</strong>
+NEON is the clearest case of the project's core strategy: you cannot unit-test your way to ISA completeness on a file with hundreds of encodings, but you can boot many different operating systems and let each one execute a different slice. Linux exercised one set of vector ops; FreeBSD's assembly hit <code>UADDLV</code> and compare-against-zero that Linux never touched. Each guest hardens a different corner, and once a corner is hardened, the next guest that uses it boots for free.
+</div>
+`,
+  exercises: [
+    "In <code>cpu/arm64/simd_exec.go</code>, find <code>execSIMDAcross</code>. Explain why <code>UADDLV</code> produces a result twice the element width while <code>ADDV</code> does not. What overflow problem does the widening form avoid?",
+    "Trace a compare-and-swap loop using <code>LDXR</code>/<code>STXR</code> in <code>cpu/arm64/exclusive.go</code>. What value does <code>STXR</code> write to its status register on success vs failure, and what does the surrounding software loop do on failure?",
+    "On a single-core interpreter the exclusive monitor is cleared only by <code>takeException</code>. Argue why that is sufficient for correctness here, then describe what additional event would have to clear it on a real multi-core machine."
+  ]
+},
+
+// ============================================================
+// PHASE 5 — Booting & the temu Board
+// ============================================================
+{
+  id: 12, phase: 5,
+  title: "The Boot Protocol and the virt Board",
+  subtitle: "RAM at 0x40000000, the DTB in X0, and the QEMU-compatible device map",
+  content: `
+<h2>Where the kernel lands</h2>
+<p>The AArch64 Linux boot protocol is refreshingly simple. There is no BIOS, no real-mode stub, no multiboot header. The bootloader (here, temu's machine layer) loads the kernel image into RAM, sets one register, and jumps. temu's <code>virt</code> board, in <code>machine/arm64.go</code>, places things at the QEMU-compatible addresses:</p>
+<table class="corr-table">
+<tr><th>Constant</th><th>Address</th><th>What</th></tr>
+<tr><td>a64RAMBase</td><td>0x40000000</td><td>base of guest RAM</td></tr>
+<tr><td>a64DTBOff</td><td>+0x00000000</td><td>device tree blob (at RAM base)</td></tr>
+<tr><td>a64KernelOff</td><td>+0x00200000</td><td>kernel Image (RAM base + 2 MiB)</td></tr>
+<tr><td>a64InitrdOff</td><td>+0x08000000</td><td>initrd (RAM base + 128 MiB)</td></tr>
+</table>
+
+<h2>The handoff contract</h2>
+<p>For a flat Linux <code>Image</code> (detected by the magic <code>0x644d5241</code> at byte offset 56), <code>bootLinuxImage</code> sets up exactly what the protocol requires:</p>
+<pre><span class="cm">// cpu/arm64 / machine/arm64.go — boot handoff</span>
+c.PC = a64RAMBase + a64KernelOff   <span class="cm">// entry = 0x40200000</span>
+c.X[<span class="nm">0</span>] = a64RAMBase + a64DTBOff     <span class="cm">// X0 = physical address of the DTB</span>
+c.X[<span class="nm">1</span>] = <span class="nm">0</span>; c.X[<span class="nm">2</span>] = <span class="nm">0</span>; c.X[<span class="nm">3</span>] = <span class="nm">0</span>     <span class="cm">// reserved, must be zero</span>
+<span class="cm">// CPU starts at EL1h, MMU off, DAIF masked</span><span class="lang-tag">go</span></pre>
+<p>That is the entire contract: <strong>X0 holds the physical address of the device tree</strong>, X1–X3 are zero, the MMU is off, and the kernel is entered at EL1. The kernel reads the DTB to learn what hardware exists. (Real firmware would have descended EL3→EL2→EL1 first; temu hands over the EL1 state directly, per Lesson 4.)</p>
+
+<h2>The device tree, generated at runtime</h2>
+<p>temu does not ship a static <code>.dtb</code> file — it builds one for each boot in <code>buildARM64FDT</code> (<code>machine/arm64fdt.go</code>), describing exactly the devices it has wired up: the memory node, a PSCI node (method <code>hvc</code>), the generic timer with its PPIs, the GICv2, the PL011 UART, and one node per attached VirtIO-MMIO device. Generating it means the DTB can never drift out of sync with the actual emulated hardware.</p>
+
+<h2>The virt device map</h2>
+<table class="corr-table">
+<tr><th>Device</th><th>Base / ID</th><th>Notes</th></tr>
+<tr><td>GICv2 distributor</td><td>0x08000000</td><td>a64GICDBase</td></tr>
+<tr><td>GICv2 CPU interface</td><td>0x08010000</td><td>a64GICCBase</td></tr>
+<tr><td>PL011 UART</td><td>0x09000000</td><td>a64UARTBase; the console</td></tr>
+<tr><td>VirtIO-MMIO base</td><td>0x0a000000</td><td>block, net, etc., 0x200 per device</td></tr>
+<tr><td>UART interrupt</td><td>SPI 1 (INTID 33)</td><td>a64UARTIntID</td></tr>
+<tr><td>EL1 virtual timer</td><td>PPI 11 (INTID 27)</td><td>a64TimerVirtPPI</td></tr>
+<tr><td>EL1 physical timer</td><td>PPI 14 (INTID 30)</td><td>a64TimerPhysPPI</td></tr>
+</table>
+<p>The three interrupt classes follow the GIC convention: INTIDs 0–15 are software-generated (SGI), 16–31 are per-CPU peripherals (PPI — the timers live here), and 32+ are shared peripherals (SPI — the UART and VirtIO devices).</p>
+
+<h2>The PL011 console and the GICv2</h2>
+<p>The serial console is an ARM <strong>PL011</strong> UART (<code>devices/pl011.go</code>): the data register is at offset 0x000, the flag register (TXFF/RXFE) at 0x018, the control and interrupt-mask registers at 0x030/0x038. Linux drives it as <code>ttyAMA0</code> — note the kernel command line in the run scripts: <code>console=ttyAMA0 earlycon=pl011,mmio32,0x9000000</code>. Interrupts route through the <strong>GICv2</strong> (<code>devices/gicv2.go</code>): the distributor decides which interrupt is highest-priority and pending, the CPU interface delivers it to the core via the IRQ line, and the kernel acknowledges through GICC_IAR and signals completion through GICC_EOIR.</p>
+
+<h2>The generic timer</h2>
+<p>The ARM generic timer (<code>cpu/arm64/timer.go</code>) counts retired instructions as its tick source and advertises <code>CNTFRQ_EL0 = 62500000</code> Hz. A guest programs <code>CNTP_CVAL_EL0</code> (a compare value) and enables the timer via <code>CNTP_CTL_EL0</code>; when the counter reaches the compare value the timer asserts its PPI into the GIC. temu also <em>fast-forwards</em> the counter during <code>WFI</code> (Wait For Interrupt): instead of spinning through idle cycles it jumps the counter straight to the next timer deadline — a fix that mattered for FreeBSD, which spends real idle time in WFI.</p>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+The AArch64 boot contract is one register and one jump: put the DTB's physical address in X0, enter the kernel at EL1 with the MMU off. Everything the kernel needs to know about the machine, it discovers from the device tree — so the board's job is to (1) lay memory and devices at the addresses the DTB promises and (2) generate a DTB that tells the truth. temu does both, and that is why the same board boots four different operating systems.
+</div>
+`,
+  exercises: [
+    "In <code>machine/arm64.go</code>, find the boot handoff. What exactly is in X0 when the kernel's first instruction executes, and why does the kernel need it before it can do anything else?",
+    "The run scripts pass <code>console=ttyAMA0 earlycon=pl011,mmio32,0x9000000</code>. Match each part to the board: which device is ttyAMA0, and why is the address in earlycon 0x9000000?",
+    "temu generates the DTB at runtime rather than shipping a file. Describe a class of bug this design eliminates. (Hint: what happens with a static DTB if you change a device's base address in the board code?)"
+  ]
+},
+
+{
+  id: 13, phase: 5,
+  title: "PSCI and Power Control",
+  subtitle: "Turning the machine off through a hypercall — HVC, SMC, and the function IDs",
+  content: `
+<h2>How does a kernel turn the computer off?</h2>
+<p>On a PC, the kernel pokes ACPI registers. On AArch64 there is a cleaner abstraction: <strong>PSCI</strong>, the Power State Coordination Interface. The kernel does not touch any power hardware directly — it makes a <em>firmware call</em>, passing a standardized function ID, and firmware (or, on a virtual machine, the hypervisor/emulator) carries out the request. This decouples the OS from board-specific power circuitry entirely.</p>
+
+<h2>The call mechanism: HVC and SMC</h2>
+<p>PSCI calls are made with one of two exception-generating instructions:</p>
+<ul>
+  <li><strong>HVC</strong> (Hypervisor Call) — traps to EL2.</li>
+  <li><strong>SMC</strong> (Secure Monitor Call) — traps to EL3.</li>
+</ul>
+<p>The device tree's PSCI node tells the kernel which to use; temu's generated DTB declares <code>method = "hvc"</code>. The kernel puts the function ID in X0 and arguments in X1+, executes the instruction, and reads the result back from X0 — a register-based calling convention like a syscall, but aimed at firmware.</p>
+
+<h2>How temu services the call</h2>
+<p>temu has no EL2 or EL3 to trap to. Instead, the CPU lets the board intercept the hypercall directly. <code>execException</code> classifies the instruction and, for HVC/SMC, invokes a board-supplied handler before any vectoring:</p>
+<pre><span class="cm">// cpu/arm64/exec.go — execException, hypercall path</span>
+<span class="kw">if</span> (c.ExcType == <span class="st">"hvc"</span> || c.ExcType == <span class="st">"smc"</span>) &amp;&amp; c.HVCHandler != <span class="kw">nil</span> {
+    <span class="kw">if</span> c.<span class="fn">HVCHandler</span>(c) {
+        <span class="kw">return</span> <span class="kw">nil</span>   <span class="cm">// handled; PC already advanced past the HVC</span>
+    }
+}<span class="lang-tag">go</span></pre>
+<p>The board wires <code>HVCHandler = m.psci</code>. The <code>psci</code> function (<code>machine/arm64.go</code>) reads X0 and dispatches on the function ID:</p>
+<pre><span class="cm">// machine/arm64.go — psci (abbreviated)</span>
+<span class="kw">switch</span> fnID {
+<span class="kw">case</span> <span class="nm">0x84000000</span>:   <span class="cm">// PSCI_VERSION</span>
+    x0 = <span class="nm">0x00000002</span>   <span class="cm">// PSCI v0.2</span>
+<span class="kw">case</span> <span class="nm">0x84000008</span>:   <span class="cm">// SYSTEM_OFF</span>
+    m.shutdownRequested = <span class="kw">true</span>
+<span class="kw">case</span> <span class="nm">0x84000009</span>:   <span class="cm">// SYSTEM_RESET</span>
+    m.shutdownRequested = <span class="kw">true</span>
+<span class="kw">default</span>:
+    x0 = <span class="nm">0xFFFFFFFF</span>   <span class="cm">// NOT_SUPPORTED</span>
+}<span class="lang-tag">go</span></pre>
+<p>So when Linux finishes shutting down and issues <code>HVC</code> with X0 = SYSTEM_OFF, the board sets a shutdown flag and the emulator exits cleanly — that is what makes <code>poweroff</code> inside the guest actually stop temu.</p>
+
+<div class="box box-warn">
+<strong>What temu does NOT do</strong>
+A full PSCI implementation also offers <strong>CPU_ON</strong> / <strong>CPU_OFF</strong> to boot and park secondary cores. temu is single-core, so those are intentionally absent — the dispatch returns NOT_SUPPORTED. This is why the generated DTB describes exactly one CPU; a guest that tried to bring up a second core would simply be told it cannot. The implemented set is VERSION, SYSTEM_OFF, SYSTEM_RESET, and MIGRATE_INFO_TYPE.
+</div>
+
+<div class="box box-note">
+<strong>Note</strong>
+The same HVC/SMC mechanism that powers PSCI is a general firmware-call channel — Arm's SMCCC (SMC Calling Convention) routes many services through it. temu only needs PSCI, so the handler dispatches PSCI function IDs and returns NOT_SUPPORTED for everything else, which is the architecturally correct response to an unrecognised call.
+</div>
+
+<div class="box box-key">
+<strong>Key Insight</strong>
+PSCI is exception-driven, just like everything else in this architecture. Power control is not a special bus or a magic register — it is a function call that happens to land in firmware via the same trap machinery as a syscall or a page fault. temu collapses the "firmware" recipient down to a board callback, but the guest cannot tell the difference: it issues an HVC, reads X0, and gets a spec-compliant answer.
+</div>
+`,
+  exercises: [
+    "In <code>machine/arm64.go</code>, read the <code>psci</code> handler. What does it return for an unrecognised function ID, and why is that the correct response rather than, say, halting?",
+    "temu's DTB declares the PSCI method as <code>hvc</code>. If it instead declared <code>smc</code>, which instruction would the kernel use, and would temu's <code>execException</code> still route it to the same handler? (Check which ExcType values the hypercall path accepts.)",
+    "PSCI_CPU_ON is deliberately unimplemented. Explain the connection between that omission and the fact that the generated device tree describes a single CPU node."
+  ]
+},
+
+{
+  id: 14, phase: 5,
+  title: "Bring-Up War Stories",
+  subtitle: "Four operating systems, and the throughline that ends with NuttX booting for free",
+  content: `
+<h2>The strategy: boot real things, fix what breaks</h2>
+<p>An emulator is only as correct as the code you run on it. tinyemu-go's AArch64 board was not validated by a checklist of features — it was hardened by booting one demanding operating system after another, fixing each latent bug as a real guest tripped over it, with a unit test pinned to every fix. The run scripts (<code>run_arm64virt.sh</code>, <code>run_alpine-arm64.sh</code>, <code>run_freebsd-arm64.sh</code>, <code>run_sel4-arm64.sh</code>, <code>run_nuttx-arm64.sh</code>) are the evidence. Here is the arc.</p>
+
+<h2>Linux 6.12 — the first kernel to userspace</h2>
+<p>Linux was the trailblazer and surfaced the most foundational bugs. Getting Alpine's aarch64 kernel from the boot handoff into a userspace shell required fixes across the whole CPU: correct <code>DAIF</code> sysreg handling, the <code>PRFM</code> prefetch hint treated as a no-op, the unaligned cross-page read/write fix (shared in spirit with the x86 page-cross bug), the <code>TBZ</code>/<code>TBNZ</code> test-bit branches, the exclusive <code>LDXR</code>/<code>STXR</code> monitor, and <code>MSR</code>-immediate (the form that writes DAIF directly). It also needed <code>mitigations=off</code> to sidestep KPTI's alternatives patching. The wall it eventually cleared: vmalloc PTE corruption during module load — an MMU bug that only a real kernel's module loader would exercise.</p>
+
+<h2>FreeBSD 14.3 — a different OS finds different bugs</h2>
+<p>FreeBSD boots a completely different way: through <strong>edk2 UEFI firmware</strong> rather than a flat Image. That alone forced four fixes (covered across earlier lessons): a <strong>CFI NOR flash</strong> device so UEFI has somewhere to store variables; <strong>WFI timer fast-forward</strong> so the kernel's idle loop doesn't stall the emulator; <strong>AT / PAR_EL1</strong> for <code>pmap_bootstrap</code> (Lesson 8); and several <strong>NEON gaps</strong> — <code>UADDLV</code>, compare-against-zero, <code>CLZ</code>/<code>CLS</code> — that FreeBSD's early assembly hit and Linux never had (Lesson 11). FreeBSD now boots its kernel into userland and reaches a working shell.</p>
+
+<h2>seL4 — a formally-verified microkernel</h2>
+<p>seL4 is a different beast again: a tiny, formally-verified microkernel loaded as an ELF (so the board needed an ELF <code>-kernel</code> loader path alongside the flat-Image path). Its <code>sel4test</code> suite runs on the board. The instructive bug: seL4's embedded DTB declares 1 GiB of RAM, and its root-task paging structures land near the top of that region. temu was <em>silently dropping writes to unbacked RAM</em>, so with less memory those page-table writes vanished and the kernel asserted deep inside <code>map_it_pd_cap</code> — a confusing failure that actually meant "your RAM is smaller than the guest believes." The fix was matching the memory size (<code>MEM=1024</code>); the lesson was that silently-dropped writes mask configuration mismatches.</p>
+
+<h2>NuttX — the payoff: zero changes</h2>
+<p>And then the milestone. Apache NuttX (the <code>qemu-armv8a</code> configuration) booted to an interactive <code>nsh&gt;</code> shell with <strong>zero emulator changes</strong>. Everything it needed — GICv2, PL011, the generic timer, PSCI, the EL1 boot state — had already been hardened by the kernels before it. NuttX is the proof that the board had reached <em>maturity</em>: a new, previously-untried OS booted for free because the corners it touches were already correct.</p>
+
+<div class="box box-key">
+<strong>The throughline</strong>
+Each operating system hardened a different slice of the board, and once a slice was correct, every later guest that used it got it for free. Linux proved the core CPU and MMU. FreeBSD proved the UEFI path, AT/PAR_EL1, the timer's idle behaviour, and NEON corners Linux skipped. seL4 proved the ELF loader and exposed the unbacked-write hazard. By the time NuttX arrived there was nothing left to fix — which is exactly the definition of a mature board. The goal of the next guest is no longer "make it boot"; it is "confirm there is nothing left to fix."
+</div>
+
+<div class="box box-think">
+<strong>Design rule — never paper over a fault</strong>
+The consistent discipline across all four bring-ups: when a guest hits an unimplemented instruction or a wrong result, the fix is to implement the real behaviour correctly and add a regression test — never to special-case the guest, skip the instruction, or fake a result. AT/PAR_EL1 was implemented, not stubbed. The NEON gaps were filled with byte-exact encodings validated against native hardware. That is why fixing a bug for one OS so reliably unblocks the next: the fix is the architecture, not a workaround for one caller.
+</div>
+`,
+  exercises: [
+    "List the four operating systems in this lesson and name one bug-class each one uniquely surfaced. Why was NuttX able to boot with zero new fixes?",
+    "The seL4 failure (assert in <code>map_it_pd_cap</code>) was really caused by silently-dropped writes to unbacked RAM. Explain why making such writes fault (or warn) loudly would have turned a confusing assert into an obvious diagnostic.",
+    "The project's rule is 'implement the real instruction, never special-case the caller.' Using AT/PAR_EL1 or the NEON gaps as your example, argue concretely why this rule made later OS bring-ups cheaper rather than more expensive."
+  ]
+},
+
+];
+
+// ============================================================
+// APP STATE
+// ============================================================
+let currentLesson = null;
+let completed = JSON.parse(localStorage.getItem('arm64tut_done') || '[]');
+
+function isComplete(id) { return completed.includes(id); }
+function markComplete(id) {
+  if (!completed.includes(id)) completed.push(id);
+  localStorage.setItem('arm64tut_done', JSON.stringify(completed));
+  updateProgress(); renderNav();
+}
+function unmarkComplete(id) {
+  completed = completed.filter(x => x !== id);
+  localStorage.setItem('arm64tut_done', JSON.stringify(completed));
+  updateProgress(); renderNav();
+}
+function updateProgress() {
+  const pct = LESSONS.length ? Math.round(completed.length / LESSONS.length * 100) : 0;
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('progress-text').textContent = `${completed.length} / ${LESSONS.length}`;
+}
+
+let collapsedPhases = new Set(JSON.parse(localStorage.getItem('arm64tut_collapsed') || '[]'));
+
+function renderNav(filter = '') {
+  const nav = document.getElementById('lesson-nav');
+  nav.innerHTML = '';
+  const f = filter.toLowerCase();
+  for (let ph = 1; ph <= 5; ph++) {
+    const meta = PHASE_META[ph];
+    const lessons = LESSONS.filter(l => l.phase === ph && (
+      !f || l.title.toLowerCase().includes(f) || l.subtitle.toLowerCase().includes(f)
+    ));
+    if (lessons.length === 0) continue;
+    const collapsed = collapsedPhases.has(ph);
+    const group = document.createElement('div');
+    group.className = 'phase-group';
+    group.innerHTML = `
+      <div class="phase-header ${collapsed ? 'collapsed' : ''}" data-phase="${ph}"
+           style="color:${meta.color}">
+        <span class="phase-dot" style="background:${meta.color}"></span>
+        ${meta.short}: ${meta.name}
+        <span class="phase-toggle">▾</span>
+      </div>
+      <div class="phase-lessons" ${collapsed ? 'style="display:none"' : ''}>
+        ${lessons.map(l => `
+          <div class="nav-item ${currentLesson === l.id ? 'active' : ''} ${isComplete(l.id) ? 'done' : ''}"
+               data-id="${l.id}"
+               style="${currentLesson === l.id ? `border-left-color:${meta.color}` : ''}">
+            <span class="nav-check">${isComplete(l.id) ? '✓' : ''}</span>
+            <span class="nav-num">${l.id}</span>
+            ${l.title}
+          </div>
+        `).join('')}
+      </div>
+    `;
+    nav.appendChild(group);
+  }
+  nav.querySelectorAll('.phase-header').forEach(h => {
+    h.addEventListener('click', () => {
+      const ph = parseInt(h.dataset.phase);
+      const lessons = h.nextElementSibling;
+      if (collapsedPhases.has(ph)) {
+        collapsedPhases.delete(ph);
+        h.classList.remove('collapsed');
+        lessons.style.display = '';
+      } else {
+        collapsedPhases.add(ph);
+        h.classList.add('collapsed');
+        lessons.style.display = 'none';
+      }
+      localStorage.setItem('arm64tut_collapsed', JSON.stringify([...collapsedPhases]));
+    });
+  });
+  nav.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', () => showLesson(parseInt(item.dataset.id)));
+  });
+}
+
+function showLesson(id) {
+  const lesson = LESSONS.find(l => l.id === id);
+  if (!lesson) return;
+  currentLesson = id;
+  const phase = PHASE_META[lesson.phase];
+  const prev = LESSONS.find(l => l.id === id - 1);
+  const next = LESSONS.find(l => l.id === id + 1);
+
+  document.getElementById('topbar-phase').textContent = `${phase.short} — ${phase.name}`;
+  const prevBtn = document.getElementById('btn-prev');
+  const nextBtn = document.getElementById('btn-next-top');
+  prevBtn.disabled = !prev;
+  nextBtn.disabled = !next;
+  prevBtn.onclick = () => prev && showLesson(prev.id);
+  nextBtn.onclick = () => next && showLesson(next.id);
+
+  const done = isComplete(id);
+  document.getElementById('content-area').innerHTML = `
+    <div id="lesson-content">
+      <div class="lesson-eyebrow">
+        <span class="phase-badge" style="background:${phase.color}22;color:${phase.color}">${phase.short}</span>
+        <span class="lesson-number">Lesson ${lesson.id} of ${LESSONS.length}</span>
+      </div>
+      <h1 class="lesson-title">${lesson.title}</h1>
+      <p class="lesson-subtitle">${lesson.subtitle}</p>
+      <div class="lesson-divider"></div>
+      <div class="lesson-body">${lesson.content}</div>
+      <div class="exercises">
+        <h2>Exercises</h2>
+        ${lesson.exercises.map((ex, i) => `
+          <div class="exercise">
+            <div class="exercise-num">Exercise ${i + 1}</div>
+            <p>${ex}</p>
+          </div>
+        `).join('')}
+      </div>
+      <div class="complete-wrap">
+        <button class="btn-complete ${done ? 'done' : ''}" id="btn-done">
+          ${done ? '✓ Completed' : 'Mark Complete'}
+        </button>
+        ${next ? `<button class="btn-next" id="btn-next-lesson">Next: ${next.title} →</button>` : ''}
+      </div>
+    </div>
+  `;
+  document.getElementById('btn-done').onclick = () => {
+    if (isComplete(id)) unmarkComplete(id); else markComplete(id);
+    renderNav();
+    document.getElementById('btn-done').className = `btn-complete ${isComplete(id) ? 'done' : ''}`;
+    document.getElementById('btn-done').textContent = isComplete(id) ? '✓ Completed' : 'Mark Complete';
+  };
+  const nl = document.getElementById('btn-next-lesson');
+  if (nl) nl.onclick = () => showLesson(next.id);
+  renderNav();
+  document.getElementById('main').scrollTo(0, 0);
+  if (window.innerWidth < 900) document.getElementById('sidebar').classList.remove('open');
+}
+
+function showWelcome() {
+  currentLesson = null;
+  document.getElementById('topbar-phase').textContent = 'Overview';
+  document.getElementById('btn-prev').disabled = true;
+  document.getElementById('btn-next-top').disabled = false;
+  document.getElementById('btn-next-top').onclick = () => showLesson(1);
+  document.getElementById('content-area').innerHTML = `
+    <div id="welcome">
+      <h1>The <em>ARM64 CPU</em></h1>
+      <p class="tagline">AArch64 from reset to userspace — a working emulator's field guide.</p>
+      <div class="welcome-body">
+        <p>This course walks you through AArch64 — the 64-bit execution state of the ARM architecture, the ISA inside every modern phone, the Apple Silicon Mac you may be reading this on, and a growing share of servers. It is a clean-sheet design that learned from x86's decades of accretion: a flat register file, a single fixed-width 32-bit instruction encoding, four crisply-defined privilege levels, and an MMU with no segmentation in sight.</p>
+        <p>Every lesson points back at a real, working emulator in this repository — <code>cpu/arm64/</code> for the CPU, MMU, exceptions, and NEON, and <code>machine/arm64.go</code> for the <code>virt</code> board (PL011 UART, GICv2, the generic timer, a runtime-generated device tree). This is not a paper design: the board boots Linux 6.12 and Apache NuttX to an interactive shell, FreeBSD 14.3 through UEFI to a working shell, and runs the seL4 microkernel's test suite.</p>
+        <p>No prior ARM knowledge is assumed, though if you have read the companion <a href="x64_tutorial.html">x86_64 tutorial</a> the contrasts will be sharper — AArch64 is in many ways the architecture x86 would have been if it could have started over.</p>
+        <p>The arc runs from the machine model (registers, PSTATE, encoding) through privilege and exceptions, the MMU, FP/SIMD, and finally the boot protocol and the bring-up war stories that hardened this board. For diagnostic technique — sampling, watchpoints, cycle-window traces — see <a href="DEBUG.md">DEBUG.md</a>.</p>
+        <p>14 lessons across five phases. Progress is saved automatically in your browser.</p>
+        <div class="phase-overview">
+          ${[1,2,3,4,5].map(ph => {
+            const m = PHASE_META[ph];
+            const done = LESSONS.filter(l => l.phase === ph && isComplete(l.id)).length;
+            const total = LESSONS.filter(l => l.phase === ph).length;
+            return `
+              <div class="phase-card" onclick="showLesson(${(LESSONS.find(l=>l.phase===ph)||{id:1}).id})">
+                <div class="phase-card-num" style="color:${m.color}">${m.short} — Lessons ${m.lessons}</div>
+                <h3>${m.name}</h3>
+                <p>${done}/${total} complete</p>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <button class="btn-start" onclick="showLesson(${completed.length > 0 ? Math.max(...completed) + 1 : 1})">
+          ${completed.length > 0 ? 'Continue →' : 'Start from Lesson 1 →'}
+        </button>
+      </div>
+    </div>
+  `;
+  renderNav();
+}
+
+document.getElementById('search').addEventListener('input', e => renderNav(e.target.value));
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowRight' || e.key === 'j') {
+    const next = currentLesson && LESSONS.find(l => l.id === currentLesson + 1);
+    if (next) showLesson(next.id);
+  }
+  if (e.key === 'ArrowLeft' || e.key === 'k') {
+    const prev = currentLesson && LESSONS.find(l => l.id === currentLesson - 1);
+    if (prev) showLesson(prev.id);
+  }
+  if (e.key === 'h') showWelcome();
+});
+
+function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
+document.getElementById('sidebar-header').style.cursor = 'pointer';
+document.getElementById('sidebar-header').onclick = showWelcome;
+
+updateProgress();
+showWelcome();
+</script>
+</body>
+</html>
