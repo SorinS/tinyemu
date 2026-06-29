@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/sorins/tinyemu-go/cpu"
@@ -156,6 +157,14 @@ func New(cfg Config) (*Machine, error) {
 			riscv.TraceInvalidCSR | riscv.TracePrivChange
 		if os.Getenv("TINYEMU_RISCV_ITRACE") != "" {
 			ev |= riscv.TraceInstruction
+		}
+		// Optional: suppress the per-instruction trace inside a hot PC range so
+		// the log fast-forwards through e.g. a guest's big memset.
+		if s := os.Getenv("TINYEMU_RISCV_TRACE_SKIPLO"); s != "" {
+			riscv.TraceSkipLo, _ = strconv.ParseUint(s, 0, 64)
+		}
+		if s := os.Getenv("TINYEMU_RISCV_TRACE_SKIPHI"); s != "" {
+			riscv.TraceSkipHi, _ = strconv.ParseUint(s, 0, 64)
 		}
 		m.cpu.SetTracer(riscv.NewDefaultTracer(os.Stderr, ev))
 	}

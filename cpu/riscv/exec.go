@@ -2,6 +2,12 @@ package riscv
 
 import "lukechampine.com/uint128"
 
+// TraceSkipLo/TraceSkipHi, when set (Hi>Lo), suppress per-instruction trace
+// output for PCs in [Lo,Hi) — used to fast-forward hot loops (e.g. a guest's
+// big memset) so the trace reaches the code that comes after. Set from
+// TINYEMU_RISCV_TRACE_SKIPLO/HI in the machine setup.
+var TraceSkipLo, TraceSkipHi uint64
+
 // Step executes a single instruction and returns any error
 func (c *CPU) Step() error {
 	// Fetch instruction
@@ -29,7 +35,7 @@ func (c *CPU) Step() error {
 
 	// Optional per-instruction trace (nil tracer in normal runs = one cheap
 	// nil-check; the tracer self-gates on the TraceInstruction event flag).
-	if c.Tracer != nil {
+	if c.Tracer != nil && !(TraceSkipHi > TraceSkipLo && pcBeforeExec >= TraceSkipLo && pcBeforeExec < TraceSkipHi) {
 		c.Tracer.TraceInstruction(c, pcBeforeExec, insn)
 	}
 

@@ -28,10 +28,11 @@ type NS16550 struct {
 	rxBuf []byte // bytes pulled from the console, not yet read via RBR
 	debug bool
 
-	irq      *mem.IRQSignal // PLIC line (QEMU-virt UART0 = IRQ 10)
-	irqLevel int            // last level driven onto irq (dedup)
-	iir      uint8          // current interrupt identification
-	trace    bool           // TINYEMU_UART_TRACE: log every register access (verbose)
+	irq         *mem.IRQSignal // PLIC line (QEMU-virt UART0 = IRQ 10)
+	irqLevel    int            // last level driven onto irq (dedup)
+	iir         uint8          // current interrupt identification
+	thrIPending bool           // THR-empty interrupt pending (edge; cleared by reading IIR)
+	trace       bool           // TINYEMU_UART_TRACE: log every register access (verbose)
 }
 
 // 16550 register offsets (DLAB=0 unless noted), reg-shift 0.
@@ -77,8 +78,12 @@ func (u *NS16550) updateIRQ() {
 	switch {
 	case u.ier&0x01 != 0 && u.rxAvailable():
 		cause = 0x04 // received data available
-	case u.ier&0x02 != 0:
-		cause = 0x02 // transmitter holding register empty
+	case u.ier&0x02 != 0 && u.thrIPending:
+		// THR-empty: an EDGE, asserted when the TX completes / TX-int is
+		// enabled, and cleared when the guest reads IIR. NOT a level on THRE —
+		// that would interrupt forever (xv6 enables IER=RX|TX and relies on the
+		// IIR read to clear it).
+		cause = 0x02
 	}
 	u.iir = cause
 	level := 0
@@ -147,6 +152,9 @@ func ns16550Read(opaque any, offset uint32, sizeLog2 int) uint32 {
 		}
 	case ns16550IIR:
 		v = u.iir
+		if v == 0x02 { // reading IIR with the THR-empty cause clears that interrupt
+			u.thrIPending = false
+		}
 	case ns16550LCR:
 		v = u.lcr
 	case ns16550MCR:
@@ -180,14 +188,20 @@ func ns16550Write(opaque any, offset uint32, val uint32, sizeLog2 int) {
 	case ns16550THR:
 		if dlab {
 			u.dll = b
-		} else if u.console != nil {
-			u.console.WriteData([]byte{b})
+		} else {
+			if u.console != nil {
+				u.console.WriteData([]byte{b})
+			}
+			u.thrIPending = true // TX completed -> THR-empty interrupt edge
 		}
 	case ns16550IER:
 		if dlab {
 			u.dlm = b
 		} else {
 			u.ier = b
+			if b&0x02 != 0 {
+				u.thrIPending = true // enabling TX-int while THRE asserts it once
+			}
 		}
 	case ns16550FCR:
 		u.fcr = b

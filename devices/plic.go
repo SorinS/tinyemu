@@ -155,12 +155,15 @@ func (p *PLIC) Read(opaque any, offset uint32, sizeLog2 int) uint32 {
 	defer p.mu.Unlock()
 
 	switch offset {
-	case PLICHartBase + PLICThresholdOffset:
+	// Threshold for hart 0 M-mode (context 0) and S-mode (context 1). S-mode
+	// kernels (xv6, Linux) use context 1; we share one internal state across
+	// both contexts (single hart, one OS at a time).
+	case PLICHartBase + PLICThresholdOffset, PLICHartBase + PLICHartSize + PLICThresholdOffset:
 		// C code returns 0 for threshold read at PLIC_HART_BASE
 		// Reference: riscv_machine.c:263-265
 		return 0
 
-	case PLICHartBase + PLICClaimOffset:
+	case PLICHartBase + PLICClaimOffset, PLICHartBase + PLICHartSize + PLICClaimOffset:
 		// Claim - return the highest priority pending interrupt
 		mask := p.pendingIRQ &^ p.servedIRQ
 		if mask != 0 {
@@ -184,8 +187,8 @@ func (p *PLIC) Read(opaque any, offset uint32, sizeLog2 int) uint32 {
 				return p.priority[srcNum]
 			}
 		}
-		// Enable registers (0x2000 for context 0)
-		if offset == 0x2000 {
+		// Enable registers: context 0 (M) at 0x2000, context 1 (S) at 0x2080.
+		if offset == 0x2000 || offset == 0x2080 {
 			return p.enable
 		}
 		// Pending registers (0x1000)
@@ -208,11 +211,11 @@ func (p *PLIC) Write(opaque any, offset uint32, val uint32, sizeLog2 int) {
 	}
 
 	switch offset {
-	case PLICHartBase + PLICThresholdOffset:
+	case PLICHartBase + PLICThresholdOffset, PLICHartBase + PLICHartSize + PLICThresholdOffset:
 		// C code ignores threshold writes at PLIC_HART_BASE
 		// Reference: riscv_machine.c:284-301 (only PLIC_HART_BASE+4 handled)
 
-	case PLICHartBase + PLICClaimOffset:
+	case PLICHartBase + PLICClaimOffset, PLICHartBase + PLICHartSize + PLICClaimOffset:
 		// Complete - mark the interrupt as no longer being served
 		irqNum := val - 1
 		if irqNum < PLICMaxIRQ-1 {
@@ -238,8 +241,8 @@ func (p *PLIC) Write(opaque any, offset uint32, val uint32, sizeLog2 int) {
 				p.priority[srcNum] = val
 			}
 		}
-		// Enable registers (0x2000 for context 0)
-		if offset == 0x2000 {
+		// Enable registers: context 0 (M) at 0x2000, context 1 (S) at 0x2080.
+		if offset == 0x2000 || offset == 0x2080 {
 			p.enable = val
 		}
 	}
