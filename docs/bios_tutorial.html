@@ -258,6 +258,35 @@ pre .lang-tag {
 }
 .exercise p { font-size: 0.9rem; margin-bottom: 0; }
 
+details.answer { margin-top: 12px; }
+details.answer summary {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 0.62rem;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--green); cursor: pointer; user-select: none;
+  list-style: none; outline: none; transition: color 0.15s;
+}
+details.answer summary::-webkit-details-marker { display: none; }
+details.answer summary::before { content: '▸'; font-size: 0.7rem; transition: transform 0.15s; }
+details.answer[open] summary::before { transform: rotate(90deg); }
+details.answer summary:hover { color: #6fc88a; }
+details.answer[open] summary { margin-bottom: 10px; }
+.answer-body {
+  font-size: 0.88rem; line-height: 1.7; color: var(--text);
+  padding: 10px 0 4px 14px; border-left: 2px solid var(--green);
+  background: #0d1e1822;
+}
+.answer-body code {
+  font-family: var(--font-mono); font-size: 0.82em;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 5px; color: #a8d0f0;
+}
+.answer-body strong { color: #b8e0c4; font-weight: 700; }
+.answer-body ul, .answer-body ol { margin: 6px 0 6px 20px; }
+.answer-body li { margin-bottom: 4px; }
+.answer-body p { margin-bottom: 10px; }
+.answer-body p:last-child { margin-bottom: 0; }
+
 .complete-wrap { margin-top: 44px; display: flex; align-items: center; gap: 14px; }
 .btn-complete {
   background: transparent; border: 1.5px solid var(--border); color: var(--text-dim);
@@ -416,6 +445,11 @@ The BIOS is a small program that runs once at boot, leaves behind a few data str
     "Why does INT 13h still exist in modern firmware, even on a UEFI system? Look up 'CSM' (Compatibility Support Module).",
     "List the five BIOS jobs. Which is the only one that runs <em>after</em> the OS has started?",
     "Open <code>bin/seabios/bios.bin</code> with <code>xxd</code> and find the last 16 bytes. What do they look like, and why?"
+  ],
+  answers: [
+    "INT 13h survives in UEFI because a huge installed base of operating systems and bootloaders only know how to read disks through it. UEFI firmware provides the <strong>CSM</strong> (Compatibility Support Module): it loads a legacy BIOS image (often SeaBIOS / CSM16) into the 0xC0000-0xFFFFF region and installs the real-mode IVT, so an old MBR boot sector can still <code>int 0x13</code> and reach storage. Without a CSM (pure UEFI / class-3 machines) INT 13h does not exist and only EFI-aware bootloaders work.",
+    "The five jobs are: <strong>(1) POST</strong>, <strong>(2) initialise the chipset</strong> (memory controller, shadow RAM, PCI), <strong>(3) probe devices and run option ROMs</strong>, <strong>(4) publish the runtime ABI</strong> (INT 10h/13h/15h/16h handlers in the IVT), and <strong>(5) find a boot device and hand off</strong> (read sector 0 to 0x7C00, set DL, jump). Only job 4 keeps running after the OS starts: the bootloader and early kernel call back through those interrupt handlers (INT 13h, INT 10h, INT 15h E820) until the OS installs its own drivers.",
+    "The last 16 bytes are the reset vector. You see the far jump <code>EA 5B E0 00 F0</code> (<code>jmp 0xF000:0xE05B</code>) followed by a date/version string and a one-byte checksum so the 16-byte block sums to zero. They must sit at the very top of the image because the CPU fetches its first instruction from <code>0xFFFFFFF0</code>, which the chipset wires to the last 16 bytes of the flash, and 16 bytes is only enough room for a single far jump into the larger POST code."
   ]
 },
 
@@ -462,6 +496,11 @@ That first far jump at the reset vector is encoded as 0xEA + ptr16:16. The exact
     "If you wanted to write your own tiny BIOS, what's the absolute minimum that would have to go at the reset vector? Sketch the bytes.",
     "Why does the reset vector live at the top of the 4 GiB address space, not at 0x0?",
     "Read the comment near <code>BIOSROMAddr</code> in <code>machine/pc/pc.go</code>. What does it say about BIOSes ≤64 KB vs &gt;64 KB?"
+  ],
+  answers: [
+    "The absolute minimum is one far jump out of the 16-byte reset block: <code>EA</code> followed by a 16-bit offset and a 16-bit segment, e.g. <code>EA 00 80 00 F0</code> for <code>jmp 0xF000:0x8000</code>. Those five bytes go at the top of the image (linear 0xFFFFFFF0). The remaining 11 bytes are padding plus, by convention, a version string and a checksum byte. Everything substantial (POST, IVT setup) lives at the jump target, where there is room.",
+    "Because that is the architecturally fixed reset address: at power-on CS.base = 0xFFFF0000 and RIP = 0xFFF0, so the first fetch is <code>0xFFFF0000 + 0xFFF0 = 0xFFFFFFF0</code>, the top of the 4 GiB space. The motherboard wires that region to the flash chip. 0x0 cannot be used because in early real mode 0x0-0x3FF is the IVT and the CPU has no way to be told a different entry point.",
+    "The comment explains the dual mapping: a BIOS of 64 KiB or less fits entirely in the 0xF0000-0xFFFFF segment and the reset vector at 0xFFFFFFF0 simply aliases down into it. A BIOS larger than 64 KiB (like 256 KiB SeaBIOS) cannot fit in one segment, so it must also be mapped at the <em>top</em> of the 4 GiB space (<code>HighBIOSAddr = 0xFFFC0000</code>). The same bytes then appear at both the low shadow (0xC0000-0xFFFFF) and the high alias, which is what real motherboards and QEMU do."
   ]
 },
 
@@ -509,6 +548,11 @@ Port 0x402: QEMU/SeaBIOS debug console. Used by SeaBIOS for printf-style message
     "Run with <code>TINYEMU_BIOS_POST=1 TINYEMU_BIOS_DEBUG=stderr</code> and watch the order: do POST codes precede the debug messages?",
     "Why does SeaBIOS bother to probe 0x402 at all? What would happen if it always assumed the port existed?",
     "What's the smallest change to <code>pc.go</code> that would let a different BIOS than SeaBIOS — say, the Bochs BIOS — print its log to your terminal? (Hint: port 0xE9.)"
+  ],
+  answers: [
+    "Yes. Port 0x80 POST codes are written during the earliest checkpoints, before and during the chipset/RAM init that runs before the debug console is usable, so the first 0x80 bytes appear before any 0x402 debug text. Once SeaBIOS has probed 0x402 and started <code>dprintf()</code>, the two streams interleave, but the very first checkpoint markers precede the readable log.",
+    "It probes because the debug console is a virtualisation convenience that does not exist on real hardware. SeaBIOS reads 0x402 and only believes a console is present if it reads back the magic <code>0xE9</code>; otherwise it sets <code>DebugOutputPort = 0</code> and makes every <code>dprintf()</code> a no-op. If it always assumed the port existed, then on real hardware (where 0x402 is an open bus returning 0xFF, or a real device) every debug byte would be written into a random or unrelated I/O port, with unpredictable side effects.",
+    "Register an I/O read on port <strong>0xE9</strong> that returns <code>0xE9</code>, and an I/O write on 0xE9 that forwards the byte to the same console sink used for 0x402. Port 0xE9 is the original Bochs/QEMU \"port E9 hack\" debug console; SeaBIOS, Bochs BIOS, and others probe it the same way they probe 0x402. That one read-returns-0xE9 plus a write handler is the smallest change."
   ]
 },
 
@@ -564,6 +608,11 @@ Update <code>NewCMOSRTC</code>. If you add reserved regions (e.g. ACPI tables in
     "Run with <code>-m 256</code> and grep the SeaBIOS log for the e820 map. Does the total RAM match 256 MiB?",
     "What happens if you set CMOS byte 0x17 to 0 and leave 0x18 alone? Predict, then test.",
     "The kernel's memory allocator wants <em>physical</em> memory but most of the time uses <em>virtual</em> addresses. Why does this distinction not matter for the BIOS's job?"
+  ],
+  answers: [
+    "Yes, the total type-1 RAM in the e820 map should add up to about 256 MiB minus the small carve-outs (the EBDA hole just under 0xA0000, the BIOS shadow at 0xF0000-0x100000, and a few reserved allocator/firmware regions). The conventional 640 KiB entry plus the extended entry from 1 MiB up to roughly the top of installed RAM should sum to ~256 MiB; the reserved regions account for the difference.",
+    "CMOS 0x17/0x18 is the low/high byte of extended memory above 1 MiB in KiB, capped at 0xFFFF (about 64 MiB). Zeroing 0x17 while leaving 0x18 leaves only the high byte set, so SeaBIOS computes extended memory as <code>(0x18 &lt;&lt; 8) | 0</code> KiB, i.e. a multiple of 256 KiB with the low 256 KiB granularity lost. The reported size drops by whatever the low byte held, and (on a machine over 16 MiB) the 0x30/0x31 pair usually dominates anyway, so the practical effect may be a small shortfall or, if the machine is small, a noticeably wrong total.",
+    "Because the BIOS runs before paging is enabled (or in flat-mapped early code), so every address it reports is already a physical address. Its only job is to enumerate which physical ranges are backed by usable RAM and which are reserved. How the kernel later sets up page tables to map those physical frames to virtual addresses is entirely the kernel's concern; the e820 map only describes physical memory."
   ]
 },
 
@@ -609,6 +658,11 @@ Set CR0.PE = 1, load CS/DS/... with descriptors having limit = 0xFFFFFFFF, set C
     "Compute the linear address of <code>CS:IP = 0x07C0:0x0000</code> and <code>0x0000:0x7C00</code>. Are they the same?",
     "Why is the IVT at 0x000 and not at 0xC0000 with the rest of the BIOS data?",
     "If <code>CS.base = 0xF0000</code> and <code>IP = 0xFFFE</code>, what physical byte does the next 2-byte instruction's <em>second</em> byte come from in true real mode? In big-real mode with CS.D=1?"
+  ],
+  answers: [
+    "<code>0x07C0:0x0000</code> = <code>(0x07C0 &lt;&lt; 4) + 0 = 0x7C00</code>. <code>0x0000:0x7C00</code> = <code>0 + 0x7C00 = 0x7C00</code>. They resolve to the <strong>same</strong> linear address. This is the segmentation aliasing of real mode: many distinct selector:offset pairs map to one physical byte, which is why boot code can be entered as either form.",
+    "Because real-mode interrupt dispatch is hardwired to read the IVT from linear 0x000-0x3FF: on an interrupt the CPU fetches the 4-byte {IP, CS} entry at <code>vector * 4</code> starting from physical 0. That base is fixed by the architecture and cannot be moved in real mode (only protected mode's IDTR is relocatable). The rest of the BIOS data lives high at 0xC0000+, but the IVT must stay at 0 so the CPU can find it.",
+    "First byte at <code>0xF0000 + 0xFFFE = 0xFFFFE</code>. In <strong>true real mode</strong> (CS.D=0) IP wraps at 16 bits, so the second byte is at offset 0x0000 → linear <code>0xF0000 + 0 = 0xF0000</code> (it wraps to the start of the segment). In <strong>big-real mode</strong> with CS.D=1, IP extends to 32 bits and does not wrap there, so the second byte is at offset 0x10000 → linear <code>0xF0000 + 0x10000 = 0x100000</code> (just past 1 MiB)."
   ]
 },
 
@@ -676,6 +730,11 @@ Segment register caches are not just an implementation detail — guests rely on
     "Build a 64-bit code descriptor for a flat segment with limit 4 GiB. Decode each bit of the 8-byte value.",
     "Why is loading CS via <code>mov cs, ax</code> not allowed in protected mode? Why is a far jump required?",
     "Read <code>loadProtSegment</code> in <code>cpu/x86_64/opcodes.go</code>. What happens when the selector is null? Why is that the right behavior?"
+  ],
+  answers: [
+    "A flat 64-bit code descriptor (e.g. <code>0x00AF9A000000FFFF</code>): limit[15:0] = <code>0xFFFF</code>, base[23:0] = 0, access byte = <code>0x9A</code> (P=1, DPL=0, S=1, type=1010 = code/execute-read), limit[19:16] = <code>0xF</code>, flags nibble = <code>0xA</code> (G=1 so the 0xFFFFF limit scales to 4 GiB, D/B=0, L=1 = long mode, AVL=0), base[31:24] = 0. In long mode the base/limit are ignored; what matters is P=1, S=1, code type, and L=1.",
+    "In protected mode a selector is an index into the GDT/LDT, not a literal base. CS additionally carries the current privilege level and must be loaded atomically with a descriptor that the CPU validates (present, executable, correct DPL/RPL). A plain <code>mov</code> cannot perform that controlled, privilege-checked transfer, so the architecture forbids <code>mov cs, ...</code>. A far jump (or far call/return/IRET) is the only instruction that loads CS from a descriptor and resumes execution at the new CS:offset in one step.",
+    "For DS/ES/FS/GS a null selector (index 0) is loaded as valid-but-unusable: <code>loadProtSegment</code> stores the null selector and marks the segment so that any later data access through it raises #GP, without walking the GDT (GDT entry 0 is reserved and must not be used). This is correct because the architecture explicitly allows loading a null data selector (it is how software invalidates a segment), but actually dereferencing through a null segment is a fault. Loading a null selector into CS or SS, by contrast, is itself a #GP."
   ]
 },
 
@@ -741,6 +800,11 @@ The 0xEA handler in <code>cpu/x86_64/opcodes.go</code> gated on <code>c.efer&amp
     "Predict what <code>c.mode</code> should be after each line of the Linux transition sequence shown above.",
     "Why are segment bases forced to 0 in long mode, even though the descriptor still has a base field?",
     "Read <code>recomputeMode</code> in <code>cpu/x86_64/mode.go</code>. Trace which bits it reads and in what order."
+  ],
+  answers: [
+    "Start: pm32. After <code>mov cr4</code> (PAE set): still pm32 (PAE alone changes nothing). After <code>wrmsr</code> setting EFER.LME: still pm32 (LME is only \"enabled\", not \"active\"; LMA is still 0 because paging is off). After <code>mov cr0</code> setting PG: the CPU latches <strong>EFER.LMA = 1</strong>, but CS.L is still 0, so the mode is <strong>compatibility mode</strong> (32-bit code inside long mode). After the <code>ljmp</code> loads a CS with L=1: <strong>ModeLong64</strong> — true 64-bit mode.",
+    "Because in long mode the architecture defines a single flat address space and removes segment-base translation for CS/DS/ES/SS to simplify the model and the MMU: linear address equals the offset, with the base treated as 0 regardless of the descriptor's base field. The base field is left in the descriptor format only for backward compatibility and is simply ignored for those segments (FS/GS are the exception, taking their bases from MSRs).",
+    "<code>recomputeMode</code> derives the mode from three inputs in order: first CR0.PE — if 0, the mode is real mode (16-bit) regardless of anything else. If PE=1, it checks EFER.LMA — if 0, it is legacy protected mode and CS.D selects pm16 vs pm32. If LMA=1, it checks CS.L — L=1 gives ModeLong64, L=0 gives compatibility mode (which then behaves per CS.D as 16- or 32-bit). So the precedence is CR0.PE → EFER.LMA → CS.L (→ CS.D)."
   ]
 },
 
@@ -810,6 +874,11 @@ If you see a popped value whose halves are swapped, suspect a 2- or 4-byte stack
     "What does <code>66 9C</code> do in real mode? In pm32? In long mode? Write out the bytes pushed.",
     "Why is there no 32-bit form for PUSH/POP in long mode (i.e. <code>push eax</code> is encoded but <em>means</em> <code>push rax</code>)?",
     "Find one place in our code where the comment says \"width follows operand size\" and confirm it actually uses <code>pushPopOperandSize</code>."
+  ],
+  answers: [
+    "<code>66 9C</code> is PUSHF with an operand-size override. In <strong>real mode</strong> the default operand size is 16, so 0x66 flips it to 32: it pushes the 4-byte EFLAGS. In <strong>pm32</strong> the default is 32, so 0x66 flips it to 16: it pushes the 2-byte FLAGS. In <strong>long mode</strong> the default for PUSHF is 64, and 0x66 flips it to 16: it pushes the 2-byte FLAGS. (Stack operations transfer at operand size, not stack-slot size.)",
+    "Because long mode has no 32-bit stack-operand encoding at all: for PUSH/POP the operand size is either 16 (with the 0x66 prefix) or the default 64; there is no way to express a 32-bit push/pop, and REX.W is irrelevant since 64 is already the default. So a default-operand-size of 4 from the decoder must be remapped to 8 — which is exactly what <code>pushPopOperandSize</code> does (<code>if mode==ModeLong64 &amp;&amp; operandSize==4 { return 8 }</code>).",
+    "Inspect the stack-op sites listed in the audit (RET/RETF/IRET, the 0x50-0x5F PUSH/POP r, 0x68/0x6A, the segment PUSH/POP, PUSHA/POPA, PUSHF/POPF, LEAVE, 0x8F /0, 0x9A CALL FAR, and Group 5 /2-/6): each computes its transfer width via <code>c.pushPopOperandSize(operandSize)</code> rather than <code>c.stackSlotSize()</code>. Confirm by grepping for <code>pushPopOperandSize</code> in <code>cpu/x86_64/opcodes.go</code> and checking that the matched site's comment about width matches the call."
   ]
 },
 
@@ -871,6 +940,11 @@ A common boot hang is "IRQ 0 fires once, then nothing". The PIC moves bit 0 IRR�
     "Why are the master PIC's vectors INT 0x08–0x0F instead of starting at 0x00?",
     "Trace what happens if a guest issues two EOIs in a row with no interrupt in between.",
     "Read <code>updateINTR</code> in <code>pic.go</code>. What does it do when the IMR masks an IRQ that's already in IRR?"
+  ],
+  answers: [
+    "Because the BIOS programs the master PIC's base vector (ICW2) to <code>0x08</code>, mapping IRQ 0-7 to INT 0x08-0x0F. They cannot start at 0x00 because INT 0x00-0x1F are reserved by the CPU for exceptions (0x00 = #DE divide error, 0x06 = #UD, 0x0E = #PF, etc.). The BIOS choice of 0x08-0x0F unfortunately overlaps several of those exception vectors, which is exactly why a protected-mode OS like Linux later reprograms the PICs to base 0x20 to get clear of the reserved range.",
+    "The first EOI clears the lowest-priority set ISR bit (the in-service interrupt) and lets lower-priority interrupts through again. The second EOI, with no interrupt in service, has nothing to clear: in a typical 8259 model it finds the ISR empty and is a no-op (or, on real silicon, could spuriously clear a bit if one were set by then). A spurious extra EOI is the classic cause of \"the next device interrupt gets dropped\" bugs if an ISR bit happens to be set.",
+    "<code>updateINTR</code> recomputes whether to assert INTR to the CPU from <code>IRR &amp; ~IMR</code> (and not already higher-priority in-service). If the IMR masks an IRQ that is already pending in IRR, the bit <strong>stays set in IRR</strong> but is excluded from the INTR computation, so no interrupt is delivered while it remains masked. The moment the IMR bit is cleared, <code>updateINTR</code> sees the still-pending IRR bit and asserts INTR — the interrupt is held, not lost."
   ]
 },
 
@@ -918,6 +992,11 @@ With <code>TINYEMU_X86_PERF=1</code> we saw the cycle counter explode to 1.7 tri
     "Why is the BIOS tick rate 18.2 Hz specifically? Compute the exact value from 1.193182 MHz / 65536.",
     "How does Linux get 1000 Hz from the same hardware? Look up <code>HZ</code> in the kernel config.",
     "Read <code>tickLocked</code> in <code>pit.go</code>. What happens if multiple full periods elapse between calls?"
+  ],
+  answers: [
+    "The default channel-0 reload is 0, which by the 8254 convention means 65536. The tick rate is the input clock divided by the reload: <code>1193182 / 65536 = 18.2065 Hz</code>. That is the famous ~18.2 ticks per second (a period of about 54.925 ms) the PC BIOS has used since the original IBM PC.",
+    "Linux keeps the same 1.193182 MHz input but programs channel 0 with a much smaller reload value so it underflows far more often. For <code>HZ = 1000</code> the reload is <code>1193182 / 1000 = 1193</code>, giving a 1000 Hz tick; for <code>HZ = 100</code> the reload is 11932. <code>HZ</code> (and on modern kernels <code>CONFIG_HZ</code> / the tickless <code>NO_HZ</code> options) selects this. The hardware did not change — only the reload divisor did.",
+    "Our <code>tickLocked</code> computes how many input clocks elapsed since <code>lastAdvance</code> and how many full periods that covers. If several periods elapsed between calls, a periodic (mode 2/3) channel would have underflowed multiple times, but because we deliver interrupts edge-style we coalesce them: we raise IRQ 0 <strong>once</strong> rather than queuing one per missed period. That is acceptable because the guest counts ticks via the IRQ handler and our lazy-tick model only needs to guarantee progress, not exact tick multiplicity; a one-shot (mode 0/4) channel simply stays underflowed and does not reload."
   ]
 },
 
@@ -967,6 +1046,11 @@ Your device has to behave correctly whether the firmware moves the BARs (SeaBIOS
     "How does the BAR-sizing protocol work for a 64-bit MMIO BAR (which is two consecutive 32-bit BARs)?",
     "If two devices both want I/O addresses 0xC000, who wins under SeaBIOS? Is the choice deterministic?",
     "Read <code>writeBAR</code> in <code>pci.go</code>. What test gates the <code>onBARChange</code> callback so the sizing probe doesn't fire it?"
+  ],
+  answers: [
+    "A 64-bit MMIO BAR occupies two consecutive 32-bit BAR slots, low then high. To size it the BIOS writes 0xFFFFFFFF to <em>both</em> halves, then reads both back: the returned value is the 64-bit address mask with the low size-bits cleared. It inverts the combined 64-bit read, adds 1, and that is the region size (the low BAR's type bits 1-3 = 100b mark it as 64-bit so the BIOS knows to pair them). Then it programs the assigned 64-bit base across the two slots.",
+    "Neither gets 0xC000 — SeaBIOS's I/O allocator hands out one range at a time, so the first device to be sized gets 0xC000 and the second gets the next free range above it. The choice is deterministic for a fixed device set and probe order: SeaBIOS walks PCI in (bus, device, function) order and allocates BARs in that traversal order, so the same machine config yields the same assignment every boot. It is not arbitrary, just order-dependent.",
+    "<code>writeBAR</code> masks the written value with the BAR's size mask to get the candidate base, and fires <code>onBARChange</code> only when that masked base actually differs from the current base. The sizing probe writes all-ones; <code>writeBAR</code> detects the all-ones (size-probe) write and stores it for read-back without committing it as a real base, so the callback is gated to fire on genuine base assignments, not on the 0xFFFFFFFF sizing write."
   ]
 },
 
@@ -1011,6 +1095,11 @@ The PIT is the reference clock for calibration. The TSC (Time Stamp Counter, rea
     "Why does SeaBIOS use channel 2 instead of channel 0 (the IRQ-driving one) for calibration?",
     "What's the actual frequency of the bit 5 toggle in our emulator (in toggles per second)? Hint: <code>TINYEMU_X86_PERF=1</code>.",
     "Read the <code>port61</code> handler in <code>pc.go</code>. Why does it XOR both bits 4 and 5, not just bit 5?"
+  ],
+  answers: [
+    "Because channel 0 is dedicated to driving IRQ 0 — using it would generate spurious timer interrupts and disturb the BIOS tick the rest of the system depends on. Channel 2 is software-controllable via port 0x61 (its gate can be enabled/disabled and its output OUT2 read back through bit 5) without raising any interrupt, so the calibration loop can gate it, busy-poll bit 5, and measure CPU cycles per known PIT interval in isolation.",
+    "There is no real frequency: the handler XORs the bits on <em>every read</em>, so bit 5 toggles once per port-0x61 read, not on any wall-clock schedule. Its effective \"frequency\" is simply how often SeaBIOS reads the port, which under <code>TINYEMU_X86_PERF=1</code> you can correlate to the emulated cycle count of the calibration loop. Because it tracks reads rather than time, the calibrated \"CPU MHz\" comes out as 0 — which SeaBIOS prints and ignores.",
+    "It XORs both because port 0x61 exposes two read-only status bits that real software polls: bit 5 is the channel-2 output (OUT2) used by the PIT calibration loop, and bit 4 is the DRAM refresh toggle that other timing/delay loops poll. Toggling only bit 5 would leave any code that waits on the refresh bit (bit 4) spinning forever, so the handler flips both (<code>^= 0x30</code>) to guarantee progress for either polling pattern."
   ]
 },
 
@@ -1075,6 +1164,11 @@ A bootloader that uses the DL the BIOS hands it is portable across boot devices.
     "Why is the boot sector loaded at 0x7C00 specifically? (Historical answer; look it up.)",
     "If the boot sector hardcodes DL=0x80, what does SeaBIOS do if there's no hard disk attached?",
     "Trace the path from <code>int 0x13</code> in real mode to the virtio-blk port write. List each function call."
+  ],
+  answers: [
+    "Historical: on the original IBM PC (5150) the minimum supported configuration was 32 KiB of RAM. The boot sector is 512 bytes; placing it at 0x7C00 puts it at the top of that 32 KiB (<code>0x8000 - 0x200 = 0x7C00</code>), leaving the region just above it for a small stack and the region below (down through 0x600) free for the loaded sector and DOS/loader use, while staying clear of the IVT and BIOS data area at the bottom of memory. The address stuck as a compatibility constant.",
+    "It dispatches by drive number: <code>DL = 0x80</code> means \"first hard disk\". If no hard disk is attached, SeaBIOS has no drive registered for 0x80, so its INT 13h handler returns with <strong>CF = 1</strong> and an error status in AH (typically <code>0x01</code> invalid command or <code>0x80</code> timeout / not present). A bootloader that hardcodes DL=0x80 therefore fails the read and cannot boot, even if a perfectly good floppy is present.",
+    "Real-mode <code>int 0x13</code> vectors through IVT[0x13] to SeaBIOS's 16-bit stub, which pushes the handler pointer and jumps to the common entry trampoline (<code>irqentry_arg_extrastack</code>); that saves registers into a bregs struct and calls the C handler <code>handle_13</code> in <code>disk.c</code>. <code>handle_13</code> looks up the drive, builds a <code>disk_op_s</code>, and calls <code>process_op</code> → <code>process_op_both</code>, whose default case for virtio invokes <code>call32(process_op_32)</code> to enter 32-bit mode. In pm32 <code>process_op_32</code> dispatches on the drive type to <code>virtio_blk_op</code>, which fills the descriptor ring, bumps avail.idx, and writes the queue-notify I/O port — the port write our device sees."
   ]
 },
 
@@ -1150,6 +1244,11 @@ You don't need a faithful 8272 byte-stream model to boot a floppy. You need: the
     "Walk through a SEEK command. What bytes get written, in what order? What does the result phase look like?",
     "Why is RECALIBRATE followed by SENSE_INTERRUPT? What does sense interrupt return?",
     "Modify <code>execRead</code> to handle a multi-track transfer (reads that span past the End Of Track). Test with a sector count > 18."
+  ],
+  answers: [
+    "SEEK (0x0F) is a command-phase write of 3 bytes to port 0x3F5: the command byte <code>0x0F</code>, then a byte holding (head &lt;&lt; 2 | drive), then the target cylinder number. SEEK has <strong>no result phase</strong> — the FDC simply moves the head and, when done, raises IRQ 6. To collect the outcome you then issue SENSE_INTERRUPT (0x08), whose result phase returns 2 bytes: ST0 (with the seek-end bit and drive/head) and PCN (the present cylinder number).",
+    "Because SEEK and RECALIBRATE are the two commands that move the head and have no result phase of their own — they only signal completion by raising IRQ 6. SENSE_INTERRUPT (0x08) is the command that reads back the controller's interrupt status: it returns ST0 and the present cylinder number (PCN), and crucially it <strong>clears the pending interrupt condition</strong> in the FDC. Without it the FDC stays in an \"interrupt pending\" state and rejects the next command.",
+    "Currently <code>execRead</code> converts the starting CHS to one LBA and copies <code>count</code> sectors linearly. For a true multi-track read you must respect the End Of Track (EOT) parameter: when the running sector number exceeds EOT (18 on a 1.44 MiB disk), increment the head (and, after the second head, the cylinder) and reset the sector to 1 before continuing, recomputing the LBA at each track boundary. Test by issuing a READ with a sector count &gt; 18 and verifying the bytes copied span the head/cylinder rollover correctly (compare against the flat image offsets). Since our backing image is already linear by LBA, the fix is mainly to advance C/H/S properly so the returned result-phase C/H/R/N reflect where the transfer ended."
   ]
 },
 
@@ -1204,6 +1303,11 @@ At <code>jmp 0x0000:0x7C00</code>, SeaBIOS's responsibilities are paused. From t
     "What happens if you press ESC during the boot-menu wait? Trace the keyboard-read path.",
     "If a boot sector returns to SeaBIOS (e.g. via <code>retf</code>), what does SeaBIOS do?",
     "How does SeaBIOS decide which entry of the boot order to try first when none match a device path exactly?"
+  ],
+  answers: [
+    "Pressing ESC during the wait is detected through the keyboard path: the keystroke arrives via the i8042 controller, the BIOS keyboard service (INT 16h / IRQ 1 handler) buffers the scancode, and SeaBIOS's <code>get_keystroke</code> loop — which is decrementing its ~46-tick budget on each IRQ 0 — reads the buffered key, sees the ESC code (0x1B), and breaks out of the timeout loop to display the interactive boot menu instead of auto-booting the first device.",
+    "SeaBIOS treats the boot sector as code it transferred control to via a far jump, not a call — there is no defined return path. If the boot sector executes <code>retf</code>, it pops whatever happens to be on the stack as CS:IP and jumps there; the result is undefined and almost always a crash or a wander into garbage. SeaBIOS does not catch the return; the legacy contract is one-way (jump to 0x7C00 and never come back unless via INT 19h / INT 18h).",
+    "SeaBIOS does not pick an arbitrary device when nothing matches — it processes the boot-order list <strong>in order</strong>, trying each entry's device path against its discovered drive list, and boots the first path that finds a match. If a path matches no device it is skipped and the next entry is tried. If no entry matches anything, it falls through to the fallback/HALT sentinel (and ultimately INT 18h/INT 19h), rather than guessing a device."
   ]
 },
 
@@ -1260,6 +1364,11 @@ You can faithfully emulate the legacy boot path without faithfully emulating eve
     "Write a test program that calls INT 10h AX=4F00 and checks the result. Confirm AX is unchanged in our emulator.",
     "What other GUI-only OSes would hit the same wall? (Hint: any pre-UEFI hobby OS that does its own video mode setting.)",
     "Sketch the design of a minimal SDL backend for tinyemu-go. What would the interface to VGA look like?"
+  ],
+  answers: [
+    "A 16-bit real-mode program: set AX = 0x4F00, point ES:DI at a 256-byte buffer, <code>int 0x10</code>, then check AX. On VBE-capable firmware AX returns <code>0x004F</code> (AL=0x4F \"function supported\", AH=0x00 \"success\") and the buffer holds a VbeInfoBlock. In our emulator AX comes back <strong>unchanged</strong> as the input value (e.g. 0x4F00, so AL=0x00) because no VGA option ROM hooked INT 10h AX=4F00; the test <code>AX == 0x004F</code> fails, proving VBE is absent.",
+    "Any pre-UEFI hobby/graphical OS that sets its own video mode through the legacy VBE/VGA BIOS would hit the same wall: MenuetOS/KolibriOS, the original ReactOS boot in VGA, TempleOS, and many OSDev hobby kernels that call INT 10h AX=4F02 to enter a linear-framebuffer mode. Anything that needs a graphical framebuffer rather than text-mode UART output cannot proceed in a text-only emulator, regardless of CPU correctness.",
+    "A minimal SDL backend would attach to the VGA device through a small interface: the VGA model owns the framebuffer bytes plus mode state (resolution, bpp, palette) and exposes something like <code>Framebuffer() []byte</code>, <code>Dimensions() (w, h, bpp int)</code>, a <code>Palette()</code> for indexed modes, and a <code>DirtyRegions()</code> hint. The SDL layer creates a window/texture matching the dimensions, and on a timer (or on a dirty signal) blits the framebuffer into the texture and presents it, translating SDL keyboard/mouse events back into i8042/PS2 input. VGA register writes (CRTC/sequencer/attribute, or VBE mode-set) would call back to reconfigure the texture. The key design point is that VGA stays the source of truth for pixels and the backend is a passive renderer plus input source."
   ]
 },
 
@@ -1319,6 +1428,11 @@ The BAR-relocation bug was visible from the BIOS log ("queue size 65535"). The G
     "What's a virtqueue \"descriptor chain\" and why does virtio use it instead of separate (header, data, status) ports?",
     "Why does SeaBIOS poll instead of waiting for an interrupt during boot?",
     "Read <code>queueNotify</code> in our virtio code. How does it know how many requests to process?"
+  ],
+  answers: [
+    "A descriptor chain is a set of ring entries linked by their <code>next</code> field, each pointing at one guest-memory buffer with read/write flags. A virtio-blk request uses three chained descriptors — the request header (read-only by the device), the data buffer (write for a read op), and the 1-byte status (device-written). Virtio uses a chain instead of separate ports because it is a shared-memory transport: one notify kick describes an entire scatter-gather request whose buffers can be anywhere in RAM, with no need for the guest to stream bytes through fixed I/O ports, which is far more efficient and avoids per-byte traps.",
+    "Because during boot SeaBIOS runs with interrupts effectively unavailable for this path (it is in a tightly controlled BIOS context, often with IF managed around the call32 transition) and it only needs the result of one request before continuing. Polling the used-ring index in a busy-loop (throttled by <code>usleep</code>) is simpler and avoids depending on correct PIC/IRQ wiring for the virtio device at boot time. Interrupt-driven completion is a runtime-OS optimisation, not something the one-shot BIOS read path needs.",
+    "<code>queueNotify</code> reads the avail ring's <code>idx</code> field and compares it to the index it last processed (its <code>lastAvailIdx</code>): the difference is the number of newly-published head descriptors to handle. It loops over those entries — for each, following the descriptor chain, performing the I/O, writing the status byte, and posting a used-ring entry — until its consumed index catches up to avail.idx. So the avail.idx delta, not a count passed in the notify write, tells it how many requests are pending."
   ]
 },
 
@@ -1383,6 +1497,11 @@ Booting from 0000:7c00</pre>
     "Why does SeaBIOS run INT 13h on a different stack from the caller? What stack is it on?",
     "Could the GDT-walk bug have been caught by Linux? Why didn't it surface there?",
     "Read <code>loadProtSegment</code>. What happens if the GDT entry has a non-flat base (e.g. for a legacy 32-bit segmented OS)?"
+  ],
+  answers: [
+    "Because INT 13h is invoked from arbitrary real-mode callers (bootloaders, DOS) whose stacks may be tiny or nearly full, and the 32-bit C handler plus its call32 excursion needs more stack than the caller can guarantee. SeaBIOS switches to its own known-good stack — the EBDA/zonelow \"extra stack\" (the <code>extrastack</code> in the EBDA at segment base ~0xda800) — so it has room to save registers and run the C code safely, then restores the caller's SS:SP on the way out.",
+    "No — Linux would not have caught it, because Linux never reloads DS across the specific 16-bit→32-bit transition that triggers the bug. The stale-cache fault only appears when a segment whose hidden base was set in one context (the 0xda800 zonelow stack) is reloaded via a selector that should resolve to a flat (base 0) descriptor, which is exactly what SeaBIOS's <code>call32</code> thunk does and a long-mode Linux boot does not. Linux loads its flat selectors once during early setup and runs flat thereafter, so the missing GDT walk never produced a wrong base for it.",
+    "<code>loadProtSegment</code> parses the 8-byte descriptor and copies its <code>base</code>, <code>limit</code>, and access bits into the segment's hidden cache verbatim. If the GDT entry has a non-flat base (a real segmented 32-bit OS), the cache gets that non-zero base, and subsequent accesses through the segment are correctly offset by it and bounded by its limit. The function is not flat-specific — it honours whatever base/limit the descriptor specifies, which is precisely why doing the walk (rather than assuming base 0) is required for correctness across all guests."
   ]
 },
 
@@ -1436,6 +1555,11 @@ The whole option-ROM mechanism is "BIOS scans a region for magic bytes". You can
     "What's the maximum total option-ROM size that fits in the scan region?",
     "If you wrote a tiny option ROM that printed \"hello\" via INT 10h teletype, what would it look like? (Three lines of asm.)",
     "Read SeaBIOS's option-ROM scan code (<code>src/optionroms.c</code>). What does it do if the size byte is 0?"
+  ],
+  answers: [
+    "The scan region is 0xC0000-0xEFFFF, which is <code>0xEFFFF - 0xC0000 + 1 = 0x30000 = 192 KiB</code>. That is the maximum total option-ROM space; individual ROMs are aligned to 2 KiB boundaries and each declares its own size in 512-byte units (so up to 255 * 512 = ~128 KiB for a single ROM), but the sum across all option ROMs cannot exceed the 192 KiB window.",
+    "An option ROM starts with the signature and a size byte, then the init entry at offset 3. A trivial \"hello\" ROM: <code>db 0x55, 0xAA, 0x01</code> (signature + 1*512-byte size), then at offset 3 the init code — load DS, loop calling INT 10h AH=0x0E (teletype) for each character of \"hello\", then <code>retf</code>. In practice you pad the image to 512 bytes and set the last byte so the whole ROM checksums to zero, since SeaBIOS verifies the checksum before calling init.",
+    "If the size byte (the third byte) is 0, the ROM declares a length of zero. SeaBIOS treats this as an invalid/empty option ROM: it cannot compute or verify the image, so it skips the candidate and continues the scan at the next 2 KiB boundary rather than calling an init entry. A zero size therefore means \"no usable ROM here.\""
   ]
 },
 
@@ -1526,6 +1650,11 @@ Booting from 0000:7c00</pre>
     "Compare the log with and without <code>-drive</code>. What's different?",
     "What does the e820 map look like with <code>-m 256</code>? Predict, then check.",
     "Read SeaBIOS's <code>handle_post</code> in <code>post.c</code>. Match each \"=== ===\" log line to its source."
+  ],
+  answers: [
+    "With <code>-drive</code> the log adds the virtio-blk device: \"Found 2 PCI devices\" becomes 3 (host bridge + ISA bridge + virtio-blk), a <code>PCI: init bdf=00:03.0 id=1af4:1001</code> line appears, a BAR is mapped (<code>map device bdf=00:03.0 bar 0 ... [io]</code>), and \"found virtio-blk at 00:03.0\" plus the geometry/boot-order search lines show up. Without <code>-drive</code> none of those appear and the boot ends at the menu/HALT search with no bootable disk.",
+    "With <code>-m 256</code> the extended-RAM e820 entry grows: instead of the type-1 RAM running from 1 MiB up to ~2.75 MiB, it runs from 0x100000 up to roughly 0x10000000 (256 MiB) minus the small reserved carve-outs. The low entries (0-0x9FC00 RAM, the EBDA and F-segment reserved holes, the high BIOS alias at 0xFFFC0000) stay the same; only the main extended-RAM entry's length changes to reflect 256 MiB.",
+    "<code>handle_post</code> in <code>post.c</code> is the master init flow; the \"=== ... ===\" banners come from the sub-phases it calls: <code>=== PCI bus &amp; bridge init ===</code> from <code>pci_setup</code>/<code>pci_bios_init_bus</code>, <code>=== PCI device probing ===</code> and \"Found N PCI devices\" from <code>pci_probe_devices</code>, and <code>=== PCI new allocation pass #1/#2 ===</code> from the BAR allocator <code>pci_bios_init_devices</code>/<code>pci_bios_check_devices</code>. Later non-banner phases (table copying, VGA scan, e820 finalisation, boot) correspond to <code>smbios/mptable/pirtable</code> setup, <code>vgarom_setup</code>, <code>malloc_finalize</code>, and <code>boot_prep</code>."
   ]
 },
 
@@ -1584,6 +1713,11 @@ A BIOS shim is dozens of small, individually-easy fixes. Each one is exposed by 
     "Order the fixes by how long the bug existed before being caught. Which dormant bug took the longest?",
     "Which fix was the highest-leverage (unblocked the most other things)? Which was the lowest?",
     "If you had to add one more SeaBIOS-required feature to <code>tinyemu-go</code>, what would you pick? Why?"
+  ],
+  answers: [
+    "The longest-dormant bug was the <strong>GDT walk on protected-mode segment loads</strong>. The emulator deliberately skipped it for a long time because SeaBIOS's POST flow loads each segment exactly once with a correct descriptor, so the stale-cache shortcut \"happened to be right\" for everything that ran — until <code>call32</code>'s 16→32-bit DS reload across the zonelow stack finally exercised a cross-context reload and exposed it as a silent disk-read failure.",
+    "Highest-leverage: the <strong>PIT reload-0 = 65536 fix</strong>, because without timer ticks the boot-menu wait never ends and nothing past POST runs at all — it unblocked the entire rest of the boot. The <strong>0x402 returns 0xE9</strong> change is a close second since it turns on the whole debug log used to find everything else. Lowest-leverage were the narrow, single-symptom items like the CMPSB/CMPSW string ops or SALC/XLAT — needed for one specific guest code path but not gating anything broad.",
+    "Adding a <strong>VGA BIOS option ROM (SeaVGABIOS) plus a VBE-capable VGA device</strong> would unblock the most guests: it is the single missing feature behind the MenuetOS halt and behind any graphical or VBE-probing OS. It is the natural next milestone because the legacy CPU/disk/timer chassis is already solid; the remaining wall is purely the display path. (The honest caveat from Lesson 16 is that fully realising it also needs a pixel backend, which is a different project for a text-mode emulator.)"
   ]
 },
 
@@ -1652,6 +1786,11 @@ The day you debug a hard bug, you'd rather have the right tool than spend two ho
     "Add a trace that prints every time the CPU's c.mode changes. What env-var name do you use?",
     "Write a tiny shell pipeline that joins INTR trace + STEP trace by cycle.",
     "Which instrument would you add next? What gap does it fill?"
+  ],
+  answers: [
+    "Use a name in the established family, e.g. <code>TINYEMU_X64_MODETRACE=1</code>. Implement it the same way as the others: a lazily-initialized global read from the env var (zero cost when unset), and in <code>recomputeMode</code> (or wherever <code>c.mode</code> is assigned) print a structured line whenever the new mode differs from the previous one — something like <code>[mode] cycle=NNN real16 -&gt; pm32 (CR0=... EFER=... CS.L=... CS.D=...)</code>, including the cycle counter so it joins with the other traces.",
+    "Each instrument tags its lines and includes <code>cycle=N</code>, so you can sort-merge by cycle. For example: <code>cat intr.log step.log | sed -n 's/.*cycle=\\([0-9]*\\).*/\\1 &amp;/p' | sort -n -k1 | cut -d\" \" -f2-</code> — prefix every line with its numeric cycle, sort numerically, then strip the prefix, yielding the two traces interleaved in cycle order. (Any approach that extracts the cycle as a sort key works; the point is the universal <code>cycle=</code> join key.)",
+    "A good next instrument is a <strong>page-table / translation trace</strong> (e.g. <code>TINYEMU_X64_PTWALK=lo-hi</code>) that logs each virtual→physical translation and the PTE flags for accesses in a range. It fills the gap between PHYSWATCH (which sees physical writes) and DUMPCYCLE (a single snapshot): when a guest sets up paging and a \"flat\" pointer lands at the wrong physical page, this shows the faulty mapping directly instead of inferring it from a stale segment base or a corrupted value."
   ]
 },
 
@@ -1721,6 +1860,11 @@ The day you debug a hard bug, you'd rather have the right tool than spend two ho
     "Pick a hobby OS image (anything pre-built) and run through Phase 1 + Phase 2. Write up what you saw.",
     "Of the failure-class table above, which would you fix first if you had to pick one? Why?",
     "What's a test setup you'd add to the toolkit to catch a new class of bug?"
+  ],
+  answers: [
+    "This is an open-ended exercise; a solid write-up runs the four Phase-1 steps on a chosen image and reports: which machine type/device flag you used, the last recognizable SeaBIOS log line reached with <code>TINYEMU_BIOS_DEBUG=stderr</code>, and the first failure symptom (an <code>ErrNotImplemented</code> opcode, a device that never responds, a deliberate <code>eb fe</code> halt, or a timer/boot-disk message). Then classify it against the Phase-2 table — the deliverable is the observation and the classification, not a fix.",
+    "Of the failure-class table, the <strong>boot-menu wait that never times out (PIT bug)</strong> is the one to fix first, because it is a total blocker: nothing past POST executes, so every other class of bug is hidden behind it. It also has the broadest blast radius (any guest, any device) and the highest leverage per fix, which is the right prioritisation heuristic — fix the thing that unblocks the most downstream progress first.",
+    "A good addition is a <strong>golden-boot-log regression harness</strong>: boot a known guest with <code>TINYEMU_BIOS_DEBUG=stderr</code>, capture the SeaBIOS log, normalise volatile fields (cycle counts, addresses), and diff against a stored golden log in CI. It catches a whole class of silent regressions — a fix that quietly changes PCI device count, BAR assignment, e820 layout, or the \"Booting from...\" outcome — that unit tests on individual opcodes would miss, because it exercises the full chassis end-to-end and treats the BIOS log as the oracle."
   ]
 },
 
@@ -1781,6 +1925,11 @@ What the BIOS does. Why each piece exists. How to debug it. How to write the cha
     "Read SeaBIOS's main entry (<code>handle_post</code>). Match each phase to one of the lessons in this tutorial.",
     "Write a one-page summary of what we changed in <code>tinyemu-go</code> to host SeaBIOS, ordered by which fix unblocked the next.",
     "Pick any one BIOS function we didn't implement in detail (INT 15h AX=87h block move, INT 1Ah RTC time) and write a one-page tutorial entry on it."
+  ],
+  answers: [
+    "<code>handle_post</code> drives, in order: POST/chipset bring-up (Phase 1 lessons), RAM detection feeding the e820 map (Lesson 4), PIC/PIT setup (Lessons 9-10, 12), PCI enumeration and BAR allocation (Lesson 11), the option-ROM scan (Lesson 19), drive discovery for floppy and virtio-blk (Lessons 14, 17), publishing the IVT handlers (INT 10h/13h/15h/16h, Lesson 13), and finally the boot-device selection and hand-off to 0x7C00 (Lesson 15). Reading the log end-to-end (Lesson 20) is essentially walking <code>handle_post</code> top to bottom.",
+    "Model answer (ordered by unblocking): <strong>(1)</strong> Port 0x402 returns 0xE9 — turns on the debug log used to find everything else. <strong>(2)</strong> PIT reload-0 = 65536 — without ticks the boot-menu wait never ends, so nothing past POST runs. <strong>(3)</strong> Port 0x61 bit-4/5 toggles — lets the PIT calibration loop finish. <strong>(4)</strong> Correct push/pop widths (<code>pushPopOperandSize</code>) — keeps the stack aligned through SeaBIOS's IRQ trampolines. <strong>(5)</strong> Real-mode IP wrap on CS.D — stops POST running off the F-segment. <strong>(6)</strong> BIOS high alias at 0xFFFC0000 — makes the reset vector land in ROM. <strong>(7)</strong> PCI BAR-relocation callback — lets the virtio device follow its reassigned base. <strong>(8)</strong> GDT walk on segment loads — fixes the silent virtio disk read in 32-bit mode. <strong>(9)</strong> Real-mode interrupt delivery + the legacy opcode batch + CMPSB/W — finish the INT 13h boot path. The throughline: each fix made the <em>next</em> log line reachable.",
+    "Model entry for <strong>INT 1Ah (RTC/time services)</strong>: INT 1Ah is the real-mode time-of-day and real-time-clock interrupt, selected by AH. AH=0x00 reads the BIOS tick counter (the 18.2 Hz count maintained in the BDA at 0x46C by the IRQ 0 handler), returning CX:DX = ticks since midnight and AL = midnight-rollover flag. AH=0x02 reads the wall-clock time from the CMOS RTC (CH=hours, CL=minutes, DH=seconds, all BCD); AH=0x04 reads the date. SeaBIOS implements these by sequencing the CMOS index/data ports (0x70/0x71) for the RTC registers and by reading the tick counter the timer ISR increments. A guest uses INT 1Ah AH=0x00 for coarse timing before it has its own clock, and AH=0x02/0x04 to seed the OS's notion of date/time at boot. The tie to our work: it depends on the same CMOS device (Lesson 4) and the same IRQ 0 tick path (Lesson 10) we already built, so it would be a thin handler over existing chassis."
   ]
 }
 
@@ -1902,6 +2051,7 @@ function showLesson(id) {
           <div class="exercise">
             <div class="exercise-num">Exercise ${i + 1}</div>
             <p>${ex}</p>
+            ${lesson.answers && lesson.answers[i] ? `<details class="answer"><summary>Show answer</summary><div class="answer-body">${lesson.answers[i]}</div></details>` : ''}
           </div>
         `).join('')}
       </div>
