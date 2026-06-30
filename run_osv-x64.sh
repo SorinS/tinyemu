@@ -23,8 +23,8 @@ TEMU="$ROOT/bin/temu.${OS}-${ARCH}.bin"
 
 VARIANT="${1:-standard}"
 case "$VARIANT" in
-    standard) KERNEL="$ROOT/bin/osv/loader.elf" ;;
-    microvm)  KERNEL="$ROOT/bin/osv/loader-microvm.elf" ;;
+    standard) KERNEL="$ROOT/bin/osv-x64/loader.elf" ;;
+    microvm)  KERNEL="$ROOT/bin/osv-x64/loader-microvm.elf" ;;
     *)        echo "Usage: $0 [standard|microvm]" >&2; exit 1 ;;
 esac
 [ -f "$KERNEL" ] || { echo "missing $KERNEL — run scripts/extract_osv.sh" >&2; exit 1; }
